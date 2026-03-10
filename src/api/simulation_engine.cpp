@@ -1,6 +1,6 @@
 #include "agv/simulation_engine.hpp"
 
-#include "agv/legacy_sim_bridge.hpp"
+#include "agv/sim_bridge.hpp"
 
 #include <stdexcept>
 #include <string>

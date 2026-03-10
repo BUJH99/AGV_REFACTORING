@@ -4,7 +4,7 @@
 #include <cstdio>
 #include <cstring>
 
-#include "agv_legacy_engine_internal.hpp"
+#include "agv/internal/engine_internal.hpp"
 
 #ifndef APPEND_FMT
 #define APPEND_FMT(P, REM, ...)                            \
@@ -458,4 +458,23 @@ void simulation_display_status(Simulation* sim, int is_paused) {
     simulation_append_log_lines(&p, &rem, lg);
     ui_append_controls_help(&p, &rem);
     simulation_maybe_flush_display_buffer(sim);
+}
+
+namespace {
+
+class LegacyRendererStrategy final : public RendererStrategy {
+public:
+    void drawFrame(Simulation_* sim, int is_paused) const override {
+        simulation_display_status(sim, is_paused);
+    }
+
+    std::unique_ptr<RendererStrategy> clone() const override {
+        return std::make_unique<LegacyRendererStrategy>(*this);
+    }
+};
+
+}  // namespace
+
+RendererFacade renderer_create_facade(void) {
+    return RendererFacade(std::make_unique<LegacyRendererStrategy>());
 }

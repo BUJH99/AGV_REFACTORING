@@ -9,16 +9,23 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 include(CTest)
 
 add_library(agv_core
-    include/agv/legacy_engine_model.hpp
-    src/agv_legacy_console.cpp
-    src/agv_legacy_display.cpp
-    src/agv_legacy_engine.cpp
-    src/agv_legacy_maps.cpp
-    src/agv_legacy_reports.cpp
-    src/simulation_engine.cpp
+    include/agv/internal/engine_model.hpp
+    include/agv/internal/engine_internal.hpp
+    include/agv/sim_bridge.hpp
+    src/platform/console_terminal.cpp
+    src/planning/collision_planner.cpp
+    src/ui/simulation_display.cpp
+    src/core/engine_orchestrator.cpp
+    src/runtime/agent_runtime.cpp
+    src/maps/map_catalog.cpp
+    src/planning/pathfinder.cpp
+    src/reporting/run_reporting.cpp
+    src/runtime/scenario_runtime.cpp
+    src/runtime/step_runtime.cpp
+    src/api/simulation_engine.cpp
 )
 
-set_source_files_properties(src/agv_legacy_engine.cpp PROPERTIES COMPILE_DEFINITIONS AGV_NO_MAIN)
+set_source_files_properties(src/core/engine_orchestrator.cpp PROPERTIES COMPILE_DEFINITIONS AGV_NO_MAIN)
 
 target_include_directories(agv_core
     PUBLIC
@@ -33,7 +40,7 @@ else()
     target_compile_options(agv_core PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-add_executable(agv_console src/main.cpp)
+add_executable(agv_console src/apps/console_main.cpp)
 target_link_libraries(agv_console PRIVATE agv_core)
 
 if(BUILD_TESTING)

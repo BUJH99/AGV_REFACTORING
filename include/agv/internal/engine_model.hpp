@@ -6,8 +6,8 @@
 #include <deque>
 #include <memory>
 
-// Private legacy-engine type model.
-// This header is intentionally included from agv_legacy_engine.cpp
+// Private engine type model.
+// This header is intentionally included from src/core/engine_orchestrator.cpp
 // after the engine-wide compile-time constants/macros are defined.
 
 template <typename T>

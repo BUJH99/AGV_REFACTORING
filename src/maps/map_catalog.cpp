@@ -2,7 +2,7 @@
 
 #include <cstring>
 
-#include "agv_legacy_engine_internal.hpp"
+#include "agv/internal/engine_internal.hpp"
 
 #define grid_map_create Grid_create
 #define grid_map_destroy Grid_destroy

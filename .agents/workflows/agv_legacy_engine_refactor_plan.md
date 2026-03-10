@@ -1,74 +1,170 @@
-# agv_legacy_engine.cpp 점진 리팩터링 최종 상태
+# engine 분해 최종 계획 및 완료 상태
 
-## 목표
-- `src/agv_legacy_engine.cpp`를 한 번에 재설계하지 않고, 동작 보존을 우선하면서 작은 패치 단위로 책임을 분리한다.
-- 각 단계마다 실제 빌드와 headless 스모크로 분리 안정성을 확인한다.
-- 파일 분리는 helper 추출로 경계를 먼저 고정한 뒤에만 수행한다.
+## 1. 목표
+- 목표는 `src/core/engine_orchestrator.cpp`를 알고리즘 구현 파일이 아니라 orchestration 중심 파일로 정리하는 것이다.
+- engine은 시뮬레이션 생명주기, active context, facade wiring, 상위 실행 흐름만 남긴다.
+- pathfinder, collision/CBS, scenario/setup, step execution, agent runtime, report, display, console, maps는 각 전용 구현 파일로 분리한다.
 
-## 책임 분해 결과
-- simulation lifecycle / active context / runtime state
-- scenario / task / phase 상태 관리
-- planner / pathfinder / CBS / collision 처리
-- step execution / metrics / timing
-- map builder / scenario load
-- console / display / render
-- report / summary / CSV / JSON 출력
+## 2. 최종 결과
+- 구현 파일: `10개`
+- 전체 관련 구현 파일: `11개`
+  - `src/api/simulation_engine.cpp` 포함
+- `src/core/engine_orchestrator.cpp`: `1017줄`
+- 필수 목표였던 `1200줄 이하` 달성
+- 권장 목표였던 `900~1100줄`도 달성
 
-## 완료된 리팩터링 단계
-- `Simulation_::planStep()`의 알고리즘별 step counter 집계를 helper로 추출했다.
-- `Simulation_::planStep()`의 per-step planner metric reset 블록을 helper로 추출했다.
-- `Simulation_::planStep()`의 post-planning accumulation / timing 블록을 `record_planner_step_results()`로 추출했다.
-- `StepExecutorService::finalizeFrame()`의 phase accounting 블록을 `record_step_phase_accounting()`으로 추출했다.
-- report/summary 영역의 공통 계산과 라벨 로직을 helper로 추출했다.
-- run summary 계산과 JSON payload 쓰기를 각각 helper로 분리했다.
-- report/summary 구현을 `src/agv_legacy_reports.cpp`로 분리했다.
-- map builder / scenario load / grid 초기화 구현을 `src/agv_legacy_maps.cpp`로 분리했다.
-- Win32 console 제어 함수 일부를 `src/agv_legacy_console.cpp`로 분리했다.
-- `simulation_display_status()`와 `GridMap_renderToBuffer()` 주변 display 구현을 `src/agv_legacy_display.cpp`로 분리했다.
-- `ui_append_controls_help()`를 playback/render helper로 분리했다.
-- `ui_flush_display_buffer()`를 position/write helper로 분리했다.
-- `ui_handle_control_key()`와 관련 speed / render toggle helper를 `src/agv_legacy_display.cpp`로 실제 이동 완료했다.
-- `run_partial_CBS()`에서 반복되던 단일 agent low-level 계획 + metric 누적 블록을 `cbs_plan_agent_with_metrics()`로 추출했다.
-- 분리 파일 공통 의존성을 위해 `src/agv_legacy_engine_internal.hpp`를 보강했다.
+## 3. 최종 파일 구성
+### 헤더 배치 원칙
+- 모든 public / internal `.hpp`는 `include/` 아래에 둔다.
+- 모든 구현 `.cpp`는 `src/` 아래에 둔다.
+- `legacy` 접두가 남아 있던 헤더 이름은 기능 기준 이름으로 재매핑한다.
 
-## 최종 파일 분리 결과
-- `src/agv_legacy_engine.cpp`
-  - simulation core, planner/collision orchestration, step execution 중심
-- `src/agv_legacy_reports.cpp`
-  - run summary 계산, performance summary 출력, JSON/CSV report helper
-- `src/agv_legacy_maps.cpp`
-  - map builder, scenario load, grid 초기화
-- `src/agv_legacy_console.cpp`
-  - console / terminal 제어
-- `src/agv_legacy_display.cpp`
-  - display status, render buffer 조립, input control helper
+### 최종 include 구성
+1. `include/agv/simulation_engine.hpp`
+- 외부 C++ API 선언
 
-## 검증 상태
-- 수동 빌드 명령:
-  - `C:\\msys64\\mingw64\\bin\\g++.exe -std=c++20 -DAGV_NO_MAIN -Iinclude src/main.cpp src/agv_legacy_engine.cpp src/agv_legacy_reports.cpp src/agv_legacy_maps.cpp src/agv_legacy_console.cpp src/agv_legacy_display.cpp src/simulation_engine.cpp -o tmp_build/agv_console_refactor_check.exe -lpsapi`
-- 검증 바이너리:
+2. `include/agv/sim_bridge.hpp`
+- 엔진 브리지 / 공용 facade 선언
+
+3. `include/agv/internal/engine_model.hpp`
+- 내부 모델 / 상태 / 메트릭 타입 선언
+
+4. `include/agv/internal/engine_internal.hpp`
+- 내부 구현 파일 사이의 bridge 선언
+
+### 최종 src 구성
+1. `src/core/engine_orchestrator.cpp`
+- simulation lifecycle
+- active context
+- planner / renderer facade wiring
+- high-level run orchestration
+
+2. `src/reporting/run_reporting.cpp`
+- run summary 계산
+- performance summary 출력
+- JSON / CSV report helper
+
+3. `src/maps/map_catalog.cpp`
+- map builder
+- scenario load
+- grid 초기화
+
+4. `src/platform/console_terminal.cpp`
+- Win32 console / terminal 제어
+- console 준비 helper
+
+5. `src/ui/simulation_display.cpp`
+- display status
+- render buffer 조립
+- input control helper
+
+6. `src/planning/pathfinder.cpp`
+- D* Lite / pathfinder core
+- shortest path
+- next-step 계산
+- low-level search helper
+
+7. `src/planning/collision_planner.cpp`
+- reservation table
+- WHCA planning
+- collision resolution
+- wait-for graph
+- deadlock fallback
+- CBS orchestration
+
+8. `src/runtime/scenario_runtime.cpp`
+- simulation setup
+- custom / realtime setup
+- phase / task queue 초기화
+- scenario runtime configuration
+- task 시작 helper
+
+9. `src/runtime/step_runtime.cpp`
+- execute-one-step flow
+- move apply
+- deadlock counter
+- frame finalize helper
+- runtime metric sampling
+
+10. `src/runtime/agent_runtime.cpp`
+- agent state after move
+- charging / maintenance 전이
+- task completion bookkeeping
+- goal selection / workload snapshot / runtime helper
+
+11. `src/api/simulation_engine.cpp`
+- 외부 C++ wrapper API
+
+## 4. 단계별 완료 상태
+### 단계 A. pathfinder 완전 분리
+- 완료
+- `pathfinder_create/destroy/reset_goal/update_start/notify_cell_change/compute_shortest_path/get_next_step`
+- pathfinder core helper가 `src/planning/pathfinder.cpp`로 이동
+
+### 단계 B. collision / CBS 완전 분리
+- 완료
+- reservation table, WHCA, wait-for graph, deadlock fallback, CBS orchestration 이동
+- `agent_manager_plan_and_resolve_collisions*_core`가 collision 전용 파일로 분리
+
+### 단계 C. scenario / setup 분리
+- 완료
+- `simulation_setup`, custom/realtime 설정, phase/task 초기화 이동
+- manager create/destroy 및 task begin helper도 scenario 쪽으로 정리
+
+### 단계 D. step execution 분리
+- 완료
+- execute-one-step 보조, move apply, deadlock counter, finalize helper, runtime sampling 이동
+
+### 단계 E. agent runtime 분리
+- 완료
+- `AgentManager::updateStateAfterMove`
+- `AgentManager::updateChargeState`
+- goal selection / charge selection / workload snapshot / set-goal helper 이동
+
+### 단계 F. engine 마감 정리
+- 완료
+- 미사용 static helper 제거
+- 얇은 wrapper 정리
+- console 준비 helper 이동
+- `engine` 줄 수 `1200 이하` 달성
+
+## 5. 현재 줄 수
+- `src/core/engine_orchestrator.cpp`: `1017`
+- `src/reporting/run_reporting.cpp`: `291`
+- `src/maps/map_catalog.cpp`: `635`
+- `src/platform/console_terminal.cpp`: `72`
+- `src/ui/simulation_display.cpp`: `480`
+- `src/planning/pathfinder.cpp`: `320`
+- `src/planning/collision_planner.cpp`: `1388`
+- `src/runtime/scenario_runtime.cpp`: `501`
+- `src/runtime/step_runtime.cpp`: `351`
+- `src/runtime/agent_runtime.cpp`: `434`
+- `src/api/simulation_engine.cpp`: `276`
+
+## 6. 검증 상태
+- 수동 재빌드 통과
   - `tmp_build/agv_console_refactor_check.exe`
-- headless 스모크 결과:
-  - `tmp_build/smoke/run_summary.json`
-  - `tmp_build/smoke/step_metrics.csv`
-  - `tmp_build/smoke_cycle1` ~ `tmp_build/smoke_cycle12`
-- 최신 확인:
-  - `tmp_build/smoke_cycle11/run_summary.json`
-  - `tmp_build/smoke_cycle11/step_metrics.csv`
-  - `tmp_build/smoke_cycle12/run_summary.json`
-  - `tmp_build/smoke_cycle12/step_metrics.csv`
-- 최신 스모크 기준 요약:
+- headless smoke 비교 통과
+  - `tmp_build/smoke_cycle42/run_summary.json`
+- 유지 확인 지표
   - `recorded_steps = 22`
   - `tasks_completed_total = 1`
   - `deadlock_count = 11`
+  - `total_movement_cost = 8.0`
+  - `algo_nodes_expanded_total = 14`
+  - `algo_heap_moves_total = 35`
+  - `algo_generated_nodes_total = 33`
+  - `algo_valid_expansions_total = 14`
 
-## 최종 판단
-- 계획서에 정의했던 분리 순서는 모두 완료했다.
-- report / map / console / display는 실제 별도 파일 분리까지 끝났다.
-- planner / step execution은 고위험 영역이므로 helper 추출 수준에서 안전하게 경계를 고정했다.
-- 마지막 고위험 단계도 CBS 내부 중복 helper 추출까지 적용해, “작은 단위로 마지막 영역에 착수한다”는 계획 목표를 충족했다.
+## 7. 최종 판단
+- 구조 목표는 달성했다
+- 파일 수 목표도 달성했다
+- `engine`은 이제 orchestration 파일로 읽힌다
+- 권장 줄 수 목표도 달성했다
+- 추가 작업은 필수 분해가 아니라 선택적 후속 정리로 보는 것이 맞다
 
-## 남은 권장사항
-- `agent_manager_plan_and_resolve_collisions()`는 여전히 가장 큰 복잡도 hotspot이므로, 이후 작업이 필요하면 vertex conflict 처리와 deadlock fallback 블록을 각각 helper로 한 번 더 나누는 것이 좋다.
-- `pathfinder` / `CBS` / `reservation table`은 이번 계획 범위에서는 동작 보존 우선 때문에 별도 파일 분리까지는 진행하지 않았다.
-- 남은 작업은 “필수 계획 항목”이 아니라 “다음 단계 후보”로 보는 것이 맞다.
+## 8. 선택적 후속 후보
+- `src/planning/collision_planner.cpp` 추가 내부 분해
+- `src/planning/pathfinder.cpp` 내부 helper 재배치
+- `engine`의 공백 / 주석 스타일 추가 정돈
+- `900~1100줄` 목표를 노리는 추가 감축 여부 재평가

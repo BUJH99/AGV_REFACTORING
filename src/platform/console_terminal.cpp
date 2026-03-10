@@ -56,6 +56,11 @@ void ensure_console_width(int minCols) {
     }
 }
 
+void agv_prepare_console(void) {
+    system_enable_virtual_terminal();
+    ensure_console_width(180);
+}
+
 void ui_enter_alt_screen(void) {
     fputs("\x1b[?1049h\x1b[H\x1b[?25l", stdout);
     fflush(stdout);

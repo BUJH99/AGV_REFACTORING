@@ -1,6 +1,6 @@
 #define _CRT_SECURE_NO_WARNINGS
 
-#include "agv_legacy_engine_internal.hpp"
+#include "agv/internal/engine_internal.hpp"
 
 static int simulation_recorded_steps(const Simulation* sim, const ScenarioManager* sc) {
     int recorded_steps = (sim && sim->total_executed_steps > 0) ? sim->total_executed_steps : (sc ? sc->time_step : 0);
