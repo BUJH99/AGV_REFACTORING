@@ -10,7 +10,11 @@ include(CTest)
 
 add_library(agv_core
     include/agv/legacy_engine_model.hpp
+    src/agv_legacy_console.cpp
+    src/agv_legacy_display.cpp
     src/agv_legacy_engine.cpp
+    src/agv_legacy_maps.cpp
+    src/agv_legacy_reports.cpp
     src/simulation_engine.cpp
 )
 

@@ -421,9 +421,8 @@ static void simulation_reset_runtime_stats(Simulation* sim);
 static int simulation_open_step_metrics_file(Simulation* sim, const char* path);
 static void simulation_close_step_metrics_file(Simulation* sim);
 static void simulation_append_step_metrics(Simulation* sim, int step_label);
-static void ui_append_controls_help(char** p, size_t* rem);
-static void ui_flush_display_buffer(void);
-static void ui_handle_control_key(Simulation* sim, int ch, int* is_paused, int* quit_flag);
+void ui_handle_control_key(Simulation* sim, int ch, int* is_paused, int* quit_flag);
+void simulation_display_status(Simulation* sim, int is_paused);
 static void simulation_plan_step(Simulation* sim, Node* next_pos[MAX_AGENTS]);
 static int apply_moves_and_update_stuck(Simulation* sim, Node* next_pos[MAX_AGENTS], Node* prev_pos[MAX_AGENTS]);
 static void update_deadlock_counter(Simulation* sim, int moved_this_step, int is_custom_mode);
@@ -449,21 +448,12 @@ void agent_begin_task_exit(Agent* ag, ScenarioManager* sc, Logger* lg);
 
 void system_enable_virtual_terminal();
 void ui_clear_screen_optimized();
+void ui_enter_alt_screen(void);
+void ui_leave_alt_screen(void);
 
 int simulation_setup(Simulation* sim);
 static int simulation_setup_map(Simulation* sim);
 void grid_map_load_scenario(GridMap* map, AgentManager* am, int scenario_id);
-static void map_build_hypermart(GridMap* m, AgentManager* am);
-static void map_build_10agents_200slots(GridMap* m, AgentManager* am);
-static void map_build_biggrid_onegoal(GridMap* m, AgentManager* am);
-static void map_build_cross_4agents(GridMap* m, AgentManager* am);
-static void grid_map_clear(GridMap* map);
-static void map_all_free(GridMap* m);
-static void map_add_border_walls(GridMap* m);
-static void map_place_goal(GridMap* m, int x, int y);
-static void map_place_charge(GridMap* m, int x, int y);
-static void map_place_agent_at(AgentManager* am, GridMap* m, int idx, int x, int y);
-static void map_reserve_area_as_start(GridMap* m, int x0, int y0, int w, int h);
 
 void logger_log(Logger* logger, const char* format, ...);
 Logger* logger_create();
@@ -724,67 +714,6 @@ static inline void temp_context_cleanup(TempMarkContext* ctx) {
     else temp_unmark_all(&ctx->marks);
 }
 
-void system_enable_virtual_terminal() {
-    // [Triple Defense for UTF-8 Korean Support]
-    // 1. Set Windows API Output/Input Code Page to UTF-8
-    SetConsoleOutputCP(65001);
-    SetConsoleCP(65001);
-    // 2. Set C Library locale to UTF-8
-    setlocale(LC_ALL, ".UTF8");
-    // 3. Fallback: Shell command to ensure terminal is 65001
-    (void)system("chcp 65001 > nul");
-
-    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (hOut == INVALID_HANDLE_VALUE) return;
-    DWORD dwMode = 0;
-    if (!GetConsoleMode(hOut, &dwMode)) return;
-    dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
-    SetConsoleMode(hOut, dwMode);
-}
-
-
-void ui_clear_screen_optimized() {
-    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (hConsole == INVALID_HANDLE_VALUE) return;
-
-    DWORD mode = 0;
-    if (GetConsoleMode(hConsole, &mode) && (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
-
-        fputs("\x1b[H\x1b[2J\x1b[3J", stdout);
-        fflush(stdout);
-        return;
-    }
-
-
-    CONSOLE_SCREEN_BUFFER_INFO csbi;
-    if (!GetConsoleScreenBufferInfo(hConsole, &csbi)) return;
-
-    DWORD cellCount = (DWORD)csbi.dwSize.X * (DWORD)csbi.dwSize.Y;
-    DWORD count;
-    COORD home = { 0, 0 };
-
-    FillConsoleOutputCharacterA(hConsole, ' ', cellCount, home, &count);
-    FillConsoleOutputAttribute(hConsole, csbi.wAttributes, cellCount, home, &count);
-    SetConsoleCursorPosition(hConsole, home);
-}
-
-
-void ensure_console_width(int minCols) {
-    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (h == INVALID_HANDLE_VALUE) return;
-
-    CONSOLE_SCREEN_BUFFER_INFO csbi;
-    if (!GetConsoleScreenBufferInfo(h, &csbi)) return;
-
-    COORD size = csbi.dwSize;
-    if (size.X < minCols) {
-        size.X = (SHORT)minCols;
-
-        SetConsoleScreenBufferSize(h, size);
-    }
-}
-
-
 void Simulation_::collectMemorySample() {
 #ifdef _WIN32
     PROCESS_MEMORY_COUNTERS pmc;
@@ -992,88 +921,84 @@ static float get_float_input(const char* prompt, float min, float max) {
     }
 }
 
-// ---- UI / Render ----
-void ui_enter_alt_screen(void) {
+struct PlannerStepCounters final {
+    unsigned long long nodes_expanded{0};
+    unsigned long long heap_moves{0};
+    unsigned long long generated_nodes{0};
+    unsigned long long valid_expansions{0};
+};
 
-    fputs("\x1b[?1049h\x1b[H\x1b[?25l", stdout);
-    fflush(stdout);
-}
-void ui_leave_alt_screen(void) {
+static void reset_planner_step_metrics(Simulation* sim) {
+    sim->algo_nodes_expanded_last_step = 0;
+    sim->algo_heap_moves_last_step = 0;
+    sim->algo_generated_nodes_last_step = 0;
+    sim->algo_valid_expansions_last_step = 0;
+    planner_metrics_state().resetStepCounters();
 
-    fputs("\x1b[?1049l\x1b[?25h", stdout);
-    fflush(stdout);
-}
+    AgentManager* agent_manager = sim->agent_manager;
+    if (!agent_manager) return;
 
-static void ui_append_controls_help(char** p, size_t* rem) {
-    APPEND_FMT(*p, *rem, "%s--- Controls ---%s\n", C_B_WHT, C_NRM);
-    APPEND_FMT(*p, *rem, "[%sP%s]ause/Resume | [%sS%s]tep | [%s+%s]/[%s-%s] Speed | ",
-        C_YEL, C_NRM, C_YEL, C_NRM, C_YEL, C_NRM, C_YEL, C_NRM);
-    APPEND_FMT(*p, *rem, "[%s[%s]/[%s]%s Render stride | ", C_YEL, C_NRM, C_YEL, C_NRM);
-    APPEND_FMT(*p, *rem, "[%sF%s]ast render | [%sC%s]olor simple | [%sQ%s]uit\n",
-        C_YEL, C_NRM, C_YEL, C_NRM, C_YEL, C_NRM);
-}
-
-static void ui_flush_display_buffer(void) {
-    const char* display_buffer = display_buffer_state().data();
-    size_t cur_len = strlen(display_buffer);
-    if (!renderer_state().fast_render) ui_clear_screen_optimized(); else fputs("\x1b[H", stdout);
-    fwrite(display_buffer, 1, cur_len, stdout);
-    fflush(stdout);
+    for (int i = 0; i < MAX_AGENTS; i++) {
+        Agent* ag = &agent_manager->agents[i];
+        if (!ag->pf) continue;
+        ag->pf->nodes_expanded_this_call = 0;
+        ag->pf->heap_moves_this_call = 0;
+        ag->pf->nodes_generated_this_call = 0;
+        ag->pf->valid_expansions_this_call = 0;
+    }
 }
 
-
-static void ui_handle_control_key(Simulation* sim, int ch, int* is_paused, int* quit_flag) {
-    switch (tolower(ch)) {
-    case 'p':
-        *is_paused = !*is_paused;
-        logger_log(sim->logger, *is_paused ? "[CTRL] Simulation Paused." : "[CTRL] Simulation Resumed.");
-        break;
-    case 's':
-        if (*is_paused) {
-            logger_log(sim->logger, "[CTRL] Advancing one step.");
-        }
-        break;
-    case '+':
-    case '=':
-        sim->scenario_manager->speed_multiplier += 0.5f;
-        if (sim->scenario_manager->speed_multiplier > MAX_SPEED_MULTIPLIER)
-            sim->scenario_manager->speed_multiplier = MAX_SPEED_MULTIPLIER;
-        logger_log(sim->logger, "[CTRL] Speed increased to %.1fx", sim->scenario_manager->speed_multiplier);
-        break;
-    case '-':
-        sim->scenario_manager->speed_multiplier -= 0.5f;
-        if (sim->scenario_manager->speed_multiplier < 0.1f)
-            sim->scenario_manager->speed_multiplier = 0.1f;
-        logger_log(sim->logger, "[CTRL] Speed decreased to %.1fx", sim->scenario_manager->speed_multiplier);
-        break;
-    case 'q':
-        *quit_flag = TRUE;
-        logger_log(sim->logger, "[CTRL] Quit simulation.");
-        break;
-    case ']':
-        if (renderer_state().render_stride < RENDER_STRIDE_MAX) renderer_state().render_stride <<= 1;
-        if (renderer_state().render_stride < RENDER_STRIDE_MIN) renderer_state().render_stride = RENDER_STRIDE_MIN;
-        logger_log(sim->logger, "[CTRL] Render stride = %d", renderer_state().render_stride);
-        break;
-    case '[':
-        if (renderer_state().render_stride > RENDER_STRIDE_MIN) renderer_state().render_stride >>= 1;
-        logger_log(sim->logger, "[CTRL] Render stride = %d", renderer_state().render_stride);
-        break;
-    case 'f':
-        renderer_state().fast_render = !renderer_state().fast_render;
-        logger_log(sim->logger, renderer_state().fast_render ? "[CTRL] Fast render ON" : "[CTRL] Fast render OFF");
-        break;
-    case 'c':
-        renderer_state().simple_colors = !renderer_state().simple_colors;
-        logger_log(sim->logger, renderer_state().simple_colors ? "[CTRL] Simple colors ON" : "[CTRL] Simple colors OFF");
-        break;
+static PlannerStepCounters collect_planner_step_counters(PathAlgo path_algo, const PlannerMetricsState& metrics) {
+    if (path_algo == PATHALGO_ASTAR_SIMPLE) {
+        return {
+            metrics.astar_nodes_expanded_this_step,
+            metrics.astar_heap_moves_this_step,
+            metrics.astar_generated_nodes_this_step,
+            metrics.astar_valid_expansions_this_step,
+        };
     }
 
-
-    if (ch == '+' || ch == '=' || ch == '-') {
-        sim->scenario_manager->simulation_speed = (int)(100.0f / sim->scenario_manager->speed_multiplier);
-        if (sim->scenario_manager->simulation_speed < 0) sim->scenario_manager->simulation_speed = 0;
+    if (path_algo == PATHALGO_DSTAR_BASIC) {
+        return {
+            metrics.dstar_nodes_expanded_this_step,
+            metrics.dstar_heap_moves_this_step,
+            metrics.dstar_generated_nodes_this_step,
+            metrics.dstar_valid_expansions_this_step,
+        };
     }
+
+    return {
+        metrics.whca_dstar_nodes_expanded_this_step + metrics.whca_nodes_expanded_this_step,
+        metrics.whca_dstar_heap_moves_this_step + metrics.whca_heap_moves_this_step,
+        metrics.whca_dstar_generated_nodes_this_step + metrics.whca_generated_nodes_this_step,
+        metrics.whca_dstar_valid_expansions_this_step + metrics.whca_valid_expansions_this_step,
+    };
+}
+
+static void record_planner_step_results(
+    Simulation* sim,
+    const PlannerStepCounters& step_counters,
+    const PlannerMetricsState& metrics,
+    clock_t plan_start_cpu,
+    clock_t plan_end_cpu) {
+    sim->algo_nodes_expanded_last_step = step_counters.nodes_expanded;
+    sim->algo_heap_moves_last_step = step_counters.heap_moves;
+    sim->algo_generated_nodes_last_step = step_counters.generated_nodes;
+    sim->algo_valid_expansions_last_step = step_counters.valid_expansions;
+    sim->algo_nodes_expanded_total += step_counters.nodes_expanded;
+    sim->algo_heap_moves_total += step_counters.heap_moves;
+    sim->algo_generated_nodes_total += step_counters.generated_nodes;
+    sim->algo_valid_expansions_total += step_counters.valid_expansions;
+
+    double planning_time_ms = ((double)(plan_end_cpu - plan_start_cpu) * 1000.0) / CLOCKS_PER_SEC;
+    sim->last_planning_time_ms = planning_time_ms;
+    sim->total_planning_time_ms += planning_time_ms;
+    if (planning_time_ms > sim->max_planning_time_ms) sim->max_planning_time_ms = planning_time_ms;
+    sim->algorithm_operation_count += (unsigned long long)((metrics.wf_edges_last > 0 ? metrics.wf_edges_last : 0) +
+        (metrics.scc_last > 0 ? metrics.scc_last : 0) +
+        (metrics.cbs_exp_last > 0 ? metrics.cbs_exp_last : 0));
+
+    metrics_notify_all();
 }
 
 
@@ -1083,75 +1008,15 @@ void Simulation_::planStep(Node* next_pos[MAX_AGENTS]) {
     clock_t plan_start_cpu = clock();
 
     // Reset per-step metrics
-    sim->algo_nodes_expanded_last_step = 0;
-    sim->algo_heap_moves_last_step = 0;
-    sim->algo_generated_nodes_last_step = 0;
-    sim->algo_valid_expansions_last_step = 0;
-    planner_metrics_state().resetStepCounters();
-
-
-    if (sim->agent_manager) {
-        for (int i = 0; i < MAX_AGENTS; i++) {
-            Agent* ag = &sim->agent_manager->agents[i];
-            if (ag->pf) {
-                ag->pf->nodes_expanded_this_call = 0;
-                ag->pf->heap_moves_this_call = 0;
-                ag->pf->nodes_generated_this_call = 0;
-                ag->pf->valid_expansions_this_call = 0;
-            }
-        }
-    }
+    reset_planner_step_metrics(sim);
 
     sim->planner.planStep(sim->agent_manager, sim->map, sim->logger, next_pos);
 
-
-    unsigned long long step_nodes = 0;
-    unsigned long long step_heap_moves = 0;
-    unsigned long long step_generated_nodes = 0;
-    unsigned long long step_valid_expansions = 0;
-
-    if (sim->path_algo == PATHALGO_ASTAR_SIMPLE) {
-        // 2(A*)
-        step_nodes = planner_metrics_state().astar_nodes_expanded_this_step;
-        step_heap_moves = planner_metrics_state().astar_heap_moves_this_step;
-        step_generated_nodes = planner_metrics_state().astar_generated_nodes_this_step;
-        step_valid_expansions = planner_metrics_state().astar_valid_expansions_this_step;
-    }
-    else if (sim->path_algo == PATHALGO_DSTAR_BASIC) {
-        // 3 (D* Lite)
-        step_nodes = planner_metrics_state().dstar_nodes_expanded_this_step;
-        step_heap_moves = planner_metrics_state().dstar_heap_moves_this_step;
-        step_generated_nodes = planner_metrics_state().dstar_generated_nodes_this_step;
-        step_valid_expansions = planner_metrics_state().dstar_valid_expansions_this_step;
-    }
-    else {
-        // 1(WHCA*)
-        // WHCA* D* Lite  + Partial CBS (WHCA*) 
-        step_nodes = planner_metrics_state().whca_dstar_nodes_expanded_this_step + planner_metrics_state().whca_nodes_expanded_this_step;
-        step_heap_moves = planner_metrics_state().whca_dstar_heap_moves_this_step + planner_metrics_state().whca_heap_moves_this_step;
-        step_generated_nodes = planner_metrics_state().whca_dstar_generated_nodes_this_step + planner_metrics_state().whca_generated_nodes_this_step;
-        step_valid_expansions = planner_metrics_state().whca_dstar_valid_expansions_this_step + planner_metrics_state().whca_valid_expansions_this_step;
-    }
-
-    sim->algo_nodes_expanded_last_step = step_nodes;
-    sim->algo_heap_moves_last_step = step_heap_moves;
-    sim->algo_generated_nodes_last_step = step_generated_nodes;
-    sim->algo_valid_expansions_last_step = step_valid_expansions;
-    sim->algo_nodes_expanded_total += step_nodes;
-    sim->algo_heap_moves_total += step_heap_moves;
-    sim->algo_generated_nodes_total += step_generated_nodes;
-    sim->algo_valid_expansions_total += step_valid_expansions;
+    const PlannerMetricsState& metrics = planner_metrics_state();
+    const PlannerStepCounters step_counters = collect_planner_step_counters(sim->path_algo, metrics);
 
     clock_t plan_end_cpu = clock();
-    double planning_time_ms = ((double)(plan_end_cpu - plan_start_cpu) * 1000.0) / CLOCKS_PER_SEC;
-    sim->last_planning_time_ms = planning_time_ms;
-    sim->total_planning_time_ms += planning_time_ms;
-    if (planning_time_ms > sim->max_planning_time_ms) sim->max_planning_time_ms = planning_time_ms;
-    sim->algorithm_operation_count += (unsigned long long)((planner_metrics_state().wf_edges_last > 0 ? planner_metrics_state().wf_edges_last : 0) +
-        (planner_metrics_state().scc_last > 0 ? planner_metrics_state().scc_last : 0) +
-        (planner_metrics_state().cbs_exp_last > 0 ? planner_metrics_state().cbs_exp_last : 0));
-
-    metrics_notify_all();
+    record_planner_step_results(sim, step_counters, metrics, plan_start_cpu, plan_end_cpu);
 }
 
 static void simulation_plan_step(Simulation* sim, Node* next_pos[MAX_AGENTS]) {
@@ -1217,208 +1082,6 @@ static void maybe_report_realtime_dashboard(Simulation* sim) {
     }
 }
 
-
-static int GridMap_renderToBuffer(char* buffer, size_t buffer_size,
-    const GridMap* map, const AgentManager* am)
-{
-    static char view[GRID_HEIGHT][GRID_WIDTH];
-    static const char* colors[GRID_HEIGHT][GRID_WIDTH];
-    char* p = buffer;
-    size_t rem = buffer_size;
-
-
-    for (int y = 0; y < GRID_HEIGHT; y++) {
-        for (int x = 0; x < GRID_WIDTH; x++) {
-            const Node* n = &map->grid[y][x];
-            if (n->is_obstacle) { view[y][x] = '+'; colors[y][x] = C_WHT; }
-            else { view[y][x] = '.'; colors[y][x] = C_GRY; }
-        }
-    }
-
-
-    {
-        int ncs = map->num_charge_stations;
-        for (int i = 0; i < ncs; i++) {
-            Node* cs = map->charge_stations[i];
-            view[cs->y][cs->x] = 'e';
-            if (!renderer_state().simple_colors) {
-                int charging = FALSE;
-                for (int j = 0; j < MAX_AGENTS; j++) {
-                    if (am->agents[j].state == CHARGING && am->agents[j].pos == cs) { charging = TRUE; break; }
-                }
-                colors[cs->y][cs->x] = charging ? C_B_RED : C_B_YEL;
-            }
-        }
-    }
-
-
-    {
-        int ng = map->num_goals;
-        for (int i = 0; i < ng; i++) {
-            Node* g = map->goals[i];
-            if (g->is_parked) { view[g->y][g->x] = 'P'; if (!renderer_state().simple_colors) colors[g->y][g->x] = C_RED; }
-            else if (g->is_goal) { view[g->y][g->x] = 'G'; if (!renderer_state().simple_colors) colors[g->y][g->x] = C_GRN; }
-        }
-    }
-
-
-    for (int i = 0; i < MAX_AGENTS; i++) {
-        if (am->agents[i].pos) {
-            Node* n = am->agents[i].pos;
-            view[n->y][n->x] = am->agents[i].symbol;
-            colors[n->y][n->x] = AGENT_COLORS[i % 10];
-        }
-    }
-
-
-    APPEND_FMT(p, rem, "%s\n--- D* Lite + WHCA* + WFG(SCC) + partial CBS ---%s\n", C_B_WHT, C_NRM);
-
-    if (renderer_state().simple_colors) {
-        for (int y = 0; y < GRID_HEIGHT; y++) {
-            for (int x = 0; x < GRID_WIDTH; x++) {
-                if (rem <= 1) break;
-                *p++ = view[y][x]; rem--;
-            }
-            if (rem <= 1) break;
-            *p++ = '\n'; rem--;
-        }
-    }
-    else {
-        for (int y = 0; y < GRID_HEIGHT; y++) {
-            for (int x = 0; x < GRID_WIDTH; x++) {
-                APPEND_FMT(p, rem, "%s%c%s", colors[y][x], view[y][x], C_NRM);
-            }
-            APPEND_FMT(p, rem, "\n");
-        }
-    }
-    APPEND_FMT(p, rem, "\n");
-
-    return (int)(p - buffer);
-}
-
-
-
-static void simulation_display_status(Simulation* sim, int is_paused) {
-    const ScenarioManager* sc = sim->scenario_manager;
-    const AgentManager* am = sim->agent_manager;
-    const GridMap* map = sim->map;
-    const Logger* lg = sim->logger;
-    const int display_steps = (sim->total_executed_steps > 0) ? sim->total_executed_steps : sc->time_step;
-    const double avg_cpu_ms = (display_steps > 0) ? (sim->total_cpu_time_ms / (double)display_steps) : 0.0;
-
-    char* p = sim->display_buffer.data();
-    size_t rem = sim->display_buffer.size();
-
-
-    APPEND_FMT(p, rem, "%s", C_B_WHT);
-    if (sc->mode == MODE_CUSTOM) {
-        if (sc->current_phase_index < sc->num_phases) {
-            const DynamicPhase* ph = &sc->phases[sc->current_phase_index];
-            APPEND_FMT(p, rem, "--- Custom Scenario: %d/%d [Speed: %.1fx] ---  (Map #%d)",
-                sc->current_phase_index + 1, sc->num_phases, sc->speed_multiplier, sim->map_id);
-            if (is_paused) APPEND_FMT(p, rem, " %s[ PAUSED ]%s", C_B_YEL, C_B_WHT);
-            APPEND_FMT(p, rem, "\n");
-
-            APPEND_FMT(p, rem, "Time: %d, Current Task: %s (%d/%d)\n",
-                sc->time_step, ph->type_name, sc->tasks_completed_in_phase, ph->task_count);
-        }
-        else {
-            APPEND_FMT(p, rem, "--- Custom Scenario: All phases complete ---  (Map #%d)\n", sim->map_id);
-        }
-    }
-    else if (sc->mode == MODE_REALTIME) {
-        APPEND_FMT(p, rem, "--- Real-Time Simulation [Speed: %.1fx] ---  (Map #%d)",
-            sc->speed_multiplier, sim->map_id);
-        if (is_paused) APPEND_FMT(p, rem, " %s[ PAUSED ]%s", C_B_YEL, C_B_WHT);
-        APPEND_FMT(p, rem, "\n");
-
-        int park = 0, exitc = 0;
-        for (const TaskNode& task : sc->task_queue) {
-            if (task.type == TASK_PARK) park++;
-            else if (task.type == TASK_EXIT) exitc++;
-        }
-        APPEND_FMT(p, rem, "Time: %d / %d | Pending Tasks: %d (%sPark: %d%s, %sExit: %d%s)\n",
-            sc->time_step, REALTIME_MODE_TIMELIMIT, sc->task_count,
-            C_B_GRN, park, C_NRM, C_B_YEL, exitc, C_NRM);
-    }
-    APPEND_FMT(p, rem, "Parked Cars: %d/%d\n%s", am->total_cars_parked, map->num_goals, C_NRM);
-    APPEND_FMT(p, rem, "CPU Time (ms) - Last: %.3f | Avg: %.3f | Total: %.2f\n",
-        sim->last_step_cpu_time_ms, avg_cpu_ms, sim->total_cpu_time_ms);
-
-
-    {
-        const char* algo = "Default (WHCA*+D*Lite+WFG+CBS)";
-        if (sim->path_algo == PATHALGO_ASTAR_SIMPLE) algo = "A* (Single-Agent)";
-        else if (sim->path_algo == PATHALGO_DSTAR_BASIC) algo = "D* Lite (Incremental)";
-        APPEND_FMT(p, rem, "%sPath Algo:%s %s\n", C_B_WHT, C_NRM, algo);
-    }
-
-    APPEND_FMT(p, rem, "%sWHCA horizon:%s %d  | wf_edges(last): %d  | SCC(last): %d  | CBS(last): %s (exp:%d)\n",
-        C_B_WHT, C_NRM, whca_horizon_state(), planner_metrics_state().wf_edges_last, planner_metrics_state().scc_last,
-        planner_metrics_state().cbs_ok_last ? "OK" : "FAIL", planner_metrics_state().cbs_exp_last);
-
-
-    {
-        int w = GridMap_renderToBuffer(p, rem, map, am);
-        if (w < 0) w = 0;
-        if ((size_t)w >= rem) { p += rem - 1; rem = 1; }
-        else { p += w; rem -= w; }
-    }
-
-
-    {
-        static const char* stS[] = {
-            "IDLE", "GOING_TO_PARK", "RETURN_HOME_EMPTY", "GOING_TO_COLLECT",
-            "RETURN_WITH_CAR", "GO_TO_CHARGE", "CHARGING", "RETURN_HOME_MAINT"
-        };
-        static const char* stC[] = { C_GRY,C_YEL,C_CYN,C_YEL,C_GRN,C_B_RED,C_RED,C_CYN };
-
-        for (int i = 0; i < MAX_AGENTS; i++) {
-            const Agent* ag = &am->agents[i];
-            const char* c = AGENT_COLORS[i % 10];
-
-            char sbuf[100];
-            if (ag->state == CHARGING)
-                snprintf(sbuf, sizeof(sbuf), "CHARGING... (%d)", ag->charge_timer);
-            else
-                snprintf(sbuf, sizeof(sbuf), "%s", stS[ag->state]);
-
-            APPEND_FMT(p, rem, "%sAgent %c%s: (%2d,%d) ",
-                c, ag->symbol, C_NRM,
-                ag->pos ? ag->pos->x : -1, ag->pos ? ag->pos->y : -1);
-
-            if (ag->goal)
-                APPEND_FMT(p, rem, "-> (%2d,%d) ", ag->goal->x, ag->goal->y);
-            else
-                APPEND_FMT(p, rem, "-> (none)          ");
-
-            APPEND_FMT(p, rem, "[Mileage: %6.1f/%d] [%s%-*s%s]  [stuck:%d]\n",
-                ag->total_distance_traveled, (int)DISTANCE_BEFORE_CHARGE,
-                stC[ag->state], STATUS_STRING_WIDTH, sbuf, C_NRM, ag->stuck_steps);
-        }
-        APPEND_FMT(p, rem, "\n");
-    }
-
-
-    APPEND_FMT(p, rem, "%s--- Simulation Log ---%s\n", C_B_WHT, C_NRM);
-    for (int i = 0; i < lg->log_count; i++) {
-        int idx = (lg->log_head + i) % LOG_BUFFER_LINES;
-        APPEND_FMT(p, rem, "%s%s%s\n", C_GRY, lg->logs[idx], C_NRM);
-        if (rem < 512) break;
-    }
-
-
-    ui_append_controls_help(&p, &rem);
-
-
-    static int s_frame_counter = 0;
-    s_frame_counter++;
-    if (!renderer_state().suppress_flush &&
-        (s_frame_counter % (renderer_state().render_stride > 0 ? renderer_state().render_stride : 1)) == 0) {
-        ui_flush_display_buffer();
-    }
-}
-
 // =============================================================================
 // 4.5) Renderer Facade Implementation (delegates to simulation_display_status)
 // =============================================================================
@@ -1458,681 +1121,13 @@ void logger_log(Logger* l, const char* fmt, ...) {
 
 // =============================================================================
 
-static void map_all_free(GridMap* m) {
-    grid_map_clear(m); // Initialize all cells to free space
-}
 
 
-static void map_add_border_walls(GridMap* m) {
-    for (int x = 0; x < GRID_WIDTH; ++x) {
-        m->grid[0][x].is_obstacle = TRUE;
-        m->grid[GRID_HEIGHT - 1][x].is_obstacle = TRUE;
-    }
-    for (int y = 0; y < GRID_HEIGHT; ++y) {
-        m->grid[y][0].is_obstacle = TRUE;
-        m->grid[y][GRID_WIDTH - 1].is_obstacle = TRUE;
-    }
-}
 
 
-static void map_place_goal(GridMap* m, int x, int y) {
-    if (!grid_is_valid_coord(x, y)) return;
-    Node* n = &m->grid[y][x];
-    if (!n->is_obstacle && !n->is_goal) {
-        n->is_goal = TRUE;
-        if (m->num_goals < MAX_GOALS) m->goals[m->num_goals++] = n;
-    }
-}
 
-static void map_place_charge(GridMap* m, int x, int y) {
-    if (!grid_is_valid_coord(x, y)) return;
-    Node* n = &m->grid[y][x];
-    if (!n->is_obstacle) {
-        if (m->num_charge_stations < MAX_CHARGE_STATIONS)
-            m->charge_stations[m->num_charge_stations++] = n;
-    }
-}
 
-static void map_place_agent_at(AgentManager* am, GridMap* m, int idx, int x, int y) {
-    if (idx < 0 || idx >= MAX_AGENTS) return;
-    Node* n = &m->grid[y][x];
-    am->agents[idx].pos = n;
-    am->agents[idx].home_base = n;
-    am->agents[idx].symbol = 'A' + idx; // A..J
-    am->agents[idx].heading = DIR_NONE;
-    am->agents[idx].rotation_wait = 0;
-}
 
-static void map_reserve_area_as_start(GridMap* m, int x0, int y0, int w, int h) {
-    for (int y = y0; y < y0 + h && y < GRID_HEIGHT; ++y)
-        for (int x = x0; x < x0 + w && x < GRID_WIDTH; ++x) {
-            Node* n = &m->grid[y][x];
-            n->is_obstacle = FALSE;
-            n->is_goal = FALSE;
-            n->is_temp = FALSE;
-        }
-}
-
-static void agent_manager_reset_for_new_map(AgentManager* am) {
-    if (!am) return;
-    for (int i = 0; i < MAX_AGENTS; i++) {
-        am->agents[i].pf.reset();
-        am->agents[i].id = i;
-        am->agents[i].symbol = 'A' + i;
-        am->agents[i].pos = NULL;
-        am->agents[i].home_base = NULL;
-        am->agents[i].goal = NULL;
-        am->agents[i].state = IDLE;
-        am->agents[i].total_distance_traveled = 0.0;
-        am->agents[i].charge_timer = 0;
-        am->agents[i].action_timer = 0;
-        am->agents[i].heading = DIR_NONE;
-        am->agents[i].rotation_wait = 0;
-        am->agents[i].stuck_steps = 0;
-        am->agents[i].metrics_task_active = 0;
-        am->agents[i].metrics_task_start_step = 0;
-        am->agents[i].metrics_distance_at_start = 0.0;
-        am->agents[i].metrics_turns_current = 0;
-    }
-    am->total_cars_parked = 0;
-}
-
-static void grid_map_clear(GridMap* map) {
-    memset(map, 0, sizeof(*map));
-    for (int y = 0; y < GRID_HEIGHT; ++y)
-        for (int x = 0; x < GRID_WIDTH; ++x) {
-            map->grid[y][x].x = x;
-            map->grid[y][x].y = y;
-            map->grid[y][x].is_obstacle = FALSE;
-            map->grid[y][x].is_goal = FALSE;
-            map->grid[y][x].is_temp = FALSE;
-            map->grid[y][x].is_parked = FALSE;
-            map->grid[y][x].reserved_by_agent = -1;
-        }
-    map->num_goals = 0;
-    map->num_charge_stations = 0;
-}
-
-static void grid_map_fill_from_string(GridMap* map, AgentManager* am, const char* m) {
-    grid_map_clear(map);
-
-    int x = 0, y = 0;
-    int last_was_cr = 0; 
-
-    for (const char* p = m; *p && y < GRID_HEIGHT; ++p) {
-        char ch = *p;
-
-        
-        if (ch == '\r') {
-            x = 0; y++; last_was_cr = 1;
-            continue;
-        }
-        if (ch == '\n') {
-            if (!last_was_cr) { x = 0; y++; }
-            last_was_cr = 0;
-            continue;
-        }
-        last_was_cr = 0;
-
-        
-        if (x >= GRID_WIDTH) continue;
-        if (y >= GRID_HEIGHT) break;
-
-        Node* n = &map->grid[y][x];
-
-        
-        n->is_obstacle = FALSE;
-        n->is_goal = FALSE;
-        n->is_temp = FALSE;
-        n->is_parked = FALSE;
-        n->reserved_by_agent = -1;
-
-        switch (ch) {
-        case '1':  
-            n->is_obstacle = TRUE;
-            break;
-
-        case 'A':  
-            am->agents[0].pos = n;
-            am->agents[0].home_base = n;
-            break;
-
-        case 'B':  
-            am->agents[1].pos = n;
-            am->agents[1].home_base = n;
-            break;
-
-        case 'C':  
-            am->agents[2].pos = n;
-            am->agents[2].home_base = n;
-            break;
-
-        case 'D':  
-            am->agents[3].pos = n;
-            am->agents[3].home_base = n;
-            break;
-
-        case 'G':  
-            n->is_goal = TRUE;
-            if (map->num_goals < MAX_GOALS) map->goals[map->num_goals++] = n;
-            break;
-
-        case 'e':  
-            if (map->num_charge_stations < MAX_CHARGE_STATIONS)
-                map->charge_stations[map->num_charge_stations++] = n;
-            break;
-
-        case '0':  
-        default:
-            
-            break;
-        }
-
-        x++;
-    }
-
-    
-}
-
-
-void grid_map_load_scenario(GridMap* map, AgentManager* am, int scenario_id) {
-    agent_manager_reset_for_new_map(am);
-    grid_map_clear(map);
-
-    switch (scenario_id) {
-    case 1: {
-        static const char* MAP1 =
-            "1111111111111111111111111111111111111\n"
-            "001GGG1GG1GGG1GGG1GGG1GGG1GGG1G11G111\n"
-            "A000000000000000000000000000000000001\n"
-            "B000000000000000000000000000000000001\n"
-            "C001GG1GG1GGG10001GGG1GGG1GGG1100e111\n"
-            "111111111111110001GGG1GGG1GGG11001111\n"
-            "100000000000000000000000000000000e111\n"
-            "100000000000000000000000000000000e111\n"
-            "11111111111111GGG1GGG1GGG1GGG1GG11111\n"
-            "1111111111111111111111111111111111111\n"
-            "1111111111111111111111111111111111111\n"
-            "1111111111111111111111111111111111111\n";
-        grid_map_fill_from_string(map, am, MAP1);
-        break;
-    }
-    case 2: map_build_hypermart(map, am);              break;
-    case 3: map_build_10agents_200slots(map, am);      break;
-    case 4: map_build_biggrid_onegoal(map, am);        break;
-    case 5: map_build_cross_4agents(map, am);          break;
-    default:
-        map_build_hypermart(map, am); // fallback
-        break;
-    }
-}
-
-static void map_build_hypermart(GridMap* m, AgentManager* am) {
-    int x, y;
-
-
-    map_all_free(m);
-    map_add_border_walls(m);
-
-
-    for (y = 1; y < GRID_HEIGHT - 1; ++y)
-        for (x = 1; x < GRID_WIDTH - 1; ++x) {
-            m->grid[y][x].is_obstacle = TRUE;
-            m->grid[y][x].is_goal = FALSE;
-        }
-
-
-    map_reserve_area_as_start(m, 2, 2, 8, 5);
-    map_place_agent_at(am, m, 0, 2, 2);
-    map_place_agent_at(am, m, 1, 3, 2);
-    map_place_agent_at(am, m, 2, 4, 2);
-    map_place_agent_at(am, m, 3, 5, 2);
-
-
-    for (x = 1; x < GRID_WIDTH - 1; ++x) m->grid[6][x].is_obstacle = FALSE;
-
-
-    const int vCols[] = { 12, 22, 32, 42, 52, 62, 72 };
-    const int nV = (int)(sizeof(vCols) / sizeof(vCols[0]));
-    for (int i = 0; i < nV; ++i) {
-        int cx = vCols[i];
-        for (y = 1; y < GRID_HEIGHT - 1; ++y) m->grid[y][cx].is_obstacle = FALSE;
-    }
-
-
-    for (x = 1; x < GRID_WIDTH - 1; ++x) {
-        m->grid[10][x].is_obstacle = FALSE;
-        m->grid[30][x].is_obstacle = FALSE;
-    }
-    for (y = 19; y <= 21; ++y)
-        for (x = 1; x < GRID_WIDTH - 1; ++x)
-            m->grid[y][x].is_obstacle = TRUE;
-
-
-    for (int i = 0; i < nV; ++i) {
-        int cx = vCols[i];
-        for (y = 19; y <= 21; ++y) m->grid[y][cx].is_obstacle = FALSE;
-    }
-
-    m->grid[20][34].is_obstacle = FALSE;
-    m->grid[20][50].is_obstacle = FALSE;
-
-
-    for (y = 1; y < GRID_HEIGHT - 1; ++y) m->grid[y][4].is_obstacle = FALSE;
-    for (x = 4; x <= 10; ++x) m->grid[6][x].is_obstacle = FALSE;
-
-
-    const int pocketY[] = { 14, 16, 26, 28, 34 };
-    const int nP = (int)(sizeof(pocketY) / sizeof(pocketY[0]));
-    for (int i = 0; i < nV; ++i) {
-        int cx = vCols[i];
-        for (int k = 0; k < nP; ++k) {
-            int py = pocketY[k];
-            if (py >= 19 && py <= 21) continue;
-            if (py == 10 || py == 30) continue;
-            if (grid_is_valid_coord(cx - 1, py)) m->grid[py][cx - 1].is_obstacle = FALSE;
-            if (grid_is_valid_coord(cx + 1, py)) m->grid[py][cx + 1].is_obstacle = FALSE;
-        }
-    }
-
-
-    map_place_charge(m, 12, 8);
-    map_place_charge(m, 42, 8);
-    map_place_charge(m, 42, 32);
-    map_place_charge(m, 72, 8);
-
-
-    int markRow[GRID_HEIGHT] = { 0 };
-    markRow[6] = 1;
-    markRow[10] = 1;
-    markRow[19] = 1; markRow[20] = 1; markRow[21] = 1;
-    markRow[30] = 1;
-
-
-    const int y_min = 8, y_max = GRID_HEIGHT - 4;
-    for (int i = 0; i < nV; ++i) {
-        int roadX = vCols[i];
-        int leftCol = roadX - 1;
-        int rightCol = roadX + 1;
-        for (y = y_min; y <= y_max; ++y) {
-            if (markRow[y]) continue;
-            if (grid_is_valid_coord(leftCol, y)) { m->grid[y][leftCol].is_obstacle = FALSE; map_place_goal(m, leftCol, y); }
-            if (grid_is_valid_coord(rightCol, y)) { m->grid[y][rightCol].is_obstacle = FALSE; map_place_goal(m, rightCol, y); }
-        }
-    }
-
-
-    const int side_right_col = GRID_WIDTH - 4;
-    const int side_right_road = GRID_WIDTH - 5;
-
-    for (y = 1; y < GRID_HEIGHT - 1; ++y) m->grid[y][side_right_road].is_obstacle = FALSE;
-    for (y = 19; y <= 21; ++y)            m->grid[y][side_right_road].is_obstacle = FALSE;
-
-    for (y = y_min; y <= y_max; ++y) {
-        if (markRow[y]) continue;
-        if (grid_is_valid_coord(side_right_col, y)) {
-            m->grid[y][side_right_col].is_obstacle = FALSE;
-            map_place_goal(m, side_right_col, y);
-        }
-    }
-
-
-    for (y = 2; y <= 8; ++y)
-        for (x = 2; x <= 8; ++x)
-            m->grid[y][x].is_goal = FALSE;
-    for (y = 1; y < GRID_HEIGHT - 1; ++y) m->grid[y][4].is_goal = FALSE;
-
-
-    m->num_goals = 0;
-    for (y = 1; y < GRID_HEIGHT - 1; ++y) {
-        for (x = 1; x < GRID_WIDTH - 1; ++x) {
-            Node* n = &m->grid[y][x];
-            if (!n->is_goal) continue;
-            int ok = 0;
-            const int dx[4] = { 1,-1,0,0 }, dy[4] = { 0,0,1,-1 };
-            for (int k = 0; k < 4; k++) {
-                int nx = x + dx[k], ny = y + dy[k];
-                if (!grid_is_valid_coord(nx, ny)) continue;
-                if (!m->grid[ny][nx].is_obstacle) { ok = 1; break; }
-            }
-            if (!ok) n->is_goal = FALSE;
-            if (n->is_goal && m->num_goals < MAX_GOALS) m->goals[m->num_goals++] = n;
-        }
-    }
-}
-
-// #3: 8 agents + 900 parking slots
-
-
-
-
-static void map_build_10agents_200slots(GridMap* m, AgentManager* am) {
-    int x, y;
-
-    
-    map_all_free(m);
-    map_add_border_walls(m);
-
-    
-    for (y = 1; y < GRID_HEIGHT - 1; ++y)
-        for (x = 1; x < GRID_WIDTH - 1; ++x) {
-            m->grid[y][x].is_obstacle = TRUE;
-            m->grid[y][x].is_goal = FALSE;
-        }
-
-    
-    const int sx0 = 2, sy0 = 2;
-    const int sW = 16, sH = 6;
-    map_reserve_area_as_start(m, sx0, sy0, sW, sH);
-
-    
-    const int staged_agents = (MAX_AGENTS < 16) ? MAX_AGENTS : 16;
-    const int slots_per_row = 8;
-    for (int i = 0; i < staged_agents; ++i) {
-        int row = i / slots_per_row;
-        int col = i % slots_per_row;
-        map_place_agent_at(am, m, i, sx0 + col * 2, sy0 + row * 2);
-    }
-
-    
-    const int lane_w = 1;
-    const int y_min = 8;
-    const int y_max = GRID_HEIGHT - 5;
-
-
-    const int ax_start = 16;
-    const int ax_end = GRID_WIDTH - 6;
-    const int ax_step = 4;
-
-
-    const int cross_start = 10;
-    const int cross_end = GRID_HEIGHT - 6;
-    const int cross_step = 6;
-
-    
-    for (y = 1; y < GRID_HEIGHT - 1; ++y) {
-        if (grid_is_valid_coord(2, y)) m->grid[y][2].is_obstacle = FALSE;
-        if (grid_is_valid_coord(3, y)) m->grid[y][3].is_obstacle = FALSE;
-    }
-
-    
-    for (x = 1; x < GRID_WIDTH - 1; ++x) {
-        if (grid_is_valid_coord(x, 6)) m->grid[6][x].is_obstacle = FALSE;
-        if (grid_is_valid_coord(x, 7)) m->grid[7][x].is_obstacle = FALSE;
-    }
-
-    
-    for (x = ax_start; x <= ax_end; x += ax_step)
-        for (y = 1; y < GRID_HEIGHT - 1; ++y)
-            m->grid[y][x].is_obstacle = FALSE;
-
-    
-    for (y = cross_start; y <= cross_end; y += cross_step)
-        for (x = 1; x < GRID_WIDTH - 1; ++x)
-            m->grid[y][x].is_obstacle = FALSE;
-
-    
-
-    {
-        int cxL = sx0;
-        int cyT = sy0 + 1;
-        map_place_charge(m, cxL, cyT);
-        map_place_charge(m, cxL + 1, cyT);
-        map_place_charge(m, cxL, cyT + 2);
-        map_place_charge(m, cxL + 1, cyT + 2);
-    }
-
-    
-    int markRow[GRID_HEIGHT] = { 0 };
-    markRow[6] = 1; markRow[7] = 1;
-    for (y = cross_start; y <= cross_end; y += cross_step)
-        if (y >= 0 && y < GRID_HEIGHT) markRow[y] = 1;
-
-    int markCol[GRID_WIDTH] = { 0 };
-    markCol[2] = 1; markCol[3] = 1;
-    for (x = ax_start; x <= ax_end; x += ax_step)
-        if (x >= 0 && x < GRID_WIDTH) markCol[x] = 1;
-
-    
-    const int target = 900;
-    int placed = 0;
-    for (x = ax_start; x <= ax_end && placed < target; x += ax_step) {
-        int leftCol = x - 1;
-        int rightCol = x + lane_w; // x+1
-        for (y = y_min; y <= y_max && placed < target; ++y) {
-            if (markRow[y]) continue;
-
-            if (grid_is_valid_coord(leftCol, y) && placed < target) {
-                m->grid[y][leftCol].is_obstacle = FALSE;
-                map_place_goal(m, leftCol, y);
-                placed++;
-            }
-            if (grid_is_valid_coord(rightCol, y) && placed < target) {
-                m->grid[y][rightCol].is_obstacle = FALSE;
-                map_place_goal(m, rightCol, y);
-                placed++;
-            }
-        }
-    }
-
-    
-    if (placed < target) {
-        for (y = cross_start; y <= cross_end && placed < target; y += cross_step) {
-            int row = y;
-            for (x = 2; x < GRID_WIDTH - 2 && placed < target; ++x) {
-                if (markCol[x]) continue;
-                if (m->grid[row][x].is_obstacle != FALSE) continue;
-
-                if (grid_is_valid_coord(x, row - 1) &&
-                    !m->grid[row - 1][x].is_goal && placed < target) {
-                    m->grid[row - 1][x].is_obstacle = FALSE;
-                    map_place_goal(m, x, row - 1);
-                    placed++;
-                }
-                if (grid_is_valid_coord(x, row + 1) &&
-                    !m->grid[row + 1][x].is_goal && placed < target) {
-                    m->grid[row + 1][x].is_obstacle = FALSE;
-                    map_place_goal(m, x, row + 1);
-                    placed++;
-                }
-            }
-        }
-    }
-
-    
-    for (y = 1; y < GRID_HEIGHT - 1; ++y) {
-        m->grid[y][2].is_goal = FALSE;
-        m->grid[y][3].is_goal = FALSE;
-    }
-}
-
-
-
-
-
-
-
-static void carve_block_1lane(GridMap* m,
-    int cx, int cy, int Wg, int Hg,
-    int vstep, int hstep, int vx0, int hy0,
-    int CX, int CY)
-{
-    int x, y;
-
-
-    int gx0 = cx - (Wg / 2 - 1);
-    int gx1 = gx0 + Wg - 1;
-    int gy0 = cy - (Hg / 2);
-    int gy1 = gy0 + Hg - 1;
-
-    for (y = gy0; y <= gy1; ++y)
-        for (x = gx0; x <= gx1; ++x) {
-            if (!grid_is_valid_coord(x, y)) continue;
-            m->grid[y][x].is_obstacle = FALSE;
-            map_place_goal(m, x, y);
-        }
-
-
-    int rxL = gx0 - 1, rxR = gx1 + 1;
-    int ryT = gy0 - 1, ryB = gy1 + 1;
-
-    for (x = gx0 - 1; x <= gx1 + 1; ++x) {
-        if (grid_is_valid_coord(x, ryT)) m->grid[ryT][x].is_obstacle = FALSE;
-        if (grid_is_valid_coord(x, ryB)) m->grid[ryB][x].is_obstacle = FALSE;
-    }
-    for (y = gy0 - 1; y <= gy1 + 1; ++y) {
-        if (grid_is_valid_coord(rxL, y)) m->grid[y][rxL].is_obstacle = FALSE;
-        if (grid_is_valid_coord(rxR, y)) m->grid[y][rxR].is_obstacle = FALSE;
-    }
-
-
-
-    int kx = (cx - vx0 + vstep / 2) / vstep;
-    int vx = vx0 + kx * vstep;
-    if (vx < 1) vx = 1;
-    if (vx > GRID_WIDTH - 2) vx = GRID_WIDTH - 2;
-
-    int ky = (cy - hy0 + hstep / 2) / hstep;
-    int hy = hy0 + ky * hstep;
-    if (hy < 1) hy = 1;
-    if (hy > GRID_HEIGHT - 2) hy = GRID_HEIGHT - 2;
-
-
-    {
-        int linkY = (abs(ryT - CY) <= abs(ryB - CY)) ? ryT : ryB;
-        if (vx <= rxL) { for (x = vx; x <= rxL; ++x) m->grid[linkY][x].is_obstacle = FALSE; }
-        else if (vx >= rxR) { for (x = rxR; x <= vx; ++x) m->grid[linkY][x].is_obstacle = FALSE; }
-        else { m->grid[linkY][vx].is_obstacle = FALSE; }
-    }
-
-    {
-        int linkX = (abs(rxL - CX) <= abs(rxR - CX)) ? rxL : rxR;
-        if (hy <= ryT) { for (y = hy; y <= ryT; ++y) m->grid[y][linkX].is_obstacle = FALSE; }
-        else if (hy >= ryB) { for (y = ryB; y <= hy; ++y) m->grid[y][linkX].is_obstacle = FALSE; }
-        else { m->grid[hy][linkX].is_obstacle = FALSE; }
-    }
-}
-
-
-
-static void map_build_biggrid_onegoal(GridMap* m, AgentManager* am) {
-    map_all_free(m);
-    map_add_border_walls(m);
-
-    int x, y;
-
-
-    for (y = 1; y < GRID_HEIGHT - 1; ++y)
-        for (x = 1; x < GRID_WIDTH - 1; ++x) {
-            m->grid[y][x].is_obstacle = TRUE;
-            m->grid[y][x].is_goal = FALSE;
-        }
-
-
-    const int CX = GRID_WIDTH / 2;
-    const int CY = GRID_HEIGHT / 2;    // 21
-    const int sW = 10, sH = 4;
-    const int sx0 = CX - sW / 2;
-    const int sy0 = CY - sH / 2;
-    map_reserve_area_as_start(m, sx0, sy0, sW, sH);
-    for (int i = 0; i < 10; ++i) {
-        int row = i / 5, col = i % 5;
-        map_place_agent_at(am, m, i, sx0 + col * 2, sy0 + row * 2);
-    }
-
-
-    const int vstep = 5, hstep = 5;
-    const int vx0 = 6;
-    const int hy0 = 9;
-
-
-    for (x = vx0; x < GRID_WIDTH - 1; x += vstep)
-        for (y = 1; y < GRID_HEIGHT - 1; ++y)
-            m->grid[y][x].is_obstacle = FALSE;
-
-
-    for (y = hy0; y < GRID_HEIGHT - 1; y += hstep)
-        for (x = 1; x < GRID_WIDTH - 1; ++x)
-            m->grid[y][x].is_obstacle = FALSE;
-
-
-    for (x = 1; x < GRID_WIDTH - 1; ++x)
-        m->grid[6][x].is_obstacle = FALSE;
-
-
-    const int Wg = 6, Hg = 2;
-    const int bxL = 8;
-    const int bxR = GRID_WIDTH - 8;
-    const int byT = 8;
-    const int byB = GRID_HEIGHT - 8;
-
-
-    carve_block_1lane(m, bxL, byT, Wg, Hg, vstep, hstep, vx0, hy0, CX, CY);
-
-    carve_block_1lane(m, bxR, byT, Wg, Hg, vstep, hstep, vx0, hy0, CX, CY);
-
-    carve_block_1lane(m, bxL, byB, Wg, Hg, vstep, hstep, vx0, hy0, CX, CY);
-
-    carve_block_1lane(m, bxR, byB, Wg, Hg, vstep, hstep, vx0, hy0, CX, CY);
-
-
-    if (grid_is_valid_coord(CX, CY - 6)) map_place_charge(m, CX, CY - 6);
-    if (grid_is_valid_coord(CX, CY + 6)) map_place_charge(m, CX, CY + 6);
-    if (grid_is_valid_coord(CX - 6, CY)) map_place_charge(m, CX - 6, CY);
-    if (grid_is_valid_coord(CX + 6, CY)) map_place_charge(m, CX + 6, CY);
-
-
-    m->num_goals = 0;
-    for (y = 1; y < GRID_HEIGHT - 1; ++y)
-        for (x = 1; x < GRID_WIDTH - 1; ++x)
-            if (m->grid[y][x].is_goal && m->num_goals < MAX_GOALS)
-                m->goals[m->num_goals++] = &m->grid[y][x];
-}
-
-
-static void map_build_cross_4agents(GridMap* m, AgentManager* am) {
-    int x, y;
-
-
-    map_all_free(m);
-    map_add_border_walls(m);
-
-
-    for (y = 1; y < GRID_HEIGHT - 1; ++y)
-        for (x = 1; x < GRID_WIDTH - 1; ++x) {
-            m->grid[y][x].is_obstacle = TRUE;
-            m->grid[y][x].is_goal = FALSE;
-        }
-
-    const int CX = GRID_WIDTH / 2;
-    const int CY = GRID_HEIGHT / 2;
-
-    for (y = 1; y < GRID_HEIGHT - 1; ++y) m->grid[y][CX].is_obstacle = FALSE;
-    for (x = 1; x < GRID_WIDTH - 1; ++x) m->grid[CY][x].is_obstacle = FALSE;
-
-
-    map_place_agent_at(am, m, 0, 1, CY);
-    map_place_agent_at(am, m, 1, GRID_WIDTH - 2, CY);
-    map_place_agent_at(am, m, 2, CX, 1);
-    map_place_agent_at(am, m, 3, CX, GRID_HEIGHT - 2);
-
-
-    map_place_goal(m, 1 + 4, CY);
-    map_place_goal(m, GRID_WIDTH - 2 - 4, CY);
-    map_place_goal(m, CX, 1 + 4);
-    map_place_goal(m, CX, GRID_HEIGHT - 2 - 4);
-
-
-    map_place_charge(m, CX, CY);
-}
-GridMap* grid_map_create(AgentManager* am) {
-    GridMap* m = new GridMap();
-    grid_map_load_scenario(m, am, 1);
-    return m;
-}
-void grid_map_destroy(GridMap* m) { delete m; }
-
-int grid_is_valid_coord(int x, int y) { return (x >= 0 && x < GRID_WIDTH&& y >= 0 && y < GRID_HEIGHT); }
 
 int grid_is_node_blocked(const GridMap* map, const AgentManager* am, const Node* n, const struct Agent_* agent) {
     if (n->is_obstacle || n->is_parked || n->is_temp) return TRUE;
@@ -3185,6 +2180,45 @@ static CBSNode cbs_heap_pop(CBSNode* heap, int* hsize) {
     return ret;
 }
 
+static int cbs_plan_agent_with_metrics(
+    AgentManager* manager,
+    GridMap* map,
+    int agent_id,
+    int ext_occ[MAX_WHCA_HORIZON + 1][GRID_HEIGHT][GRID_WIDTH],
+    const CBSConstraint* constraints,
+    int constraint_count,
+    Node* out_plan[MAX_WHCA_HORIZON + 1]) {
+    Agent* agent = &manager->agents[agent_id];
+    unsigned long long nodes_expanded = 0;
+    unsigned long long heap_moves = 0;
+    unsigned long long generated_nodes = 0;
+    unsigned long long valid_expansions = 0;
+
+    if (!st_astar_plan_single(
+        agent_id,
+        map,
+        agent->pos,
+        agent->goal,
+        whca_horizon_state(),
+        ext_occ,
+        constraints,
+        constraint_count,
+        out_plan,
+        agent->heading,
+        &nodes_expanded,
+        &heap_moves,
+        &generated_nodes,
+        &valid_expansions)) {
+        return 0;
+    }
+
+    planner_metrics_state().whca_nodes_expanded_this_step += nodes_expanded;
+    planner_metrics_state().whca_heap_moves_this_step += heap_moves;
+    planner_metrics_state().whca_generated_nodes_this_step += generated_nodes;
+    planner_metrics_state().whca_valid_expansions_this_step += valid_expansions;
+    return 1;
+}
+
 // Partial CBS
 static int run_partial_CBS(AgentManager* m, GridMap* map, Logger* lg,
     int group_ids[], int group_n, const ReservationTable* base_rt,
@@ -3204,19 +2238,10 @@ static int run_partial_CBS(AgentManager* m, GridMap* map, Logger* lg,
     for (int i = 0; i < group_n; i++) {
         int id = group_ids[i];
         Node* plan[MAX_WHCA_HORIZON + 1];
-        unsigned long long nodes_exp = 0;
-        unsigned long long heap_moves = 0;
-        unsigned long long generated_nodes = 0;
-        unsigned long long valid_expansions = 0;
-        if (!st_astar_plan_single(id, map, m->agents[id].pos, m->agents[id].goal, whca_horizon_state(), ext_occ,
-            root.cons, root.ncons, plan, m->agents[id].heading, &nodes_exp, &heap_moves, &generated_nodes, &valid_expansions)) {
+        if (!cbs_plan_agent_with_metrics(m, map, id, ext_occ, root.cons, root.ncons, plan)) {
             planner_metrics_state().cbs_ok_last = 0; planner_metrics_state().cbs_exp_last = expansions; planner_metrics_state().cbs_fail_sum++;
             return 0;
         }
-        planner_metrics_state().whca_nodes_expanded_this_step += nodes_exp;
-        planner_metrics_state().whca_heap_moves_this_step += heap_moves;
-        planner_metrics_state().whca_generated_nodes_this_step += generated_nodes;
-        planner_metrics_state().whca_valid_expansions_this_step += valid_expansions;
         for (int t = 0; t <= whca_horizon_state(); t++) root.plans[id][t] = plan[t];
     }
     {
@@ -3264,18 +2289,9 @@ static int run_partial_CBS(AgentManager* m, GridMap* map, Logger* lg,
                 for (int i = 0; i < group_n; i++) {
                     int id = group_ids[i];
                     Node* plan[MAX_WHCA_HORIZON + 1];
-                    unsigned long long nodes_exp = 0;
-                    unsigned long long heap_moves = 0;
-                    unsigned long long generated_nodes = 0;
-                    unsigned long long valid_expansions = 0;
-                    if (!st_astar_plan_single(id, map, m->agents[id].pos, m->agents[id].goal, whca_horizon_state(), ext_occ,
-                        child.cons, child.ncons, plan, m->agents[id].heading, &nodes_exp, &heap_moves, &generated_nodes, &valid_expansions)) {
+                    if (!cbs_plan_agent_with_metrics(m, map, id, ext_occ, child.cons, child.ncons, plan)) {
                         ok = 0; break;
                     }
-                    planner_metrics_state().whca_nodes_expanded_this_step += nodes_exp;
-                    planner_metrics_state().whca_heap_moves_this_step += heap_moves;
-                    planner_metrics_state().whca_generated_nodes_this_step += generated_nodes;
-                    planner_metrics_state().whca_valid_expansions_this_step += valid_expansions;
                     for (int t = 0; t <= whca_horizon_state(); t++) child.plans[id][t] = plan[t];
                 }
                 if (!ok) continue;
@@ -4214,6 +3230,38 @@ struct StepExecutionFrame {
     clock_t step_start_cpu{ 0 };
 };
 
+static void record_step_phase_accounting(
+    Simulation* sim,
+    const StepExecutionFrame& frame,
+    double step_time_ms) {
+    if (!frame.is_custom_mode) return;
+
+    if (frame.phase_active) {
+        int idx = frame.phase_idx_for_step;
+        if (idx >= 0 && idx < MAX_PHASES) {
+            if (sim->phase_step_counts[idx] == 0) {
+                sim->phase_first_step[idx] = frame.step_label;
+            }
+            sim->phase_last_step[idx] = frame.step_label;
+            sim->phase_step_counts[idx]++;
+            sim->phase_cpu_time_ms[idx] += step_time_ms;
+        }
+        return;
+    }
+
+    if (!frame.cleanup_region) return;
+
+    if (sim->post_phase_step_count == 0) {
+        sim->post_phase_first_step = frame.step_label;
+    }
+    sim->post_phase_last_step = frame.step_label;
+    sim->post_phase_step_count++;
+    sim->post_phase_cpu_time_ms += step_time_ms;
+    if (sim->post_phase_step_count >= CLEANUP_FORCE_IDLE_AFTER_STEPS) {
+        force_idle_cleanup(sim->agent_manager, sim, sim->logger);
+    }
+}
+
 class StepExecutorService final {
 public:
     void execute(Simulation* sim, int is_paused) const {
@@ -4320,30 +3368,7 @@ private:
             sim->max_step_cpu_time_ms = step_time_ms;
         }
 
-        if (frame.is_custom_mode) {
-            if (frame.phase_active) {
-                int idx = frame.phase_idx_for_step;
-                if (idx >= 0 && idx < MAX_PHASES) {
-                    if (sim->phase_step_counts[idx] == 0) {
-                        sim->phase_first_step[idx] = frame.step_label;
-                    }
-                    sim->phase_last_step[idx] = frame.step_label;
-                    sim->phase_step_counts[idx]++;
-                    sim->phase_cpu_time_ms[idx] += step_time_ms;
-                }
-            }
-            else if (frame.cleanup_region) {
-                if (sim->post_phase_step_count == 0) {
-                    sim->post_phase_first_step = frame.step_label;
-                }
-                sim->post_phase_last_step = frame.step_label;
-                sim->post_phase_step_count++;
-                sim->post_phase_cpu_time_ms += step_time_ms;
-                if (sim->post_phase_step_count >= CLEANUP_FORCE_IDLE_AFTER_STEPS) {
-                    force_idle_cleanup(sim->agent_manager, sim, sim->logger);
-                }
-            }
-        }
+        record_step_phase_accounting(sim, frame, step_time_ms);
 
         update_deadlock_counter(sim, moved_this_step, frame.is_custom_mode);
         accumulate_wait_ticks_if_realtime(sim);
@@ -4453,128 +3478,6 @@ void simulation_run(Simulation* sim) {
     if (sim) sim->run();
 }
 
-
-void Simulation_::printPerformanceSummary() const {
-    const Simulation* sim = this;
-    const ScenarioManager* sc = sim->scenario_manager;
-    const AgentManager* am = sim->agent_manager;
-    const int recorded_steps = (sim->total_executed_steps > 0) ? sim->total_executed_steps : (sc ? sc->time_step : 0);
-    const double avg_cpu_ms = (recorded_steps > 0) ? (sim->total_cpu_time_ms / (double)recorded_steps) : 0.0;
-    const double avg_plan_ms = (recorded_steps > 0) ? (sim->total_planning_time_ms / (double)recorded_steps) : 0.0;
-    const double throughput = (recorded_steps > 0) ? ((double)sim->tasks_completed_total / (double)recorded_steps) : 0.0;
-    const double avg_memory_kb = (sim->memory_samples > 0) ? (sim->memory_usage_sum_kb / (double)sim->memory_samples) : 0.0;
-
-    const char* mode_label = "Uninitialized";
-    if (sc) {
-        switch (sc->mode) {
-        case MODE_CUSTOM: mode_label = "Custom"; break;
-        case MODE_REALTIME: mode_label = "Real-Time"; break;
-        default: mode_label = "Uninitialized"; break;
-        }
-    }
-
-    printf("\n============================================\n");
-    printf("          Simulation Result Report\n");
-    printf("============================================\n");
-    printf(" Mode                                : %s\n", mode_label);
-    printf(" Map ID                              : %d\n", sim->map_id);
-    {
-        const char* algo = "Default (WHCA* + D* Lite + WFG + CBS)";
-        if (sim->path_algo == PATHALGO_ASTAR_SIMPLE) algo = "A* (Single-Agent)";
-        else if (sim->path_algo == PATHALGO_DSTAR_BASIC) algo = "D* Lite (Incremental)";
-        printf(" Path Planning Algorithm             : %s\n", algo);
-    }
-    printf(" Total Physical Time Steps           : %d\n", recorded_steps);
-    {
-        int active_agents = 0;
-        if (am) {
-            for (int i = 0; i < MAX_AGENTS; i++) if (am->agents[i].pos) active_agents++;
-        }
-        printf(" Operating AGVs                     : %d\n", active_agents);
-    }
-
-    printf(" Tasks Completed (total)             : %llu\n", sim->tasks_completed_total);
-    printf(" Throughput [task / total physical time] : %.4f\n", throughput);
-    printf(" Total Movement Cost (cells)         : %.2f\n", sim->total_movement_cost);
-
-    printf(" Requests Created (total)            : %llu\n", sim->requests_created_total);
-    printf(" Request Wait Ticks (sum)            : %llu\n", sim->request_wait_ticks_sum);
-    printf(" Process Memory Usage Sum            : %.2f KB\n", sim->memory_usage_sum_kb);
-    printf(" Process Memory Usage Average        : %.2f KB\n", avg_memory_kb);
-    printf(" Process Memory Usage Peak           : %.2f KB\n", sim->memory_usage_peak_kb);
-    printf(" Remaining Parked Vehicles           : %d\n", am ? am->total_cars_parked : 0);
-    printf("\n -- Algorithm and Planner Statistics --\n");
-    printf(" Nodes Expanded (total)             : %llu\n", sim->algo_nodes_expanded_total);
-    printf(" Heap Moves (total)                  : %llu\n", sim->algo_heap_moves_total);
-    printf(" Generated Nodes (total)            : %llu\n", sim->algo_generated_nodes_total);
-    printf(" Valid Expansions (total)           : %llu\n", sim->algo_valid_expansions_total);
-    double valid_ratio_total = (sim->algo_generated_nodes_total > 0) ? (double)sim->algo_valid_expansions_total / (double)sim->algo_generated_nodes_total : 0.0;
-    printf(" Valid Expansion Ratio (valid/gen) : %.4f\n", valid_ratio_total);
-    if (recorded_steps > 0) {
-        const double avg_nodes_per_step = (double)sim->algo_nodes_expanded_total / (double)recorded_steps;
-        const double avg_heap_moves_per_step = (double)sim->algo_heap_moves_total / (double)recorded_steps;
-        const double avg_generated_per_step = (double)sim->algo_generated_nodes_total / (double)recorded_steps;
-        const double avg_valid_per_step = (double)sim->algo_valid_expansions_total / (double)recorded_steps;
-        printf(" Nodes Expanded (avg per step)      : %.2f\n", avg_nodes_per_step);
-        printf(" Heap Moves (avg per step)          : %.2f\n", avg_heap_moves_per_step);
-        printf(" Generated Nodes (avg per step)     : %.2f\n", avg_generated_per_step);
-        printf(" Valid Expansions (avg per step)    : %.2f\n", avg_valid_per_step);
-    }
-
-    if (sc && sc->mode == MODE_CUSTOM) {
-        printf("\n -- Custom Scenario Breakdown --\n");
-        for (int i = 0; i < sc->num_phases; i++) {
-            const DynamicPhase* ph = &sc->phases[i];
-            const int planned = ph->task_count;
-            const int completed = sim->phase_completed_tasks[i];
-            const int step_count = sim->phase_step_counts[i];
-            printf(" Phase %d (%s)\n", i + 1, ph->type_name);
-            printf("   Planned Tasks           : %d\n", planned);
-            printf("   Completed Tasks         : %d\n", completed);
-            if (step_count > 0) {
-                printf("   Step Span               : %d step(s)", step_count);
-                if (sim->phase_first_step[i] >= 0 && sim->phase_last_step[i] >= 0) {
-                    printf(" [#%d -> #%d]\n", sim->phase_first_step[i], sim->phase_last_step[i]);
-                }
-                else {
-                    printf("\n");
-                }
-                const double phase_avg_cpu = sim->phase_cpu_time_ms[i] / (double)step_count;
-                printf("   CPU Time                : %.2f ms (avg %.4f ms/step)\n",
-                    sim->phase_cpu_time_ms[i], phase_avg_cpu);
-            }
-            else {
-                printf("   Step Span               : N/A\n");
-            }
-            if (completed < planned) {
-                printf("   Remaining Tasks         : %d\n", planned - completed);
-            }
-        }
-    }
-    else if (sc && sc->mode == MODE_REALTIME) {
-        printf("\n -- Custom Scenario Breakdown --\n");
-
-        printf(" Phase 1 (%s)\n", "Real-Time");
-        printf("   Planned Tasks           : %d\n", (int)sim->tasks_completed_total);
-        printf("   Completed Tasks         : %d\n", (int)sim->tasks_completed_total);
-        if (recorded_steps > 0) {
-            printf("   Step Span               : %d step(s) [#%d -> #%d]\n", recorded_steps, 1, recorded_steps);
-            const double phase_avg_cpu = sim->total_cpu_time_ms / (double)recorded_steps;
-            printf("   CPU Time                : %.2f ms (avg %.4f ms/step)\n", sim->total_cpu_time_ms, phase_avg_cpu);
-        }
-        else {
-            printf("   Step Span               : N/A\n");
-            printf("   CPU Time                : 0.00 ms (avg 0.0000 ms/step)\n");
-        }
-    }
-
-    printf("============================================\n");
-}
-
-void simulation_print_performance_summary(const Simulation* sim) {
-    if (sim) sim->printPerformanceSummary();
-}
-
 // =============================================================================
 
 // =============================================================================
@@ -4599,55 +3502,12 @@ void simulation_destroy(Simulation* s) {
     if (simulation_active() == s) simulation_set_active(nullptr);
     delete s;
 }
-bool Simulation_::openStepMetricsFile(const char* path) {
-    closeStepMetricsFile();
-    if (!path || !path[0]) return TRUE;
-
-    step_metrics_stream = fopen(path, "w");
-    if (!step_metrics_stream) return FALSE;
-
-    fprintf(step_metrics_stream,
-        "step,tasks_completed_total,total_movement_cost,deadlock_count,last_step_cpu_ms,total_cpu_ms,last_planning_ms,total_planning_ms,algo_nodes_expanded_last,algo_heap_moves_last,algo_generated_nodes_last,algo_valid_expansions_last,requests_created_total,request_wait_ticks_sum\n");
-    fflush(step_metrics_stream);
-    step_metrics_header_written = TRUE;
-    return TRUE;
-}
-
 static int simulation_open_step_metrics_file(Simulation* sim, const char* path) {
     return sim ? sim->openStepMetricsFile(path) : FALSE;
 }
 
-void Simulation_::closeStepMetricsFile() {
-    if (step_metrics_stream) {
-        fclose(step_metrics_stream);
-        step_metrics_stream = NULL;
-    }
-    step_metrics_header_written = FALSE;
-}
-
 static void simulation_close_step_metrics_file(Simulation* sim) {
     if (sim) sim->closeStepMetricsFile();
-}
-
-void Simulation_::appendStepMetrics(int step_label) {
-    if (!step_metrics_stream || !step_metrics_header_written) return;
-    fprintf(step_metrics_stream,
-        "%d,%llu,%.6f,%llu,%.6f,%.6f,%.6f,%.6f,%llu,%llu,%llu,%llu,%llu,%llu\n",
-        step_label,
-        tasks_completed_total,
-        total_movement_cost,
-        deadlock_count,
-        last_step_cpu_time_ms,
-        total_cpu_time_ms,
-        last_planning_time_ms,
-        total_planning_time_ms,
-        algo_nodes_expanded_last_step,
-        algo_heap_moves_last_step,
-        algo_generated_nodes_last_step,
-        algo_valid_expansions_last_step,
-        requests_created_total,
-        request_wait_ticks_sum);
-    fflush(step_metrics_stream);
 }
 
 static void simulation_append_step_metrics(Simulation* sim, int step_label) {
@@ -4763,51 +3623,6 @@ int agv_is_complete(const Simulation* sim) {
     return simulation_is_complete(sim);
 }
 
-void agv_collect_run_summary(const Simulation* sim, AgvRunSummary* out) {
-    if (!out) return;
-    memset(out, 0, sizeof(*out));
-    if (!sim) return;
-
-    const ScenarioManager* sc = sim->scenario_manager;
-    const AgentManager* am = sim->agent_manager;
-    int recorded_steps = (sim->total_executed_steps > 0) ? sim->total_executed_steps : (sc ? sc->time_step : 0);
-    if (recorded_steps < 0) recorded_steps = 0;
-
-    out->seed = sim->configured_seed;
-    out->map_id = sim->map_id;
-    out->path_algo = sim->path_algo;
-    if (!sc) out->mode = AGV_MODECFG_CUSTOM;
-    else out->mode = (sc->mode == MODE_REALTIME) ? AGV_MODECFG_REALTIME : AGV_MODECFG_CUSTOM;
-    out->recorded_steps = recorded_steps;
-    out->tasks_completed_total = sim->tasks_completed_total;
-    out->throughput = (recorded_steps > 0) ? ((double)sim->tasks_completed_total / (double)recorded_steps) : 0.0;
-    out->total_movement_cost = sim->total_movement_cost;
-    out->deadlock_count = sim->deadlock_count;
-    out->total_cpu_time_ms = sim->total_cpu_time_ms;
-    out->avg_cpu_time_ms = (recorded_steps > 0) ? (sim->total_cpu_time_ms / (double)recorded_steps) : 0.0;
-    out->total_planning_time_ms = sim->total_planning_time_ms;
-    out->avg_planning_time_ms = (recorded_steps > 0) ? (sim->total_planning_time_ms / (double)recorded_steps) : 0.0;
-    out->memory_usage_sum_kb = sim->memory_usage_sum_kb;
-    out->avg_memory_usage_kb = (sim->memory_samples > 0) ? (sim->memory_usage_sum_kb / (double)sim->memory_samples) : 0.0;
-    out->memory_usage_peak_kb = sim->memory_usage_peak_kb;
-    out->algo_nodes_expanded_total = sim->algo_nodes_expanded_total;
-    out->algo_heap_moves_total = sim->algo_heap_moves_total;
-    out->algo_generated_nodes_total = sim->algo_generated_nodes_total;
-    out->algo_valid_expansions_total = sim->algo_valid_expansions_total;
-    out->valid_expansion_ratio = (sim->algo_generated_nodes_total > 0)
-        ? ((double)sim->algo_valid_expansions_total / (double)sim->algo_generated_nodes_total)
-        : 0.0;
-    out->requests_created_total = sim->requests_created_total;
-    out->request_wait_ticks_sum = sim->request_wait_ticks_sum;
-    out->remaining_parked_vehicles = am ? am->total_cars_parked : 0;
-
-    if (am) {
-        for (int i = 0; i < MAX_AGENTS; i++) {
-            if (am->agents[i].pos) out->active_agents++;
-        }
-    }
-}
-
 static void simulation_update_state(Simulation* sim) {
     if (sim) sim->updateState();
 }
@@ -4831,58 +3646,6 @@ int agv_open_step_metrics(Simulation* sim, const char* path) {
 
 void agv_close_step_metrics(Simulation* sim) {
     simulation_close_step_metrics_file(sim);
-}
-
-int agv_write_run_summary_json(const Simulation* sim, const char* path) {
-    if (!sim || !path || !path[0]) return FALSE;
-
-    FILE* fp = fopen(path, "w");
-    if (!fp) return FALSE;
-
-    AgvRunSummary summary;
-    agv_collect_run_summary(sim, &summary);
-
-    {
-        const char* mode_label = "uninitialized";
-        const char* algo_label = "default";
-        if (summary.mode == AGV_MODECFG_CUSTOM) mode_label = "custom";
-        else if (summary.mode == AGV_MODECFG_REALTIME) mode_label = "realtime";
-        if (summary.path_algo == PATHALGO_ASTAR_SIMPLE) algo_label = "astar";
-        else if (summary.path_algo == PATHALGO_DSTAR_BASIC) algo_label = "dstar";
-
-        fprintf(fp, "{\n");
-        fprintf(fp, "  \"seed\": %u,\n", summary.seed);
-        fprintf(fp, "  \"map_id\": %d,\n", summary.map_id);
-        fprintf(fp, "  \"path_algo\": %d,\n", summary.path_algo);
-        fprintf(fp, "  \"path_algo_label\": \"%s\",\n", algo_label);
-        fprintf(fp, "  \"mode\": %d,\n", summary.mode);
-        fprintf(fp, "  \"mode_label\": \"%s\",\n", mode_label);
-        fprintf(fp, "  \"active_agents\": %d,\n", summary.active_agents);
-        fprintf(fp, "  \"recorded_steps\": %d,\n", summary.recorded_steps);
-        fprintf(fp, "  \"tasks_completed_total\": %llu,\n", summary.tasks_completed_total);
-        fprintf(fp, "  \"throughput\": %.10f,\n", summary.throughput);
-        fprintf(fp, "  \"total_movement_cost\": %.10f,\n", summary.total_movement_cost);
-        fprintf(fp, "  \"deadlock_count\": %llu,\n", summary.deadlock_count);
-        fprintf(fp, "  \"total_cpu_time_ms\": %.10f,\n", summary.total_cpu_time_ms);
-        fprintf(fp, "  \"avg_cpu_time_ms\": %.10f,\n", summary.avg_cpu_time_ms);
-        fprintf(fp, "  \"total_planning_time_ms\": %.10f,\n", summary.total_planning_time_ms);
-        fprintf(fp, "  \"avg_planning_time_ms\": %.10f,\n", summary.avg_planning_time_ms);
-        fprintf(fp, "  \"memory_usage_sum_kb\": %.10f,\n", summary.memory_usage_sum_kb);
-        fprintf(fp, "  \"avg_memory_usage_kb\": %.10f,\n", summary.avg_memory_usage_kb);
-        fprintf(fp, "  \"memory_usage_peak_kb\": %.10f,\n", summary.memory_usage_peak_kb);
-        fprintf(fp, "  \"algo_nodes_expanded_total\": %llu,\n", summary.algo_nodes_expanded_total);
-        fprintf(fp, "  \"algo_heap_moves_total\": %llu,\n", summary.algo_heap_moves_total);
-        fprintf(fp, "  \"algo_generated_nodes_total\": %llu,\n", summary.algo_generated_nodes_total);
-        fprintf(fp, "  \"algo_valid_expansions_total\": %llu,\n", summary.algo_valid_expansions_total);
-        fprintf(fp, "  \"valid_expansion_ratio\": %.10f,\n", summary.valid_expansion_ratio);
-        fprintf(fp, "  \"requests_created_total\": %llu,\n", summary.requests_created_total);
-        fprintf(fp, "  \"request_wait_ticks_sum\": %llu,\n", summary.request_wait_ticks_sum);
-        fprintf(fp, "  \"remaining_parked_vehicles\": %d\n", summary.remaining_parked_vehicles);
-        fprintf(fp, "}\n");
-    }
-
-    fclose(fp);
-    return TRUE;
 }
 
 #ifndef AGV_NO_MAIN
@@ -4912,3 +3675,5 @@ int main() {
     return 0;
 }
 #endif
+
+

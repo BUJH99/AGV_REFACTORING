@@ -1,0 +1,43 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build C++ Project",
+            "type": "shell",
+            "command": "g++",
+            "args": [
+                "-std=c++20",
+                "-g",
+                "-Iinclude",
+                "-DAGV_NO_MAIN",
+                "src/main.cpp",
+                "src/agv_legacy_engine.cpp",
+                "src/agv_legacy_console.cpp",
+                "src/agv_legacy_display.cpp",
+                "src/agv_legacy_maps.cpp",
+                "src/agv_legacy_reports.cpp",
+                "src/simulation_engine.cpp",
+                "-o",
+                "agv_console.exe",
+                "-lpsapi"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": [
+                "$gcc"
+            ]
+        },
+        {
+            "label": "Run C++ Project in PowerShell 7 (External)",
+            "type": "shell",
+            "command": "start pwsh -NoExit -Command \"& { ./agv_console.exe; pause }\"",
+            "dependsOn": "Build C++ Project",
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            }
+        }
+    ]
+}

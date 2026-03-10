@@ -1,0 +1,13 @@
+{
+  "title": "AGV Report Check",
+  "generated_at_utc": "2026-03-10T14:44:52.435286+00:00",
+  "results_dir": "/mnt/c/Users/tbdk5/Desktop/MAIN/0_Working/AGV_REFACOTR/AGV_REFACTORING/tmp_report_check/results",
+  "case_count": 1,
+  "step_row_count": 128,
+  "assets": {
+    "report": "tmp_report_check/analysis/report.html",
+    "case_summary_csv": "tmp_report_check/analysis/case_summary.csv",
+    "step_enriched_csv": "tmp_report_check/analysis/step_enriched.csv",
+    "manifest": "tmp_report_check/analysis/manifest.json"
+  }
+}
