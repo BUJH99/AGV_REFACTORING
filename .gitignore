@@ -1,0 +1,8 @@
+step_metrics.csv
+*.pyc
+*.exe
+step_metrics.csv
+*.pyc
+*.exe
+tests/artifacts/
+tests/golden/
