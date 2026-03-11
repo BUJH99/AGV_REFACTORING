@@ -126,6 +126,19 @@ if ($LASTEXITCODE -ne 0) {
 
 Copy-CompilerRuntimeDlls -CompilerPath $compiler -OutputDirectory $PWD.Path
 
+if ($Interactive) {
+    if ($ExeArgs.Count -gt 0) {
+        Write-Host "Launching agv_console.exe with preset arguments in the current terminal ..." -ForegroundColor Green
+        Write-Host ("Args: " + ($ExeArgs -join " ")) -ForegroundColor DarkGray
+    } else {
+        Write-Host "Launching agv_console.exe in the current terminal ..." -ForegroundColor Green
+    }
+
+    $env:Path = "$compilerDirectory;$env:Path"
+    & ".\agv_console.exe" @ExeArgs
+    exit $LASTEXITCODE
+}
+
 if ($ExeArgs.Count -gt 0) {
     Write-Host "Launching agv_console.exe with preset arguments in a new terminal window ..." -ForegroundColor Green
     Write-Host ("Args: " + ($ExeArgs -join " ")) -ForegroundColor DarkGray

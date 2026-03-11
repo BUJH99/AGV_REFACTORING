@@ -20,6 +20,24 @@
                 "$gcc"
             ],
             "detail": "Build the project and run it in a new PowerShell 7 window using run.ps1"
+        },
+        {
+            "label": "Build and Run C++ Project (Current Terminal)",
+            "type": "shell",
+            "command": "pwsh.exe",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                ".\\run.ps1",
+                "-Interactive"
+            ],
+            "group": "test",
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "detail": "Build the project and run it in the current terminal"
         }
     ]
 }

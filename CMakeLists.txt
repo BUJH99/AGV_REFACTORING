@@ -8,21 +8,15 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(CTest)
 
+file(GLOB_RECURSE CORE_HEADERS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/include/*.hpp")
+file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
+
+# Exclude the console application entry point from the core library
+list(REMOVE_ITEM CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/apps/console_main.cpp")
+
 add_library(agv_core
-    include/agv/internal/engine_model.hpp
-    include/agv/internal/engine_internal.hpp
-    include/agv/sim_bridge.hpp
-    src/platform/console_terminal.cpp
-    src/planning/collision_planner.cpp
-    src/ui/simulation_display.cpp
-    src/core/engine_orchestrator.cpp
-    src/runtime/agent_runtime.cpp
-    src/maps/map_catalog.cpp
-    src/planning/pathfinder.cpp
-    src/reporting/run_reporting.cpp
-    src/runtime/scenario_runtime.cpp
-    src/runtime/step_runtime.cpp
-    src/api/simulation_engine.cpp
+    ${CORE_HEADERS}
+    ${CORE_SOURCES}
 )
 
 set_source_files_properties(src/core/engine_orchestrator.cpp PROPERTIES COMPILE_DEFINITIONS AGV_NO_MAIN)
