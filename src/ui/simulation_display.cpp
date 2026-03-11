@@ -1,21 +1,12 @@
 #define _CRT_SECURE_NO_WARNINGS
 
+#include <array>
 #include <cctype>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 
 #include "agv/internal/engine_internal.hpp"
-
-#ifndef APPEND_FMT
-#define APPEND_FMT(P, REM, ...)                            \
-    do {                                                  \
-        int __w = snprintf((P), (REM), __VA_ARGS__);      \
-        if (__w < 0) __w = 0;                             \
-        if ((size_t)__w > (REM)) __w = (int)(REM);        \
-        (P) += __w;                                       \
-        (REM) -= __w;                                     \
-    } while (0)
-#endif
 
 #ifndef C_NRM
 #define C_NRM "\x1b[0m"
@@ -57,9 +48,75 @@
 #define RENDER_STRIDE_MIN 1
 #endif
 
-static const char* AGENT_COLORS[10] = {
+using GridCharBuffer = std::array<std::array<char, GRID_WIDTH>, GRID_HEIGHT>;
+using GridColorBuffer = std::array<std::array<const char*, GRID_WIDTH>, GRID_HEIGHT>;
+
+static constexpr std::array<const char*, 10> AGENT_COLORS = {
     C_B_CYN, C_B_YEL, C_B_MAG, C_B_GRN, C_B_RED,
     C_B_WHT, C_CYN,   C_YEL,   C_B_MAG, C_GRN
+};
+
+struct DisplayFrameContext final {
+    const Simulation* sim{nullptr};
+    const ScenarioManager* scenario{nullptr};
+    const AgentManager* agents{nullptr};
+    const GridMap* map{nullptr};
+    const Logger* logger{nullptr};
+    double avg_cpu_ms{0.0};
+    int is_paused{FALSE};
+};
+
+class DisplayBufferWriter final {
+public:
+    DisplayBufferWriter(char* buffer, size_t capacity)
+        : buffer_(buffer), cursor_(buffer), capacity_(capacity), remaining_(capacity) {
+        if (buffer_ && capacity_ > 0) {
+            buffer_[0] = '\0';
+        }
+    }
+
+    void appendf(const char* format, ...) {
+        if (!buffer_ || remaining_ == 0) return;
+        va_list args;
+        va_start(args, format);
+        appendv(format, args);
+        va_end(args);
+    }
+
+    void appendChar(char ch) {
+        if (!buffer_ || remaining_ <= 1) return;
+        *cursor_++ = ch;
+        *cursor_ = '\0';
+        remaining_--;
+    }
+
+    size_t remaining() const {
+        return remaining_;
+    }
+
+    void finish() {
+        if (!buffer_ || capacity_ == 0) return;
+        if (remaining_ > 0) {
+            *cursor_ = '\0';
+        } else {
+            buffer_[capacity_ - 1] = '\0';
+        }
+    }
+
+private:
+    void appendv(const char* format, va_list args) {
+        if (remaining_ == 0) return;
+        const int written = vsnprintf(cursor_, remaining_, format, args);
+        if (written < 0) return;
+        const size_t advance = (static_cast<size_t>(written) >= remaining_) ? (remaining_ - 1) : static_cast<size_t>(written);
+        cursor_ += advance;
+        remaining_ -= advance;
+    }
+
+    char* buffer_{nullptr};
+    char* cursor_{nullptr};
+    size_t capacity_{0};
+    size_t remaining_{0};
 };
 
 void ui_clear_screen_optimized();
@@ -136,21 +193,21 @@ void ui_handle_control_key(Simulation* sim, int ch, int* is_paused, int* quit_fl
     }
 }
 
-static void ui_append_playback_controls_help(char** p, size_t* rem) {
-    APPEND_FMT(*p, *rem, "[%sP%s]ause/Resume | [%sS%s]tep | [%s+%s]/[%s-%s] Speed | ",
+static void ui_append_playback_controls_help(DisplayBufferWriter& writer) {
+    writer.appendf("[%sP%s]ause/Resume | [%sS%s]tep | [%s+%s]/[%s-%s] Speed | ",
         C_YEL, C_NRM, C_YEL, C_NRM, C_YEL, C_NRM, C_YEL, C_NRM);
 }
 
-static void ui_append_render_controls_help(char** p, size_t* rem) {
-    APPEND_FMT(*p, *rem, "[%s[%s]/[%s]%s Render stride | ", C_YEL, C_NRM, C_YEL, C_NRM);
-    APPEND_FMT(*p, *rem, "[%sF%s]ast render | [%sC%s]olor simple | [%sQ%s]uit\n",
+static void ui_append_render_controls_help(DisplayBufferWriter& writer) {
+    writer.appendf("[%s[%s]/[%s]%s Render stride | ", C_YEL, C_NRM, C_YEL, C_NRM);
+    writer.appendf("[%sF%s]ast render | [%sC%s]olor simple | [%sQ%s]uit\n",
         C_YEL, C_NRM, C_YEL, C_NRM, C_YEL, C_NRM);
 }
 
-static void ui_append_controls_help(char** p, size_t* rem) {
-    APPEND_FMT(*p, *rem, "%s--- Controls ---%s\n", C_B_WHT, C_NRM);
-    ui_append_playback_controls_help(p, rem);
-    ui_append_render_controls_help(p, rem);
+static void ui_append_controls_help(DisplayBufferWriter& writer) {
+    writer.appendf("%s--- Controls ---%s\n", C_B_WHT, C_NRM);
+    ui_append_playback_controls_help(writer);
+    ui_append_render_controls_help(writer);
 }
 
 static void ui_position_frame_output(const RendererState& render_state) {
@@ -170,9 +227,13 @@ static void ui_flush_display_buffer(const Simulation* sim) {
     ui_write_display_buffer_contents(sim);
 }
 
+static size_t simulation_render_stride_or_one(const RendererState& render_state) {
+    return (render_state.render_stride > 0) ? (size_t)render_state.render_stride : 1u;
+}
+
 static void grid_map_render_base_layer(
-    char view[GRID_HEIGHT][GRID_WIDTH],
-    const char* colors[GRID_HEIGHT][GRID_WIDTH],
+    GridCharBuffer& view,
+    GridColorBuffer& colors,
     const GridMap* map) {
     for (int y = 0; y < GRID_HEIGHT; y++) {
         for (int x = 0; x < GRID_WIDTH; x++) {
@@ -189,8 +250,8 @@ static void grid_map_render_base_layer(
 }
 
 static void grid_map_render_charge_stations(
-    char view[GRID_HEIGHT][GRID_WIDTH],
-    const char* colors[GRID_HEIGHT][GRID_WIDTH],
+    GridCharBuffer& view,
+    GridColorBuffer& colors,
     const GridMap* map,
     const AgentManager* am,
     int simple_colors) {
@@ -212,8 +273,8 @@ static void grid_map_render_charge_stations(
 }
 
 static void grid_map_render_goals(
-    char view[GRID_HEIGHT][GRID_WIDTH],
-    const char* colors[GRID_HEIGHT][GRID_WIDTH],
+    GridCharBuffer& view,
+    GridColorBuffer& colors,
     const GridMap* map,
     int simple_colors) {
     int ng = map->num_goals;
@@ -230,8 +291,8 @@ static void grid_map_render_goals(
 }
 
 static void grid_map_render_agents(
-    char view[GRID_HEIGHT][GRID_WIDTH],
-    const char* colors[GRID_HEIGHT][GRID_WIDTH],
+    GridCharBuffer& view,
+    GridColorBuffer& colors,
     const AgentManager* am) {
     for (int i = 0; i < MAX_AGENTS; i++) {
         if (!am->agents[i].pos) continue;
@@ -242,97 +303,85 @@ static void grid_map_render_agents(
 }
 
 static void grid_map_append_simple_view(
-    char** p,
-    size_t* rem,
-    char view[GRID_HEIGHT][GRID_WIDTH]) {
+    DisplayBufferWriter& writer,
+    const GridCharBuffer& view) {
     for (int y = 0; y < GRID_HEIGHT; y++) {
         for (int x = 0; x < GRID_WIDTH; x++) {
-            if (*rem <= 1) break;
-            *(*p)++ = view[y][x];
-            (*rem)--;
+            if (writer.remaining() <= 1) break;
+            writer.appendChar(view[y][x]);
         }
-        if (*rem <= 1) break;
-        *(*p)++ = '\n';
-        (*rem)--;
+        if (writer.remaining() <= 1) break;
+        writer.appendChar('\n');
     }
 }
 
 static void grid_map_append_color_view(
-    char** p,
-    size_t* rem,
-    char view[GRID_HEIGHT][GRID_WIDTH],
-    const char* colors[GRID_HEIGHT][GRID_WIDTH]) {
+    DisplayBufferWriter& writer,
+    const GridCharBuffer& view,
+    const GridColorBuffer& colors) {
     for (int y = 0; y < GRID_HEIGHT; y++) {
         for (int x = 0; x < GRID_WIDTH; x++) {
-            APPEND_FMT(*p, *rem, "%s%c%s", colors[y][x], view[y][x], C_NRM);
+            writer.appendf("%s%c%s", colors[y][x], view[y][x], C_NRM);
         }
-        APPEND_FMT(*p, *rem, "\n");
+        writer.appendf("\n");
     }
 }
 
-static int GridMap_renderToBuffer(
-    char* buffer,
-    size_t buffer_size,
+static void grid_map_render_to_writer(
+    DisplayBufferWriter& writer,
     const GridMap* map,
     const AgentManager* am,
     const RendererState& render_state) {
-    static char view[GRID_HEIGHT][GRID_WIDTH];
-    static const char* colors[GRID_HEIGHT][GRID_WIDTH];
-    char* p = buffer;
-    size_t rem = buffer_size;
+    static GridCharBuffer view{};
+    static GridColorBuffer colors{};
 
     grid_map_render_base_layer(view, colors, map);
     grid_map_render_charge_stations(view, colors, map, am, render_state.simple_colors);
     grid_map_render_goals(view, colors, map, render_state.simple_colors);
     grid_map_render_agents(view, colors, am);
 
-    APPEND_FMT(p, rem, "%s\n--- D* Lite + WHCA* + WFG(SCC) + partial CBS ---%s\n", C_B_WHT, C_NRM);
-    if (render_state.simple_colors) grid_map_append_simple_view(&p, &rem, view);
-    else grid_map_append_color_view(&p, &rem, view, colors);
-    APPEND_FMT(p, rem, "\n");
-    return (int)(p - buffer);
+    writer.appendf("%s\n--- D* Lite + WHCA* + WFG(SCC) + partial CBS ---%s\n", C_B_WHT, C_NRM);
+    if (render_state.simple_colors) grid_map_append_simple_view(writer, view);
+    else grid_map_append_color_view(writer, view, colors);
+    writer.appendf("\n");
 }
 
 static void simulation_append_custom_status_header(
-    char** p,
-    size_t* rem,
+    DisplayBufferWriter& writer,
     const Simulation* sim,
     const ScenarioManager* sc,
     int is_paused) {
     if (sc->current_phase_index < sc->num_phases) {
         const DynamicPhase* ph = &sc->phases[sc->current_phase_index];
-        APPEND_FMT(*p, *rem, "--- Custom Scenario: %d/%d [Speed: %.1fx] ---  (Map #%d)",
+        writer.appendf("--- Custom Scenario: %d/%d [Speed: %.1fx] ---  (Map #%d)",
             sc->current_phase_index + 1, sc->num_phases, sc->speed_multiplier, sim->map_id);
-        if (is_paused) APPEND_FMT(*p, *rem, " %s[ PAUSED ]%s", C_B_YEL, C_B_WHT);
-        APPEND_FMT(*p, *rem, "\n");
-        APPEND_FMT(*p, *rem, "Time: %d, Current Task: %s (%d/%d)\n",
+        if (is_paused) writer.appendf(" %s[ PAUSED ]%s", C_B_YEL, C_B_WHT);
+        writer.appendf("\n");
+        writer.appendf("Time: %d, Current Task: %s (%d/%d)\n",
             sc->time_step, ph->type_name, sc->tasks_completed_in_phase, ph->task_count);
         return;
     }
 
-    APPEND_FMT(*p, *rem, "--- Custom Scenario: All phases complete ---  (Map #%d)\n", sim->map_id);
+    writer.appendf("--- Custom Scenario: All phases complete ---  (Map #%d)\n", sim->map_id);
 }
 
 static void simulation_append_realtime_status_header(
-    char** p,
-    size_t* rem,
-    const Simulation* sim,
-    const ScenarioManager* sc,
-    int is_paused) {
-    APPEND_FMT(*p, *rem, "--- Real-Time Simulation [Speed: %.1fx] ---  (Map #%d)",
-        sc->speed_multiplier, sim->map_id);
-    if (is_paused) APPEND_FMT(*p, *rem, " %s[ PAUSED ]%s", C_B_YEL, C_B_WHT);
-    APPEND_FMT(*p, *rem, "\n");
+    DisplayBufferWriter& writer,
+    const DisplayFrameContext& frame) {
+    writer.appendf("--- Real-Time Simulation [Speed: %.1fx] ---  (Map #%d)",
+        frame.scenario->speed_multiplier, frame.sim->map_id);
+    if (frame.is_paused) writer.appendf(" %s[ PAUSED ]%s", C_B_YEL, C_B_WHT);
+    writer.appendf("\n");
 
     int park = 0;
     int exitc = 0;
-    for (const TaskNode& task : sc->task_queue) {
+    for (const TaskNode& task : frame.scenario->task_queue) {
         if (task.type == TASK_PARK) park++;
         else if (task.type == TASK_EXIT) exitc++;
     }
 
-    APPEND_FMT(*p, *rem, "Time: %d / %d | Pending Tasks: %d (%sPark: %d%s, %sExit: %d%s)\n",
-        sc->time_step, REALTIME_MODE_TIMELIMIT, sc->task_count,
+    writer.appendf("Time: %d / %d | Pending Tasks: %d (%sPark: %d%s, %sExit: %d%s)\n",
+        frame.scenario->time_step, REALTIME_MODE_TIMELIMIT, frame.scenario->task_count,
         C_B_GRN, park, C_NRM, C_B_YEL, exitc, C_NRM);
 }
 
@@ -343,24 +392,20 @@ static const char* simulation_display_path_algo_label(PathAlgo path_algo) {
 }
 
 static void simulation_append_runtime_summary_lines(
-    char** p,
-    size_t* rem,
-    const Simulation* sim,
-    const AgentManager* am,
-    const GridMap* map,
-    double avg_cpu_ms) {
-    APPEND_FMT(*p, *rem, "Parked Cars: %d/%d\n%s", am->total_cars_parked, map->num_goals, C_NRM);
-    APPEND_FMT(*p, *rem, "CPU Time (ms) - Last: %.3f | Avg: %.3f | Total: %.2f\n",
-        sim->last_step_cpu_time_ms, avg_cpu_ms, sim->total_cpu_time_ms);
+    DisplayBufferWriter& writer,
+    const DisplayFrameContext& frame) {
+    writer.appendf("Parked Cars: %d/%d\n%s", frame.agents->total_cars_parked, frame.map->num_goals, C_NRM);
+    writer.appendf("CPU Time (ms) - Last: %.3f | Avg: %.3f | Total: %.2f\n",
+        frame.sim->last_step_cpu_time_ms, frame.avg_cpu_ms, frame.sim->total_cpu_time_ms);
 }
 
-static void simulation_append_path_algo_line(char** p, size_t* rem, PathAlgo path_algo) {
-    APPEND_FMT(*p, *rem, "%sPath Algo:%s %s\n",
+static void simulation_append_path_algo_line(DisplayBufferWriter& writer, PathAlgo path_algo) {
+    writer.appendf("%sPath Algo:%s %s\n",
         C_B_WHT, C_NRM, simulation_display_path_algo_label(path_algo));
 }
 
-static void simulation_append_planner_status_line(char** p, size_t* rem, const Simulation* sim) {
-    APPEND_FMT(*p, *rem, "%sWHCA horizon:%s %d  | wf_edges(last): %d  | SCC(last): %d  | CBS(last): %s (exp:%d)\n",
+static void simulation_append_planner_status_line(DisplayBufferWriter& writer, const Simulation* sim) {
+    writer.appendf("%sWHCA horizon:%s %d  | wf_edges(last): %d  | SCC(last): %d  | CBS(last): %s (exp:%d)\n",
         C_B_WHT, C_NRM, sim->runtime_tuning.whca_horizon,
         sim->planner_metrics.wf_edges_last,
         sim->planner_metrics.scc_last,
@@ -369,25 +414,15 @@ static void simulation_append_planner_status_line(char** p, size_t* rem, const S
 }
 
 static void simulation_append_grid_render(
-    char** p,
-    size_t* rem,
+    DisplayBufferWriter& writer,
     const GridMap* map,
     const AgentManager* am,
     const RendererState& render_state) {
-    int w = GridMap_renderToBuffer(*p, *rem, map, am, render_state);
-    if (w < 0) w = 0;
-    if ((size_t)w >= *rem) {
-        *p += *rem - 1;
-        *rem = 1;
-    } else {
-        *p += w;
-        *rem -= w;
-    }
+    grid_map_render_to_writer(writer, map, am, render_state);
 }
 
 static void simulation_append_agent_status_lines(
-    char** p,
-    size_t* rem,
+    DisplayBufferWriter& writer,
     const AgentManager* am) {
     static const char* stS[] = {
         "IDLE", "GOING_TO_PARK", "RETURN_HOME_EMPTY", "GOING_TO_COLLECT",
@@ -403,78 +438,142 @@ static void simulation_append_agent_status_lines(
         if (ag->state == CHARGING) snprintf(sbuf, sizeof(sbuf), "CHARGING... (%d)", ag->charge_timer);
         else snprintf(sbuf, sizeof(sbuf), "%s", stS[ag->state]);
 
-        APPEND_FMT(*p, *rem, "%sAgent %c%s: (%2d,%d) ",
+        writer.appendf("%sAgent %c%s: (%2d,%d) ",
             c, ag->symbol, C_NRM,
             ag->pos ? ag->pos->x : -1, ag->pos ? ag->pos->y : -1);
 
-        if (ag->goal) APPEND_FMT(*p, *rem, "-> (%2d,%d) ", ag->goal->x, ag->goal->y);
-        else APPEND_FMT(*p, *rem, "-> (none)          ");
+        if (ag->goal) writer.appendf("-> (%2d,%d) ", ag->goal->x, ag->goal->y);
+        else writer.appendf("-> (none)          ");
 
-        APPEND_FMT(*p, *rem, "[Mileage: %6.1f/%d] [%s%-*s%s]  [stuck:%d]\n",
+        writer.appendf("[Mileage: %6.1f/%d] [%s%-*s%s]  [stuck:%d]\n",
             ag->total_distance_traveled, (int)DISTANCE_BEFORE_CHARGE,
             stC[ag->state], STATUS_STRING_WIDTH, sbuf, C_NRM, ag->stuck_steps);
     }
-    APPEND_FMT(*p, *rem, "\n");
+    writer.appendf("\n");
 }
 
-static void simulation_append_log_lines(char** p, size_t* rem, const Logger* lg) {
-    APPEND_FMT(*p, *rem, "%s--- Simulation Log ---%s\n", C_B_WHT, C_NRM);
+static void simulation_append_log_lines(DisplayBufferWriter& writer, const Logger* lg) {
+    writer.appendf("%s--- Simulation Log ---%s\n", C_B_WHT, C_NRM);
     for (int i = 0; i < lg->log_count; i++) {
         int idx = (lg->log_head + i) % LOG_BUFFER_LINES;
-        APPEND_FMT(*p, *rem, "%s%s%s\n", C_GRY, lg->logs[idx], C_NRM);
-        if (*rem < 512) break;
+        writer.appendf("%s%s%s\n", C_GRY, lg->logs[idx], C_NRM);
+        if (writer.remaining() < 512) break;
     }
+}
+
+static void simulation_append_status_header(
+    DisplayBufferWriter& writer,
+    const DisplayFrameContext& frame) {
+    writer.appendf("%s", C_B_WHT);
+    if (frame.scenario->mode == MODE_CUSTOM) {
+        simulation_append_custom_status_header(writer, frame.sim, frame.scenario, frame.is_paused);
+    } else if (frame.scenario->mode == MODE_REALTIME) {
+        simulation_append_realtime_status_header(writer, frame);
+    }
+}
+
+class DisplayFrameComposer final {
+public:
+    DisplayFrameComposer(DisplayBufferWriter& writer, const DisplayFrameContext& frame)
+        : writer_(writer), frame_(frame) {}
+
+    void compose() {
+        appendHeader();
+        appendRuntime();
+        appendGrid();
+        appendAgents();
+        appendLogs();
+        appendControls();
+    }
+
+private:
+    void appendHeader() {
+        simulation_append_status_header(writer_, frame_);
+    }
+
+    void appendRuntime() {
+        simulation_append_runtime_summary_lines(writer_, frame_);
+        simulation_append_path_algo_line(writer_, frame_.sim->path_algo);
+        simulation_append_planner_status_line(writer_, frame_.sim);
+    }
+
+    void appendGrid() {
+        simulation_append_grid_render(writer_, frame_.map, frame_.agents, frame_.sim->render_state);
+    }
+
+    void appendAgents() {
+        simulation_append_agent_status_lines(writer_, frame_.agents);
+    }
+
+    void appendLogs() {
+        simulation_append_log_lines(writer_, frame_.logger);
+    }
+
+    void appendControls() {
+        ui_append_controls_help(writer_);
+    }
+
+    DisplayBufferWriter& writer_;
+    const DisplayFrameContext& frame_;
+};
+
+static void simulation_build_display_buffer(Simulation* sim, const DisplayFrameContext& frame) {
+    DisplayBufferWriter writer(sim->display_buffer.data(), sim->display_buffer.size());
+    DisplayFrameComposer(writer, frame).compose();
+    writer.finish();
 }
 
 static void simulation_maybe_flush_display_buffer(const Simulation* sim) {
     static int s_frame_counter = 0;
     s_frame_counter++;
     if (!sim->render_state.suppress_flush &&
-        (s_frame_counter % (sim->render_state.render_stride > 0 ? sim->render_state.render_stride : 1)) == 0) {
+        (s_frame_counter % simulation_render_stride_or_one(sim->render_state)) == 0) {
         ui_flush_display_buffer(sim);
     }
 }
 
 void simulation_display_status(Simulation* sim, int is_paused) {
-    const ScenarioManager* sc = sim->scenario_manager;
-    const AgentManager* am = sim->agent_manager;
-    const GridMap* map = sim->map;
-    const Logger* lg = sim->logger;
-    const int display_steps = (sim->total_executed_steps > 0) ? sim->total_executed_steps : sc->time_step;
+    const ScenarioManager* scenario = sim->scenario_manager;
+    const int display_steps = (sim->total_executed_steps > 0) ? sim->total_executed_steps : scenario->time_step;
     const double avg_cpu_ms = (display_steps > 0) ? (sim->total_cpu_time_ms / (double)display_steps) : 0.0;
 
-    char* p = sim->display_buffer.data();
-    size_t rem = sim->display_buffer.size();
+    const DisplayFrameContext frame{
+        sim,
+        scenario,
+        sim->agent_manager,
+        sim->map,
+        sim->logger,
+        avg_cpu_ms,
+        is_paused
+    };
 
-    APPEND_FMT(p, rem, "%s", C_B_WHT);
-    if (sc->mode == MODE_CUSTOM) simulation_append_custom_status_header(&p, &rem, sim, sc, is_paused);
-    else if (sc->mode == MODE_REALTIME) simulation_append_realtime_status_header(&p, &rem, sim, sc, is_paused);
-
-    simulation_append_runtime_summary_lines(&p, &rem, sim, am, map, avg_cpu_ms);
-    simulation_append_path_algo_line(&p, &rem, sim->path_algo);
-    simulation_append_planner_status_line(&p, &rem, sim);
-    simulation_append_grid_render(&p, &rem, map, am, sim->render_state);
-    simulation_append_agent_status_lines(&p, &rem, am);
-    simulation_append_log_lines(&p, &rem, lg);
-    ui_append_controls_help(&p, &rem);
+    simulation_build_display_buffer(sim, frame);
     simulation_maybe_flush_display_buffer(sim);
 }
 
 namespace {
 
-class LegacyRendererStrategy final : public RendererStrategy {
+using DrawFrameFnLocal = void (*)(Simulation_* sim, int is_paused);
+
+class FunctionRendererStrategy final : public RendererStrategy {
 public:
+    explicit FunctionRendererStrategy(DrawFrameFnLocal draw_frame)
+        : draw_frame_(draw_frame) {}
+
     void drawFrame(Simulation_* sim, int is_paused) const override {
-        simulation_display_status(sim, is_paused);
+        draw_frame_(sim, is_paused);
     }
 
     std::unique_ptr<RendererStrategy> clone() const override {
-        return std::make_unique<LegacyRendererStrategy>(*this);
+        return std::make_unique<FunctionRendererStrategy>(draw_frame_);
     }
+
+private:
+    DrawFrameFnLocal draw_frame_{nullptr};
 };
 
 }  // namespace
 
 RendererFacade renderer_create_facade(void) {
-    return RendererFacade(std::make_unique<LegacyRendererStrategy>());
+    return RendererFacade(std::make_unique<FunctionRendererStrategy>(simulation_display_status));
 }

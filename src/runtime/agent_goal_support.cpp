@@ -1,0 +1,313 @@
+#define _CRT_SECURE_NO_WARNINGS
+
+#include "agent_goal_support.hpp"
+
+#include <optional>
+#include <span>
+
+#ifndef DISTANCE_BEFORE_CHARGE
+#define DISTANCE_BEFORE_CHARGE 300.0
+#endif
+
+#ifndef INF
+#define INF 1e18
+#endif
+
+#ifndef C_NRM
+#define C_NRM "\x1b[0m"
+#define C_YEL "\x1b[33m"
+#define C_CYN "\x1b[36m"
+#define C_B_RED "\x1b[1;31m"
+#define C_B_YEL "\x1b[1;33m"
+#endif
+
+void logger_log(Logger* logger, const char* format, ...);
+Pathfinder* pathfinder_create(Node* start, Node* goal, const struct Agent_* agent);
+void pathfinder_compute_shortest_path(Pathfinder* pf, GridMap* map, const AgentManager* am);
+
+namespace {
+
+enum class GoalTypeLocal {
+    Parking,
+    ParkedCar,
+    Charge,
+    HomeBase,
+};
+
+struct GoalAssignmentContextLocal final {
+    Agent* agent{nullptr};
+    GridMap* map{nullptr};
+    AgentManager* agents{nullptr};
+    Logger* logger{nullptr};
+};
+
+class TemporaryParkStateScopeLocal final {
+public:
+    explicit TemporaryParkStateScopeLocal(Node* node)
+        : node_(node), restore_(node && node->is_parked) {
+        if (restore_) {
+            node_->is_parked = FALSE;
+        }
+    }
+
+    ~TemporaryParkStateScopeLocal() {
+        if (restore_) {
+            node_->is_parked = TRUE;
+        }
+    }
+
+private:
+    Node* node_{nullptr};
+    bool restore_{false};
+};
+
+class PathCostEvaluatorLocal final {
+public:
+    explicit PathCostEvaluatorLocal(const GoalAssignmentContextLocal& context)
+        : context_(context) {}
+
+    double compute(Node* goal) const {
+        if (!context_.agent || !context_.agent->pos || !goal || !context_.map || !context_.agents) return INF;
+        if (context_.agent->pos == goal) return 0.0;
+        if (goal->is_obstacle) return INF;
+
+        OwnedPtr<Pathfinder> pathfinder(pathfinder_create(context_.agent->pos, goal, context_.agent));
+        if (!pathfinder) return INF;
+
+        pathfinder_compute_shortest_path(pathfinder.get(), context_.map, context_.agents);
+        const double cost = pathfinder->cells[context_.agent->pos->y][context_.agent->pos->x].g;
+        return (cost >= INF * 0.5) ? INF : cost;
+    }
+
+private:
+    GoalAssignmentContextLocal context_{};
+};
+
+struct GoalCandidateSetLocal final {
+    std::span<Node*> nodes{};
+    int require_parked{-1};
+    bool respect_reservations{true};
+    bool temporarily_unpark{false};
+};
+
+GoalCandidateSetLocal make_goal_candidate_set_local(
+    const GridMap* map,
+    GoalTypeLocal type) {
+    GoalCandidateSetLocal policy{};
+    switch (type) {
+    case GoalTypeLocal::Parking:
+        policy.nodes = std::span<Node*>(const_cast<GridMap*>(map)->goals, map->num_goals);
+        policy.require_parked = 0;
+        break;
+    case GoalTypeLocal::ParkedCar:
+        policy.nodes = std::span<Node*>(const_cast<GridMap*>(map)->goals, map->num_goals);
+        policy.require_parked = 1;
+        policy.temporarily_unpark = true;
+        break;
+    case GoalTypeLocal::Charge:
+        policy.nodes = std::span<Node*>(const_cast<GridMap*>(map)->charge_stations, map->num_charge_stations);
+        break;
+    case GoalTypeLocal::HomeBase:
+        break;
+    }
+    return policy;
+}
+
+bool goal_candidate_matches_local(
+    const GoalCandidateSetLocal& candidates,
+    const Agent* agent,
+    const Node* node) {
+    if (!agent || !node) return false;
+    if (candidates.require_parked == 1 && !node->is_parked) return false;
+    if (candidates.require_parked == 0 && node->is_parked) return false;
+    if (candidates.respect_reservations &&
+        node->reserved_by_agent != -1 &&
+        node->reserved_by_agent != agent->id) {
+        return false;
+    }
+    return true;
+}
+
+Node* select_best_candidate_local(
+    const GoalCandidateSetLocal& candidates,
+    Agent* agent,
+    const PathCostEvaluatorLocal& evaluator,
+    double* out_best_cost) {
+    double best_cost = INF;
+    Node* best_node = nullptr;
+
+    for (Node* node : candidates.nodes) {
+        if (!goal_candidate_matches_local(candidates, agent, node)) continue;
+
+        TemporaryParkStateScopeLocal parked_scope(candidates.temporarily_unpark ? node : nullptr);
+        const double cost = evaluator.compute(node);
+        if (cost < best_cost) {
+            best_cost = cost;
+            best_node = node;
+        }
+    }
+
+    if (out_best_cost) *out_best_cost = best_cost;
+    return best_node;
+}
+
+const char* goal_selection_log_label_local(GoalTypeLocal type) {
+    switch (type) {
+    case GoalTypeLocal::Parking:
+        return "parking goal";
+    case GoalTypeLocal::ParkedCar:
+        return "retrieval target";
+    case GoalTypeLocal::Charge:
+        return "charge station";
+    case GoalTypeLocal::HomeBase:
+    default:
+        return nullptr;
+    }
+}
+
+bool agent_returns_home_local(AgentState state) {
+    return state == RETURNING_HOME_EMPTY ||
+        state == RETURNING_WITH_CAR ||
+        state == RETURNING_HOME_MAINTENANCE;
+}
+
+std::optional<GoalTypeLocal> goal_type_for_state_local(AgentState state) {
+    switch (state) {
+    case GOING_TO_PARK:
+        return GoalTypeLocal::Parking;
+    case GOING_TO_COLLECT:
+        return GoalTypeLocal::ParkedCar;
+    case GOING_TO_CHARGE:
+        return GoalTypeLocal::Charge;
+    case RETURNING_HOME_EMPTY:
+    case RETURNING_WITH_CAR:
+    case RETURNING_HOME_MAINTENANCE:
+        return GoalTypeLocal::HomeBase;
+    default:
+        return std::nullopt;
+    }
+}
+
+class GoalAssignmentPolicyLocal final {
+public:
+    explicit GoalAssignmentPolicyLocal(GoalAssignmentContextLocal context)
+        : context_(context) {}
+
+    Node* resolveGoalForCurrentState() const {
+        if (!context_.agent) return nullptr;
+        const std::optional<GoalTypeLocal> goal_type = goal_type_for_state_local(context_.agent->state);
+        if (!goal_type.has_value()) return nullptr;
+        return selectBestGoal(*goal_type, nullptr);
+    }
+
+    void assignReservation(Node* new_goal) const {
+        if (!context_.agent || !new_goal) return;
+        if (context_.agent->goal && context_.agent->goal != new_goal) {
+            context_.agent->goal->reserved_by_agent = -1;
+        }
+        context_.agent->goal = new_goal;
+        context_.agent->goal->reserved_by_agent = context_.agent->id;
+    }
+
+    void handleMissingGoal() const {
+        if (!context_.agent) return;
+        if (agent_returns_home_local(context_.agent->state)) {
+            if (!context_.agent->home_base) {
+                context_.agent->state = IDLE;
+                logger_log(context_.logger, "[%sWarn%s] Agent %c: no home position is configured. Switching to IDLE.",
+                    C_B_RED, C_NRM, context_.agent->symbol);
+            }
+            return;
+        }
+
+        context_.agent->state = IDLE;
+        logger_log(context_.logger, "[%sInfo%s] Agent %c: no valid goal found. Waiting.",
+            C_YEL, C_NRM, context_.agent->symbol);
+    }
+
+    Node* selectBestChargeStation() const {
+        double best_cost = INF;
+        return selectBestGoal(GoalTypeLocal::Charge, &best_cost);
+    }
+
+private:
+    Node* selectBestGoal(GoalTypeLocal type, double* out_cost) const {
+        if (type == GoalTypeLocal::HomeBase) {
+            const PathCostEvaluatorLocal evaluator(context_);
+            if (out_cost) {
+                *out_cost = context_.agent && context_.agent->pos && context_.agent->home_base
+                    ? evaluator.compute(context_.agent->home_base)
+                    : INF;
+            }
+            return context_.agent ? context_.agent->home_base : nullptr;
+        }
+
+        const GoalCandidateSetLocal candidates = make_goal_candidate_set_local(context_.map, type);
+        const PathCostEvaluatorLocal evaluator(context_);
+        Node* best = select_best_candidate_local(candidates, context_.agent, evaluator, out_cost);
+
+        const char* label = goal_selection_log_label_local(type);
+        if (label && best && out_cost) {
+            logger_log(context_.logger, "[%sPlan%s] Agent %c selected %s (%d,%d) (cost %.1f)",
+                C_CYN, C_NRM, context_.agent->symbol, label, best->x, best->y, *out_cost);
+        }
+
+        return best;
+    }
+
+    GoalAssignmentContextLocal context_{};
+};
+
+void release_current_goal_reservation_local(Agent* agent) {
+    if (!agent || !agent->goal) return;
+    agent->goal->reserved_by_agent = -1;
+    agent->goal = NULL;
+}
+
+void maybe_switch_to_charge_mode_local(Agent* agent, Logger* logger) {
+    if (!agent) return;
+    if (agent->state != RETURNING_HOME_EMPTY ||
+        agent->total_distance_traveled < DISTANCE_BEFORE_CHARGE) {
+        return;
+    }
+
+    release_current_goal_reservation_local(agent);
+    logger_log(logger, "[%sCharge%s] Agent %c exceeded the mileage threshold while returning home. Switching to charge mode.",
+        C_B_YEL, C_NRM, agent->symbol);
+    agent->state = GOING_TO_CHARGE;
+}
+
+bool agent_needs_goal_assignment_local(const Agent* agent) {
+    return agent &&
+        agent->goal == nullptr &&
+        agent->state != IDLE &&
+        agent->state != CHARGING;
+}
+
+}  // namespace
+
+Node* agent_runtime_select_best_charge_station(Agent* agent, GridMap* map, AgentManager* agents, Logger* logger) {
+    return GoalAssignmentPolicyLocal(GoalAssignmentContextLocal{agent, map, agents, logger}).selectBestChargeStation();
+}
+
+void agent_runtime_assign_goal_if_needed(Agent* agent, GridMap* map, AgentManager* agents, Logger* logger) {
+    if (!agent) return;
+    if (!agent_needs_goal_assignment_local(agent)) return;
+
+    if (!agent->pos) {
+        agent->goal = nullptr;
+        agent->state = IDLE;
+        return;
+    }
+
+    maybe_switch_to_charge_mode_local(agent, logger);
+    if (agent->state == IDLE || agent->state == CHARGING || agent->goal) return;
+
+    GoalAssignmentPolicyLocal policy(GoalAssignmentContextLocal{agent, map, agents, logger});
+    Node* new_goal = policy.resolveGoalForCurrentState();
+    if (new_goal) {
+        policy.assignReservation(new_goal);
+    } else {
+        policy.handleMissingGoal();
+    }
+}

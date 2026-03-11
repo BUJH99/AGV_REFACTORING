@@ -1,5 +1,6 @@
 #define _CRT_SECURE_NO_WARNINGS
 
+#include <algorithm>
 #include <cstring>
 
 #include "agv/internal/engine_internal.hpp"
@@ -30,6 +31,18 @@ static void map_all_free(GridMap* m) {
     grid_map_clear(m);
 }
 
+static void map_fill_interior(GridMap* map, int is_obstacle) {
+    if (!map) return;
+    for (int y = 1; y < GRID_HEIGHT - 1; ++y) {
+        for (int x = 1; x < GRID_WIDTH - 1; ++x) {
+            map->grid[y][x].is_obstacle = is_obstacle;
+            if (is_obstacle) {
+                map->grid[y][x].is_goal = FALSE;
+            }
+        }
+    }
+}
+
 static void map_add_border_walls(GridMap* m) {
     for (int x = 0; x < GRID_WIDTH; ++x) {
         m->grid[0][x].is_obstacle = TRUE;
@@ -38,6 +51,42 @@ static void map_add_border_walls(GridMap* m) {
     for (int y = 0; y < GRID_HEIGHT; ++y) {
         m->grid[y][0].is_obstacle = TRUE;
         m->grid[y][GRID_WIDTH - 1].is_obstacle = TRUE;
+    }
+}
+
+static void map_open_cell(GridMap* map, int x, int y) {
+    if (!map || !grid_is_valid_coord(x, y)) return;
+    map->grid[y][x].is_obstacle = FALSE;
+}
+
+static void map_open_row(GridMap* map, int y, int x_begin = 1, int x_end = GRID_WIDTH - 2) {
+    if (!map || y < 0 || y >= GRID_HEIGHT) return;
+    const int clamped_begin = std::max(0, x_begin);
+    const int clamped_end = std::min(GRID_WIDTH - 1, x_end);
+    for (int x = clamped_begin; x <= clamped_end; ++x) {
+        map_open_cell(map, x, y);
+    }
+}
+
+static void map_open_column(GridMap* map, int x, int y_begin = 1, int y_end = GRID_HEIGHT - 2) {
+    if (!map || x < 0 || x >= GRID_WIDTH) return;
+    const int clamped_begin = std::max(0, y_begin);
+    const int clamped_end = std::min(GRID_HEIGHT - 1, y_end);
+    for (int y = clamped_begin; y <= clamped_end; ++y) {
+        map_open_cell(map, x, y);
+    }
+}
+
+static void map_clear_goal_rect(GridMap* map, int x_begin, int y_begin, int x_end, int y_end) {
+    if (!map) return;
+    const int clamped_x_begin = std::max(0, x_begin);
+    const int clamped_x_end = std::min(GRID_WIDTH - 1, x_end);
+    const int clamped_y_begin = std::max(0, y_begin);
+    const int clamped_y_end = std::min(GRID_HEIGHT - 1, y_end);
+    for (int y = clamped_y_begin; y <= clamped_y_end; ++y) {
+        for (int x = clamped_x_begin; x <= clamped_x_end; ++x) {
+            map->grid[y][x].is_goal = FALSE;
+        }
     }
 }
 
@@ -50,6 +99,11 @@ static void map_place_goal(GridMap* m, int x, int y) {
     }
 }
 
+static void map_open_goal(GridMap* map, int x, int y) {
+    map_open_cell(map, x, y);
+    map_place_goal(map, x, y);
+}
+
 static void map_place_charge(GridMap* m, int x, int y) {
     if (!grid_is_valid_coord(x, y)) return;
     Node* n = &m->grid[y][x];
@@ -59,8 +113,13 @@ static void map_place_charge(GridMap* m, int x, int y) {
     }
 }
 
+static void map_open_charge(GridMap* map, int x, int y) {
+    map_open_cell(map, x, y);
+    map_place_charge(map, x, y);
+}
+
 static void map_place_agent_at(AgentManager* am, GridMap* m, int idx, int x, int y) {
-    if (idx < 0 || idx >= MAX_AGENTS) return;
+    if (!am || !m || idx < 0 || idx >= MAX_AGENTS || !grid_is_valid_coord(x, y)) return;
     Node* n = &m->grid[y][x];
     am->agents[idx].pos = n;
     am->agents[idx].home_base = n;
@@ -101,6 +160,19 @@ static void agent_manager_reset_for_new_map(AgentManager* am) {
         am->agents[i].metrics_turns_current = 0;
     }
     am->total_cars_parked = 0;
+}
+
+static void map_rebuild_goal_index(GridMap* map) {
+    if (!map) return;
+    map->num_goals = 0;
+    for (int y = 1; y < GRID_HEIGHT - 1; ++y) {
+        for (int x = 1; x < GRID_WIDTH - 1; ++x) {
+            Node* node = &map->grid[y][x];
+            if (!node->is_goal) continue;
+            if (map->num_goals >= MAX_GOALS) return;
+            map->goals[map->num_goals++] = node;
+        }
+    }
 }
 
 static void grid_map_fill_from_string(GridMap* map, AgentManager* am, const char* m) {
@@ -180,12 +252,7 @@ static void map_build_hypermart(GridMap* m, AgentManager* am) {
 
     map_all_free(m);
     map_add_border_walls(m);
-
-    for (y = 1; y < GRID_HEIGHT - 1; ++y)
-        for (x = 1; x < GRID_WIDTH - 1; ++x) {
-            m->grid[y][x].is_obstacle = TRUE;
-            m->grid[y][x].is_goal = FALSE;
-        }
+    map_fill_interior(m, TRUE);
 
     map_reserve_area_as_start(m, 2, 2, 8, 5);
     map_place_agent_at(am, m, 0, 2, 2);
@@ -193,19 +260,17 @@ static void map_build_hypermart(GridMap* m, AgentManager* am) {
     map_place_agent_at(am, m, 2, 4, 2);
     map_place_agent_at(am, m, 3, 5, 2);
 
-    for (x = 1; x < GRID_WIDTH - 1; ++x) m->grid[6][x].is_obstacle = FALSE;
+    map_open_row(m, 6);
 
     const int vCols[] = { 12, 22, 32, 42, 52, 62, 72 };
     const int nV = (int)(sizeof(vCols) / sizeof(vCols[0]));
     for (int i = 0; i < nV; ++i) {
         int cx = vCols[i];
-        for (y = 1; y < GRID_HEIGHT - 1; ++y) m->grid[y][cx].is_obstacle = FALSE;
+        map_open_column(m, cx);
     }
 
-    for (x = 1; x < GRID_WIDTH - 1; ++x) {
-        m->grid[10][x].is_obstacle = FALSE;
-        m->grid[30][x].is_obstacle = FALSE;
-    }
+    map_open_row(m, 10);
+    map_open_row(m, 30);
     for (y = 19; y <= 21; ++y)
         for (x = 1; x < GRID_WIDTH - 1; ++x)
             m->grid[y][x].is_obstacle = TRUE;
@@ -218,8 +283,8 @@ static void map_build_hypermart(GridMap* m, AgentManager* am) {
     m->grid[20][34].is_obstacle = FALSE;
     m->grid[20][50].is_obstacle = FALSE;
 
-    for (y = 1; y < GRID_HEIGHT - 1; ++y) m->grid[y][4].is_obstacle = FALSE;
-    for (x = 4; x <= 10; ++x) m->grid[6][x].is_obstacle = FALSE;
+    map_open_column(m, 4);
+    map_open_row(m, 6, 4, 10);
 
     const int pocketY[] = { 14, 16, 26, 28, 34 };
     const int nP = (int)(sizeof(pocketY) / sizeof(pocketY[0]));
@@ -229,15 +294,15 @@ static void map_build_hypermart(GridMap* m, AgentManager* am) {
             int py = pocketY[k];
             if (py >= 19 && py <= 21) continue;
             if (py == 10 || py == 30) continue;
-            if (grid_is_valid_coord(cx - 1, py)) m->grid[py][cx - 1].is_obstacle = FALSE;
-            if (grid_is_valid_coord(cx + 1, py)) m->grid[py][cx + 1].is_obstacle = FALSE;
+            map_open_cell(m, cx - 1, py);
+            map_open_cell(m, cx + 1, py);
         }
     }
 
-    map_place_charge(m, 12, 8);
-    map_place_charge(m, 42, 8);
-    map_place_charge(m, 42, 32);
-    map_place_charge(m, 72, 8);
+    map_open_charge(m, 12, 8);
+    map_open_charge(m, 42, 8);
+    map_open_charge(m, 42, 32);
+    map_open_charge(m, 72, 8);
 
     int markRow[GRID_HEIGHT] = { 0 };
     markRow[6] = 1;
@@ -255,12 +320,10 @@ static void map_build_hypermart(GridMap* m, AgentManager* am) {
         for (y = y_min; y <= y_max; ++y) {
             if (markRow[y]) continue;
             if (grid_is_valid_coord(leftCol, y)) {
-                m->grid[y][leftCol].is_obstacle = FALSE;
-                map_place_goal(m, leftCol, y);
+                map_open_goal(m, leftCol, y);
             }
             if (grid_is_valid_coord(rightCol, y)) {
-                m->grid[y][rightCol].is_obstacle = FALSE;
-                map_place_goal(m, rightCol, y);
+                map_open_goal(m, rightCol, y);
             }
         }
     }
@@ -268,23 +331,19 @@ static void map_build_hypermart(GridMap* m, AgentManager* am) {
     const int side_right_col = GRID_WIDTH - 4;
     const int side_right_road = GRID_WIDTH - 5;
 
-    for (y = 1; y < GRID_HEIGHT - 1; ++y) m->grid[y][side_right_road].is_obstacle = FALSE;
-    for (y = 19; y <= 21; ++y) m->grid[y][side_right_road].is_obstacle = FALSE;
+    map_open_column(m, side_right_road);
+    map_open_column(m, side_right_road, 19, 21);
 
     for (y = y_min; y <= y_max; ++y) {
         if (markRow[y]) continue;
         if (grid_is_valid_coord(side_right_col, y)) {
-            m->grid[y][side_right_col].is_obstacle = FALSE;
-            map_place_goal(m, side_right_col, y);
+            map_open_goal(m, side_right_col, y);
         }
     }
 
-    for (y = 2; y <= 8; ++y)
-        for (x = 2; x <= 8; ++x)
-            m->grid[y][x].is_goal = FALSE;
-    for (y = 1; y < GRID_HEIGHT - 1; ++y) m->grid[y][4].is_goal = FALSE;
+    map_clear_goal_rect(m, 2, 2, 8, 8);
+    map_clear_goal_rect(m, 4, 1, 4, GRID_HEIGHT - 2);
 
-    m->num_goals = 0;
     for (y = 1; y < GRID_HEIGHT - 1; ++y) {
         for (x = 1; x < GRID_WIDTH - 1; ++x) {
             Node* n = &m->grid[y][x];
@@ -301,9 +360,9 @@ static void map_build_hypermart(GridMap* m, AgentManager* am) {
                 }
             }
             if (!ok) n->is_goal = FALSE;
-            if (n->is_goal && m->num_goals < MAX_GOALS) m->goals[m->num_goals++] = n;
         }
     }
+    map_rebuild_goal_index(m);
 }
 
 static void map_build_10agents_200slots(GridMap* m, AgentManager* am) {
@@ -311,12 +370,7 @@ static void map_build_10agents_200slots(GridMap* m, AgentManager* am) {
 
     map_all_free(m);
     map_add_border_walls(m);
-
-    for (y = 1; y < GRID_HEIGHT - 1; ++y)
-        for (x = 1; x < GRID_WIDTH - 1; ++x) {
-            m->grid[y][x].is_obstacle = TRUE;
-            m->grid[y][x].is_goal = FALSE;
-        }
+    map_fill_interior(m, TRUE);
 
     const int sx0 = 2, sy0 = 2;
     const int sW = 16, sH = 6;
@@ -340,31 +394,24 @@ static void map_build_10agents_200slots(GridMap* m, AgentManager* am) {
     const int cross_end = GRID_HEIGHT - 6;
     const int cross_step = 6;
 
-    for (y = 1; y < GRID_HEIGHT - 1; ++y) {
-        if (grid_is_valid_coord(2, y)) m->grid[y][2].is_obstacle = FALSE;
-        if (grid_is_valid_coord(3, y)) m->grid[y][3].is_obstacle = FALSE;
-    }
-
-    for (x = 1; x < GRID_WIDTH - 1; ++x) {
-        if (grid_is_valid_coord(x, 6)) m->grid[6][x].is_obstacle = FALSE;
-        if (grid_is_valid_coord(x, 7)) m->grid[7][x].is_obstacle = FALSE;
-    }
+    map_open_column(m, 2);
+    map_open_column(m, 3);
+    map_open_row(m, 6);
+    map_open_row(m, 7);
 
     for (x = ax_start; x <= ax_end; x += ax_step)
-        for (y = 1; y < GRID_HEIGHT - 1; ++y)
-            m->grid[y][x].is_obstacle = FALSE;
+        map_open_column(m, x);
 
     for (y = cross_start; y <= cross_end; y += cross_step)
-        for (x = 1; x < GRID_WIDTH - 1; ++x)
-            m->grid[y][x].is_obstacle = FALSE;
+        map_open_row(m, y);
 
     {
         int cxL = sx0;
         int cyT = sy0 + 1;
-        map_place_charge(m, cxL, cyT);
-        map_place_charge(m, cxL + 1, cyT);
-        map_place_charge(m, cxL, cyT + 2);
-        map_place_charge(m, cxL + 1, cyT + 2);
+        map_open_charge(m, cxL, cyT);
+        map_open_charge(m, cxL + 1, cyT);
+        map_open_charge(m, cxL, cyT + 2);
+        map_open_charge(m, cxL + 1, cyT + 2);
     }
 
     int markRow[GRID_HEIGHT] = { 0 };
@@ -388,13 +435,11 @@ static void map_build_10agents_200slots(GridMap* m, AgentManager* am) {
             if (markRow[y]) continue;
 
             if (grid_is_valid_coord(leftCol, y) && placed < target) {
-                m->grid[y][leftCol].is_obstacle = FALSE;
-                map_place_goal(m, leftCol, y);
+                map_open_goal(m, leftCol, y);
                 placed++;
             }
             if (grid_is_valid_coord(rightCol, y) && placed < target) {
-                m->grid[y][rightCol].is_obstacle = FALSE;
-                map_place_goal(m, rightCol, y);
+                map_open_goal(m, rightCol, y);
                 placed++;
             }
         }
@@ -409,14 +454,12 @@ static void map_build_10agents_200slots(GridMap* m, AgentManager* am) {
 
                 if (grid_is_valid_coord(x, row - 1) &&
                     !m->grid[row - 1][x].is_goal && placed < target) {
-                    m->grid[row - 1][x].is_obstacle = FALSE;
-                    map_place_goal(m, x, row - 1);
+                    map_open_goal(m, x, row - 1);
                     placed++;
                 }
                 if (grid_is_valid_coord(x, row + 1) &&
                     !m->grid[row + 1][x].is_goal && placed < target) {
-                    m->grid[row + 1][x].is_obstacle = FALSE;
-                    map_place_goal(m, x, row + 1);
+                    map_open_goal(m, x, row + 1);
                     placed++;
                 }
             }
@@ -498,11 +541,7 @@ static void map_build_biggrid_onegoal(GridMap* m, AgentManager* am) {
 
     int x, y;
 
-    for (y = 1; y < GRID_HEIGHT - 1; ++y)
-        for (x = 1; x < GRID_WIDTH - 1; ++x) {
-            m->grid[y][x].is_obstacle = TRUE;
-            m->grid[y][x].is_goal = FALSE;
-        }
+    map_fill_interior(m, TRUE);
 
     const int CX = GRID_WIDTH / 2;
     const int CY = GRID_HEIGHT / 2;
@@ -520,15 +559,12 @@ static void map_build_biggrid_onegoal(GridMap* m, AgentManager* am) {
     const int hy0 = 9;
 
     for (x = vx0; x < GRID_WIDTH - 1; x += vstep)
-        for (y = 1; y < GRID_HEIGHT - 1; ++y)
-            m->grid[y][x].is_obstacle = FALSE;
+        map_open_column(m, x);
 
     for (y = hy0; y < GRID_HEIGHT - 1; y += hstep)
-        for (x = 1; x < GRID_WIDTH - 1; ++x)
-            m->grid[y][x].is_obstacle = FALSE;
+        map_open_row(m, y);
 
-    for (x = 1; x < GRID_WIDTH - 1; ++x)
-        m->grid[6][x].is_obstacle = FALSE;
+    map_open_row(m, 6);
 
     const int Wg = 6, Hg = 2;
     const int bxL = 8;
@@ -541,16 +577,12 @@ static void map_build_biggrid_onegoal(GridMap* m, AgentManager* am) {
     carve_block_1lane(m, bxL, byB, Wg, Hg, vstep, hstep, vx0, hy0, CX, CY);
     carve_block_1lane(m, bxR, byB, Wg, Hg, vstep, hstep, vx0, hy0, CX, CY);
 
-    if (grid_is_valid_coord(CX, CY - 6)) map_place_charge(m, CX, CY - 6);
-    if (grid_is_valid_coord(CX, CY + 6)) map_place_charge(m, CX, CY + 6);
-    if (grid_is_valid_coord(CX - 6, CY)) map_place_charge(m, CX - 6, CY);
-    if (grid_is_valid_coord(CX + 6, CY)) map_place_charge(m, CX + 6, CY);
+    map_open_charge(m, CX, CY - 6);
+    map_open_charge(m, CX, CY + 6);
+    map_open_charge(m, CX - 6, CY);
+    map_open_charge(m, CX + 6, CY);
 
-    m->num_goals = 0;
-    for (y = 1; y < GRID_HEIGHT - 1; ++y)
-        for (x = 1; x < GRID_WIDTH - 1; ++x)
-            if (m->grid[y][x].is_goal && m->num_goals < MAX_GOALS)
-                m->goals[m->num_goals++] = &m->grid[y][x];
+    map_rebuild_goal_index(m);
 }
 
 static void map_build_cross_4agents(GridMap* m, AgentManager* am) {
@@ -559,17 +591,13 @@ static void map_build_cross_4agents(GridMap* m, AgentManager* am) {
     map_all_free(m);
     map_add_border_walls(m);
 
-    for (y = 1; y < GRID_HEIGHT - 1; ++y)
-        for (x = 1; x < GRID_WIDTH - 1; ++x) {
-            m->grid[y][x].is_obstacle = TRUE;
-            m->grid[y][x].is_goal = FALSE;
-        }
+    map_fill_interior(m, TRUE);
 
     const int CX = GRID_WIDTH / 2;
     const int CY = GRID_HEIGHT / 2;
 
-    for (y = 1; y < GRID_HEIGHT - 1; ++y) m->grid[y][CX].is_obstacle = FALSE;
-    for (x = 1; x < GRID_WIDTH - 1; ++x) m->grid[CY][x].is_obstacle = FALSE;
+    map_open_column(m, CX);
+    map_open_row(m, CY);
 
     map_place_agent_at(am, m, 0, 1, CY);
     map_place_agent_at(am, m, 1, GRID_WIDTH - 2, CY);
@@ -581,7 +609,7 @@ static void map_build_cross_4agents(GridMap* m, AgentManager* am) {
     map_place_goal(m, CX, 1 + 4);
     map_place_goal(m, CX, GRID_HEIGHT - 2 - 4);
 
-    map_place_charge(m, CX, CY);
+    map_open_charge(m, CX, CY);
 }
 
 void grid_map_load_scenario(GridMap* map, AgentManager* am, int scenario_id) {
