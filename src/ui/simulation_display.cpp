@@ -467,16 +467,30 @@ static void simulation_build_display_buffer(Simulation* sim, const DisplayFrameC
     writer.finish();
 }
 
-static void simulation_maybe_flush_display_buffer(const Simulation* sim) {
-    static int s_frame_counter = 0;
-    s_frame_counter++;
-    if (!sim->render_state.suppress_flush &&
-        (s_frame_counter % simulation_render_stride_or_one(sim->render_state)) == 0) {
-        ui_flush_display_buffer(sim);
+static bool simulation_should_flush_display_buffer(Simulation* sim) {
+    if (!sim || sim->render_state.suppress_flush) {
+        return false;
     }
+
+    if (sim->render_state.force_next_flush) {
+        sim->render_state.force_next_flush = false;
+        return true;
+    }
+
+    static int s_frame_counter = 0;
+    return (++s_frame_counter % simulation_render_stride_or_one(sim->render_state)) == 0;
 }
 
 void simulation_display_status(Simulation* sim, bool is_paused) {
+    if (!sim) {
+        return;
+    }
+
+    const bool should_flush = simulation_should_flush_display_buffer(sim);
+    if (!sim->render_state.suppress_flush && !should_flush) {
+        return;
+    }
+
     const ScenarioManager* scenario = sim->scenario_manager;
     const int display_steps = (sim->total_executed_steps > 0) ? sim->total_executed_steps : scenario->time_step;
     const double avg_cpu_ms = (display_steps > 0) ? (sim->total_cpu_time_ms / (double)display_steps) : 0.0;
@@ -492,7 +506,9 @@ void simulation_display_status(Simulation* sim, bool is_paused) {
     };
 
     simulation_build_display_buffer(sim, frame);
-    simulation_maybe_flush_display_buffer(sim);
+    if (should_flush) {
+        ui_flush_display_buffer(sim);
+    }
 }
 
 namespace {

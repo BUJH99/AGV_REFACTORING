@@ -13,10 +13,19 @@ int best_in_mask(const AgentManager* manager, int mask);
 
 class ConflictResolutionPolicy final {
 public:
+    ConflictResolutionPolicy() {
+        cell_owner_.fill(-1);
+    }
+
     void resolve(AgentManager* manager, const AgentOrder& order, AgentNodeSlots& next_positions);
 
 private:
     std::array<int, GRID_WIDTH * GRID_HEIGHT> cell_owner_{};
+    std::array<int, MAX_AGENTS> touched_cell_indices_{};
+    int touched_cell_count_{0};
+
+    void clearTouchedCellOwner();
+    void setCellOwner(int index, int value);
 };
 
 class TemporaryGoalStateScope final {

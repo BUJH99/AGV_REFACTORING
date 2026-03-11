@@ -300,6 +300,23 @@ TEST(SimulationEngineTest, InternalGoalAssignmentKeepsExactBestCandidateSelectio
     EXPECT_EQ(agent->goal->reserved_by_agent, agent->id);
 }
 
+TEST(SimulationEngineTest, InternalStepScratchTouchedCellOwnerResetRemainsStable) {
+    StepScratch scratch;
+    EXPECT_EQ(scratch.cell_owner[11], -1);
+    EXPECT_EQ(scratch.cell_owner[29], -1);
+
+    scratch.setCellOwner(11, 2);
+    scratch.setCellOwner(29, 5);
+    EXPECT_EQ(scratch.cell_owner[11], 2);
+    EXPECT_EQ(scratch.cell_owner[29], 5);
+    EXPECT_EQ(scratch.touched_cell_count, 2);
+
+    scratch.clearTouchedCellOwner();
+    EXPECT_EQ(scratch.cell_owner[11], -1);
+    EXPECT_EQ(scratch.cell_owner[29], -1);
+    EXPECT_EQ(scratch.touched_cell_count, 0);
+}
+
 TEST(SimulationEngineTest, InterleavedDefaultEnginesRemainIndependent) {
     agv::core::SimulationEngine first;
     agv::core::SimulationEngine second;

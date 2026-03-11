@@ -301,6 +301,7 @@ struct RendererState {
     bool fast_render{false};
     bool simple_colors{false};
     bool suppress_flush{false};
+    bool force_next_flush{false};
 
     void configureForAlgorithm(PathAlgo algo) {
         render_stride = (algo == PathAlgo::Default) ? 1 : 2;
@@ -498,13 +499,35 @@ struct DefaultPlannerScratch final {
 };
 
 struct StepScratch {
+    StepScratch() {
+        cell_owner.fill(-1);
+    }
+
     AgentNodeSlots next_positions{};
     AgentNodeSlots previous_positions{};
     AgentOrder priority_order{};
     std::array<int, GRID_WIDTH * GRID_HEIGHT> cell_owner{};
+    std::array<int, MAX_AGENTS> touched_cell_indices{};
+    int touched_cell_count{0};
 
-    void resetCellOwner(int value = -1) {
-        cell_owner.fill(value);
+    void clearTouchedCellOwner() {
+        for (int i = 0; i < touched_cell_count; ++i) {
+            const int index = touched_cell_indices[i];
+            if (index >= 0 && index < static_cast<int>(cell_owner.size())) {
+                cell_owner[index] = -1;
+            }
+        }
+        touched_cell_count = 0;
+    }
+
+    void setCellOwner(int index, int value) {
+        if (index < 0 || index >= static_cast<int>(cell_owner.size())) {
+            return;
+        }
+        if (cell_owner[index] == -1 && touched_cell_count < MAX_AGENTS) {
+            touched_cell_indices[touched_cell_count++] = index;
+        }
+        cell_owner[index] = value;
     }
 };
 

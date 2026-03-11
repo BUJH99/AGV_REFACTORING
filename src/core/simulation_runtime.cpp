@@ -146,6 +146,11 @@ int read_control_key() {
 void handle_control_input(Simulation* sim, int last_key, bool& is_paused, bool& quit_flag) {
     if (!last_key) return;
     ui_handle_control_key(sim, last_key, is_paused, quit_flag);
+    if (is_paused && std::tolower(last_key) == 's') {
+        sim->render_state.force_next_flush = true;
+        return;
+    }
+    sim->render_state.force_next_flush = true;
     sim->renderer.drawFrame(sim, is_paused);
 }
 
@@ -352,6 +357,7 @@ void Simulation_::run() {
     bool quit_flag = false;
 
     sim->resetRuntimeStats();
+    sim->render_state.force_next_flush = true;
     sim->renderer.drawFrame(sim, is_paused);
 
     while (!quit_flag) {

@@ -10,6 +10,8 @@ void sort_agents_by_priority(AgentManager* m, AgentOrder& order);
 
 namespace {
 
+constexpr int kMemorySampleIntervalSteps = 8;
+
 inline int node_flat_index_local(const Node* node) {
     return node ? (node->y * GRID_WIDTH + node->x) : -1;
 }
@@ -60,7 +62,7 @@ void resolve_conflicts_by_order_local(
     const AgentOrder& order,
     AgentNodeSlots& next_positions,
     StepScratch& scratch) {
-    scratch.resetCellOwner(-1);
+    scratch.clearTouchedCellOwner();
 
     for (int oi = 0; oi < MAX_AGENTS; oi++) {
         int index = order[oi];
@@ -71,14 +73,14 @@ void resolve_conflicts_by_order_local(
             next_positions[index] = manager->agents[index].pos;
             continue;
         }
-        scratch.cell_owner[next_idx] = index;
+        scratch.setCellOwner(next_idx, index);
     }
 
-    scratch.resetCellOwner(-1);
+    scratch.clearTouchedCellOwner();
     for (int i = 0; i < MAX_AGENTS; i++) {
         if (!manager->agents[i].pos) continue;
         int current_idx = node_flat_index_local(manager->agents[i].pos);
-        if (current_idx >= 0) scratch.cell_owner[current_idx] = i;
+        if (current_idx >= 0) scratch.setCellOwner(current_idx, i);
     }
 
     for (int oi = 0; oi < MAX_AGENTS; oi++) {
@@ -94,6 +96,8 @@ void resolve_conflicts_by_order_local(
             next_positions[index] = manager->agents[index].pos;
         }
     }
+
+    scratch.clearTouchedCellOwner();
 }
 
 void force_idle_cleanup_local(AgentManager* manager, Simulation* sim, Logger* logger) {
@@ -227,13 +231,13 @@ private:
     }
 
     void resolve_stationary_blockers(AgentManager* agents, AgentNodeSlots& next_positions, StepScratch& scratch) const {
-        scratch.resetCellOwner(-1);
+        scratch.clearTouchedCellOwner();
         for (int i = 0; i < MAX_AGENTS; i++) {
             Agent* blocker = &agents->agents[i];
             if (!blocker->pos || !next_positions[i]) continue;
             if (blocker->rotation_wait > 0 || next_positions[i] == blocker->pos) {
                 int blocked_idx = node_flat_index_local(blocker->pos);
-                if (blocked_idx >= 0) scratch.cell_owner[blocked_idx] = i;
+                if (blocked_idx >= 0) scratch.setCellOwner(blocked_idx, i);
             }
         }
 
@@ -247,6 +251,8 @@ private:
                 next_positions[j] = mover->pos;
             }
         }
+
+        scratch.clearTouchedCellOwner();
     }
 
     void finalize_move_state(Simulation* sim, int step_label) const {
@@ -269,8 +275,10 @@ private:
         record_step_phase_accounting(sim, frame, step_time_ms);
         agv_update_deadlock_counter(sim, moved_this_step, frame.is_custom_mode);
         agv_accumulate_wait_ticks_if_realtime(sim);
-        sim->collectMemorySampleAlgo();
-        sim->collectMemorySample();
+        if (frame.step_label == 1 || (frame.step_label % kMemorySampleIntervalSteps) == 0) {
+            sim->collectMemorySampleAlgo();
+            sim->collectMemorySample();
+        }
         sim->total_executed_steps = frame.step_label;
         if (!sim->render_state.suppress_flush) {
             sim->renderer.drawFrame(sim, is_paused);

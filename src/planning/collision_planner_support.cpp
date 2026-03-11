@@ -272,8 +272,28 @@ void OrderedPlannerToolkit::applyRotation(Agent* agent, Node* current, Node* des
     rotation_policy_.apply(agent, current, desired, out_next);
 }
 
+void ConflictResolutionPolicy::clearTouchedCellOwner() {
+    for (int index = 0; index < touched_cell_count_; ++index) {
+        const int cell_index = touched_cell_indices_[index];
+        if (cell_index >= 0 && cell_index < static_cast<int>(cell_owner_.size())) {
+            cell_owner_[cell_index] = -1;
+        }
+    }
+    touched_cell_count_ = 0;
+}
+
+void ConflictResolutionPolicy::setCellOwner(int index, int value) {
+    if (index < 0 || index >= static_cast<int>(cell_owner_.size())) {
+        return;
+    }
+    if (cell_owner_[index] == -1 && touched_cell_count_ < MAX_AGENTS) {
+        touched_cell_indices_[touched_cell_count_++] = index;
+    }
+    cell_owner_[index] = value;
+}
+
 void ConflictResolutionPolicy::resolve(AgentManager* manager, const AgentOrder& order, AgentNodeSlots& next_positions) {
-    cell_owner_.fill(-1);
+    clearTouchedCellOwner();
 
     for (int oi = 0; oi < MAX_AGENTS; ++oi) {
         const int agent_id = order[oi];
@@ -284,15 +304,15 @@ void ConflictResolutionPolicy::resolve(AgentManager* manager, const AgentOrder& 
             next_positions[agent_id] = manager->agents[agent_id].pos;
             continue;
         }
-        cell_owner_[next_idx] = agent_id;
+        setCellOwner(next_idx, agent_id);
     }
 
-    cell_owner_.fill(-1);
+    clearTouchedCellOwner();
     for (int i = 0; i < MAX_AGENTS; ++i) {
         if (!manager->agents[i].pos) continue;
         const int current_idx = node_flat_index(manager->agents[i].pos);
         if (current_idx >= 0) {
-            cell_owner_[current_idx] = i;
+            setCellOwner(current_idx, i);
         }
     }
 
@@ -309,4 +329,6 @@ void ConflictResolutionPolicy::resolve(AgentManager* manager, const AgentOrder& 
             next_positions[agent_id] = manager->agents[agent_id].pos;
         }
     }
+
+    clearTouchedCellOwner();
 }
