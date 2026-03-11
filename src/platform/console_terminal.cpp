@@ -8,7 +8,6 @@ void system_enable_virtual_terminal() {
     SetConsoleOutputCP(65001);
     SetConsoleCP(65001);
     setlocale(LC_ALL, ".UTF8");
-    (void)system("chcp 65001 > nul");
 
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     if (hOut == INVALID_HANDLE_VALUE) return;
