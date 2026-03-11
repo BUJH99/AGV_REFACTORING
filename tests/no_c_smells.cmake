@@ -6,8 +6,10 @@ endif()
 set(FILES
     "${AGV_ROOT}/include/agv/internal/engine_internal.hpp"
     "${AGV_ROOT}/include/agv/internal/engine_model.hpp"
+    "${AGV_ROOT}/include/agv/internal/text_format.hpp"
     "${AGV_ROOT}/src/api/simulation_engine.cpp"
     "${AGV_ROOT}/src/maps/map_catalog.cpp"
+    "${AGV_ROOT}/src/platform/console_terminal.cpp"
     "${AGV_ROOT}/src/planning/collision_planner.cpp"
     "${AGV_ROOT}/src/planning/collision_planner_default_support.cpp"
     "${AGV_ROOT}/src/planning/collision_planner_support.cpp"
@@ -31,6 +33,16 @@ set(BANNED_LITERALS
     "OwnedPtr"
     "sim_bridge"
     "typedef enum"
+    "va_list"
+    "printf("
+    "snprintf("
+    "vsnprintf("
+    "fgets("
+    "sscanf("
+    "fputs("
+    "fwrite("
+    "fflush("
+    "strlen("
 )
 
 foreach(FILE_PATH IN LISTS FILES)

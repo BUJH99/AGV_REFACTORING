@@ -27,7 +27,6 @@ void pathfinder_update_start(Pathfinder* pf, Node* new_start);
 void pathfinder_notify_cell_change(Pathfinder* pf, GridMap* map, const AgentManager* am, Node* changed);
 void pathfinder_compute_shortest_path(Pathfinder* pf, GridMap* map, const AgentManager* am);
 Node* pathfinder_get_next_step(Pathfinder* pf, GridMap* map, const AgentManager* am, Node* current_node);
-void logger_log(Logger* logger, const char* format, ...);
 
 namespace {
 

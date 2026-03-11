@@ -10,7 +10,6 @@
 #define grid_is_valid_coord Grid_isValidCoord
 
 int grid_is_valid_coord(int x, int y);
-void logger_log(Logger* logger, const char* format, ...);
 
 namespace {
 
@@ -859,8 +858,7 @@ int run_partial_CBS(
     int expansions = 0;
     const int expansion_budget = cbs_expansion_budget(group_n);
 
-    CBSNode root;
-    std::memset(&root, 0, sizeof(root));
+    CBSNode root{};
     for (int i = 0; i < group_n; ++i) {
         const int id = group_ids[i];
         Node* plan[MAX_WHCA_HORIZON + 1];
@@ -897,8 +895,7 @@ int run_partial_CBS(
             CBSNode child = current;
             if (child.ncons >= MAX_CBS_CONS) continue;
 
-            CBSConstraint constraint;
-            std::memset(&constraint, 0, sizeof(constraint));
+            CBSConstraint constraint{};
             constraint.agent = (branch == 0) ? conflict.a : conflict.b;
             if (conflict.is_edge) {
                 constraint.is_edge = 1;

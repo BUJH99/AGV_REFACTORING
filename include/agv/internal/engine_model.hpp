@@ -1,11 +1,12 @@
 #pragma once
 
+#include "agv/internal/text_format.hpp"
+
 #include <array>
-#include <cstdarg>
-#include <cstdio>
 #include <deque>
 #include <memory>
 #include <string>
+#include <string_view>
 
 // Private engine type model.
 // This header is intentionally included from src/core/engine_orchestrator.cpp
@@ -214,13 +215,20 @@ class Logger final {
 public:
     Logger() = default;
 
-    void log(const char* fmt, ...);
-    void logV(const char* fmt, va_list args);
+    void appendLine(std::string_view message);
 
     char logs[LOG_BUFFER_LINES][LOG_BUFFER_WIDTH]{};
     int log_head{0};
     int log_count{0};
 };
+
+template <typename... Args>
+inline void logger_log(Logger* logger, std::string_view format, Args&&... args) {
+    if (!logger) {
+        return;
+    }
+    logger->appendLine(agv::internal::text::printf_like(format, std::forward<Args>(args)...));
+}
 
 using Simulation = Simulation_;
 

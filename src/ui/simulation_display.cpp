@@ -2,8 +2,6 @@
 
 #include <array>
 #include <cctype>
-#include <cstdarg>
-#include <cstdio>
 #include <cstring>
 
 #include "agv/internal/engine_internal.hpp"
@@ -75,12 +73,10 @@ public:
         }
     }
 
-    void appendf(const char* format, ...) {
+    template <typename... Args>
+    void appendf(std::string_view format, Args&&... args) {
         if (!buffer_ || remaining_ == 0) return;
-        va_list args;
-        va_start(args, format);
-        appendv(format, args);
-        va_end(args);
+        append(agv::internal::text::printf_like(format, std::forward<Args>(args)...));
     }
 
     void appendChar(char ch) {
@@ -104,12 +100,13 @@ public:
     }
 
 private:
-    void appendv(const char* format, va_list args) {
-        if (remaining_ == 0) return;
-        const int written = vsnprintf(cursor_, remaining_, format, args);
-        if (written < 0) return;
-        const size_t advance = (static_cast<size_t>(written) >= remaining_) ? (remaining_ - 1) : static_cast<size_t>(written);
+    void append(std::string_view text) {
+        if (!buffer_ || remaining_ == 0) return;
+        const size_t advance = std::min(remaining_ - 1, text.size());
+        if (advance == 0) return;
+        std::memcpy(cursor_, text.data(), advance);
         cursor_ += advance;
+        *cursor_ = '\0';
         remaining_ -= advance;
     }
 
@@ -120,7 +117,6 @@ private:
 };
 
 void ui_clear_screen_optimized();
-void logger_log(Logger* logger, const char* format, ...);
 
 static void ui_update_simulation_speed_from_multiplier(Simulation* sim) {
     sim->scenario_manager->simulation_speed = (int)(100.0f / sim->scenario_manager->speed_multiplier);
@@ -212,14 +208,11 @@ static void ui_append_controls_help(DisplayBufferWriter& writer) {
 
 static void ui_position_frame_output(const RendererState& render_state) {
     if (!render_state.fast_render) ui_clear_screen_optimized();
-    else fputs("\x1b[H", stdout);
+    else agv::internal::text::console_write("\x1b[H");
 }
 
 static void ui_write_display_buffer_contents(const Simulation* sim) {
-    const char* display_buffer = sim->display_buffer.data();
-    size_t cur_len = strlen(display_buffer);
-    fwrite(display_buffer, 1, cur_len, stdout);
-    fflush(stdout);
+    agv::internal::text::console_write(std::string_view(sim->display_buffer.data()));
 }
 
 static void ui_flush_display_buffer(const Simulation* sim) {
@@ -434,9 +427,9 @@ static void simulation_append_agent_status_lines(
         const Agent* ag = &am->agents[i];
         const char* c = AGENT_COLORS[i % 10];
 
-        char sbuf[100];
-        if (ag->state == CHARGING) snprintf(sbuf, sizeof(sbuf), "CHARGING... (%d)", ag->charge_timer);
-        else snprintf(sbuf, sizeof(sbuf), "%s", stS[ag->state]);
+        const std::string status_label = (ag->state == CHARGING)
+            ? agv::internal::text::printf_like("CHARGING... (%d)", ag->charge_timer)
+            : std::string(stS[ag->state]);
 
         writer.appendf("%sAgent %c%s: (%2d,%d) ",
             c, ag->symbol, C_NRM,
@@ -447,7 +440,7 @@ static void simulation_append_agent_status_lines(
 
         writer.appendf("[Mileage: %6.1f/%d] [%s%-*s%s]  [stuck:%d]\n",
             ag->total_distance_traveled, (int)DISTANCE_BEFORE_CHARGE,
-            stC[ag->state], STATUS_STRING_WIDTH, sbuf, C_NRM, ag->stuck_steps);
+            stC[ag->state], STATUS_STRING_WIDTH, status_label, C_NRM, ag->stuck_steps);
     }
     writer.appendf("\n");
 }

@@ -20,7 +20,6 @@
 void agent_manager_update_charge_state(AgentManager* m, GridMap* map, Logger* lg);
 void agent_manager_update_state_after_move(AgentManager* m, ScenarioManager* sc, GridMap* map, Logger* lg, Simulation* sim);
 void sort_agents_by_priority(AgentManager* m, int order[MAX_AGENTS]);
-void logger_log(Logger* logger, const char* format, ...);
 
 namespace {
 

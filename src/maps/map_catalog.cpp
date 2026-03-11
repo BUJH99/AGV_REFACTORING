@@ -10,7 +10,7 @@
 int grid_is_valid_coord(int x, int y) { return (x >= 0 && x < GRID_WIDTH&& y >= 0 && y < GRID_HEIGHT); }
 
 static void grid_map_clear(GridMap* map) {
-    memset(map, 0, sizeof(*map));
+    *map = GridMap{};
     for (int y = 0; y < GRID_HEIGHT; ++y)
         for (int x = 0; x < GRID_WIDTH; ++x) {
             map->grid[y][x].x = x;

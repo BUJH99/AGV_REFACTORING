@@ -3,8 +3,6 @@
 #define _CRT_SECURE_NO_WARNINGS
 #include <cctype>
 #include <cmath>
-#include <cstdarg>
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -17,17 +15,6 @@
 #endif
 
 #define sleep_ms(ms) Sleep(ms)
-
-#ifndef APPEND_FMT
-#define APPEND_FMT(P, REM, ...)                            \
-    do {                                                                \
-        int __w = snprintf((P), (REM), __VA_ARGS__);                    \
-        if (__w < 0) __w = 0;                                           \
-        if ((size_t)__w > (REM)) __w = (int)(REM);                      \
-        (P) += __w;                                                     \
-        (REM) -= __w;                                                   \
-    } while (0)
-#endif
 
 #define INPUT_BUFFER_SIZE 500
 
@@ -139,8 +126,6 @@ void simulation_display_status(Simulation* sim, int is_paused);
 static void maybe_report_realtime_dashboard(Simulation* sim);
 Planner planner_from_pathalgo(PathAlgo algo);
 RendererFacade renderer_create_facade(void);
-
-void logger_log(Logger* logger, const char* format, ...);
 int grid_is_valid_coord(int x, int y);
 int grid_is_node_blocked(const GridMap*, const AgentManager*, const Node*, const struct Agent_*);
 void agent_manager_plan_and_resolve_collisions(const PlanningContext& context, Node* next_pos[MAX_AGENTS]);
@@ -240,22 +225,15 @@ void RendererFacade::drawFrame(Simulation_* sim, int is_paused) const {
     }
 }
 
-void Logger::logV(const char* fmt, va_list args) {
+void Logger::appendLine(std::string_view message) {
     int idx = (log_head + log_count) % LOG_BUFFER_LINES;
-    vsnprintf(logs[idx], LOG_BUFFER_WIDTH, fmt, args);
+    agv::internal::text::copy_c_str(logs[idx], LOG_BUFFER_WIDTH, message);
     if (log_count < LOG_BUFFER_LINES) {
         log_count++;
     }
     else {
         log_head = (log_head + 1) % LOG_BUFFER_LINES;
     }
-}
-
-void Logger::log(const char* fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    logV(fmt, args);
-    va_end(args);
 }
 
 Simulation_::Simulation_() {
@@ -305,9 +283,9 @@ void Simulation_::resetRuntimeStats() {
     total_cpu_time_ms = 0.0;
     last_step_cpu_time_ms = 0.0;
     max_step_cpu_time_ms = 0.0;
-    memset(phase_cpu_time_ms, 0, sizeof(phase_cpu_time_ms));
-    memset(phase_step_counts, 0, sizeof(phase_step_counts));
-    memset(phase_completed_tasks, 0, sizeof(phase_completed_tasks));
+    std::fill(std::begin(phase_cpu_time_ms), std::end(phase_cpu_time_ms), 0.0);
+    std::fill(std::begin(phase_step_counts), std::end(phase_step_counts), 0);
+    std::fill(std::begin(phase_completed_tasks), std::end(phase_completed_tasks), 0);
     for (int i = 0; i < MAX_PHASES; i++) {
         phase_first_step[i] = -1;
         phase_last_step[i] = -1;
@@ -373,27 +351,27 @@ void Simulation_::reportRealtimeDashboard() {
         return;
     }
 
-    printf("\n========== Real-Time Dashboard @ step %d ==========\n", steps);
-    printf(" Total Physical Time Steps      : %d\n", steps);
-    printf(" Operating AGVs                 : %d\n", active_agents);
-    printf(" Tasks Completed (total)        : %llu\n", total_completed);
-    printf(" Throughput (total avg)         : %.4f tasks/step\n", throughput_avg);
-    printf(" Throughput (last interval)     : %.4f tasks/step over %d steps\n", throughput_interval, interval_steps);
-    printf(" Total Computation CPU Time     : %.2f ms\n", total_cpu_time_ms);
-    printf(" Average Planning Time / Step   : %.4f ms\n", avg_planning_ms);
-    printf(" Total Task Completion Step     : %d\n", last_task_completion_step);
-    printf(" Total Movement Cost            : %.2f cells\n", total_movement_cost);
-    printf(" Requests Created (total)       : %llu\n", requests_created_total);
-    printf(" Request Wait Ticks (sum)       : %llu\n", request_wait_ticks_sum);
-    printf(" Process Memory Usage Sum      : %.2f KB (avg %.2f KB / sample, peak %.2f KB)\n",
+    agv::internal::text::console_print("\n========== Real-Time Dashboard @ step %d ==========\n", steps);
+    agv::internal::text::console_print(" Total Physical Time Steps      : %d\n", steps);
+    agv::internal::text::console_print(" Operating AGVs                 : %d\n", active_agents);
+    agv::internal::text::console_print(" Tasks Completed (total)        : %llu\n", total_completed);
+    agv::internal::text::console_print(" Throughput (total avg)         : %.4f tasks/step\n", throughput_avg);
+    agv::internal::text::console_print(" Throughput (last interval)     : %.4f tasks/step over %d steps\n", throughput_interval, interval_steps);
+    agv::internal::text::console_print(" Total Computation CPU Time     : %.2f ms\n", total_cpu_time_ms);
+    agv::internal::text::console_print(" Average Planning Time / Step   : %.4f ms\n", avg_planning_ms);
+    agv::internal::text::console_print(" Total Task Completion Step     : %d\n", last_task_completion_step);
+    agv::internal::text::console_print(" Total Movement Cost            : %.2f cells\n", total_movement_cost);
+    agv::internal::text::console_print(" Requests Created (total)       : %llu\n", requests_created_total);
+    agv::internal::text::console_print(" Request Wait Ticks (sum)       : %llu\n", request_wait_ticks_sum);
+    agv::internal::text::console_print(" Process Memory Usage Sum      : %.2f KB (avg %.2f KB / sample, peak %.2f KB)\n",
         memory_usage_sum_kb, avg_memory_kb, memory_usage_peak_kb);
-    printf(" Heap Moves (total/last)          : %llu / %llu\n", algo_heap_moves_total, algo_heap_moves_last_step);
-    printf(" Generated Nodes (total/last)     : %llu / %llu\n", algo_generated_nodes_total, algo_generated_nodes_last_step);
-    printf(" Valid Expansions (total/last)    : %llu / %llu\n", algo_valid_expansions_total, algo_valid_expansions_last_step);
+    agv::internal::text::console_print(" Heap Moves (total/last)          : %llu / %llu\n", algo_heap_moves_total, algo_heap_moves_last_step);
+    agv::internal::text::console_print(" Generated Nodes (total/last)     : %llu / %llu\n", algo_generated_nodes_total, algo_generated_nodes_last_step);
+    agv::internal::text::console_print(" Valid Expansions (total/last)    : %llu / %llu\n", algo_valid_expansions_total, algo_valid_expansions_last_step);
     double dash_ratio_total = (algo_generated_nodes_total > 0) ? (double)algo_valid_expansions_total / (double)algo_generated_nodes_total : 0.0;
     double dash_ratio_last = (algo_generated_nodes_last_step > 0) ? (double)algo_valid_expansions_last_step / (double)algo_generated_nodes_last_step : 0.0;
-    printf(" Valid Expansion Ratio (total/last): %.4f / %.4f\n", dash_ratio_total, dash_ratio_last);
-    printf("===================================================\n");
+    agv::internal::text::console_print(" Valid Expansion Ratio (total/last): %.4f / %.4f\n", dash_ratio_total, dash_ratio_last);
+    agv::internal::text::console_print("===================================================\n");
 
     last_report_completed_tasks = total_completed;
     last_report_step = steps;
@@ -514,7 +492,7 @@ static int are_all_agents_idle(const AgentManager* agent_manager) {
 
 static void print_completion_message_if_needed(const Simulation* sim, const char* message) {
     if (!sim || sim->suppress_stdout) return;
-    printf(C_B_GRN "\n%s\n" C_NRM, message);
+    agv::internal::text::console_print(C_B_GRN "\n%s\n" C_NRM, message);
 }
 
 static int is_custom_scenario_complete(const Simulation* sim) {
@@ -553,15 +531,6 @@ static void maybe_sleep_for_simulation_speed(const ScenarioManager* scenario) {
 // =============================================================================
 // 4.5) Renderer Facade Implementation (delegates to simulation_display_status)
 // =============================================================================
-// Logger
-void logger_log(Logger* l, const char* fmt, ...) {
-    if (!l) return;
-    va_list a;
-    va_start(a, fmt);
-    l->logV(fmt, a);
-    va_end(a);
-}
-
 // =============================================================================
 
 // =============================================================================
@@ -669,8 +638,8 @@ int copy_render_frame(Simulation* sim, bool is_paused, char* buffer, size_t buff
         simulation_display_status(sim, is_paused);
         sim->render_state.suppress_flush = prev_suppress;
     }
-    snprintf(buffer, buffer_size, "%s", sim->display_buffer.data());
-    return (int)strlen(buffer);
+    agv::internal::text::copy_c_str(buffer, buffer_size, sim->display_buffer.data());
+    return static_cast<int>(std::char_traits<char>::length(buffer));
 }
 
 #ifndef AGV_NO_MAIN
@@ -684,11 +653,11 @@ int main() {
         sim.run();
         ui_leave_alt_screen();
         sim.printPerformanceSummary();
-        printf("\nPress any key to exit...\n");
+        agv::internal::text::console_print("\nPress any key to exit...\n");
         (void)_getch();
     }
     else {
-        printf("\nSimulation setup was cancelled. Exiting.\n");
+        agv::internal::text::console_print("\nSimulation setup was cancelled. Exiting.\n");
     }
 
 

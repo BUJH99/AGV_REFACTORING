@@ -1,13 +1,14 @@
 #define _CRT_SECURE_NO_WARNINGS
 
-#include <locale.h>
-#include <stdio.h>
+#include <clocale>
 #include <windows.h>
+
+#include "agv/internal/text_format.hpp"
 
 void system_enable_virtual_terminal() {
     SetConsoleOutputCP(65001);
     SetConsoleCP(65001);
-    setlocale(LC_ALL, ".UTF8");
+    std::setlocale(LC_ALL, ".UTF8");
 
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     if (hOut == INVALID_HANDLE_VALUE) return;
@@ -24,8 +25,7 @@ void ui_clear_screen_optimized() {
 
     DWORD mode = 0;
     if (GetConsoleMode(hConsole, &mode) && (mode & ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
-        fputs("\x1b[H\x1b[2J\x1b[3J", stdout);
-        fflush(stdout);
+        agv::internal::text::console_write("\x1b[H\x1b[2J\x1b[3J");
         return;
     }
 
@@ -62,11 +62,9 @@ void agv_prepare_console(void) {
 }
 
 void ui_enter_alt_screen(void) {
-    fputs("\x1b[?1049h\x1b[H\x1b[?25l", stdout);
-    fflush(stdout);
+    agv::internal::text::console_write("\x1b[?1049h\x1b[H\x1b[?25l");
 }
 
 void ui_leave_alt_screen(void) {
-    fputs("\x1b[?1049l\x1b[?25h", stdout);
-    fflush(stdout);
+    agv::internal::text::console_write("\x1b[?1049l\x1b[?25h");
 }

@@ -12,7 +12,6 @@
 #define C_B_CYN "\x1b[1;36m"
 #endif
 
-void logger_log(Logger* logger, const char* format, ...);
 void pathfinder_update_start(Pathfinder* pf, Node* new_start);
 void pathfinder_compute_shortest_path(Pathfinder* pf, GridMap* map, const AgentManager* am);
 

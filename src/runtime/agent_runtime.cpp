@@ -29,7 +29,6 @@
 #define C_B_YEL "\x1b[1;33m"
 #endif
 
-void logger_log(Logger* logger, const char* format, ...);
 void pathfinder_notify_cell_change(Pathfinder* pf, GridMap* map, const AgentManager* am, Node* changed);
 
 AgentManager::AgentManager() {

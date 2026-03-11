@@ -86,87 +86,87 @@ void Simulation_::printPerformanceSummary() const {
     const double throughput = (recorded_steps > 0) ? ((double)sim->tasks_completed_total / (double)recorded_steps) : 0.0;
     const double avg_memory_kb = (sim->memory_samples > 0) ? (sim->memory_usage_sum_kb / (double)sim->memory_samples) : 0.0;
 
-    printf("\n============================================\n");
-    printf("          Simulation Result Report\n");
-    printf("============================================\n");
-    printf(" Mode                                : %s\n", simulation_mode_report_label(sc));
-    printf(" Map ID                              : %d\n", sim->map_id);
-    printf(" Path Planning Algorithm             : %s\n", simulation_path_algo_report_label(sim->path_algo));
-    printf(" Total Physical Time Steps           : %d\n", recorded_steps);
-    printf(" Operating AGVs                     : %d\n", simulation_active_agent_count(am));
+    agv::internal::text::console_print("\n============================================\n");
+    agv::internal::text::console_print("          Simulation Result Report\n");
+    agv::internal::text::console_print("============================================\n");
+    agv::internal::text::console_print(" Mode                                : %s\n", simulation_mode_report_label(sc));
+    agv::internal::text::console_print(" Map ID                              : %d\n", sim->map_id);
+    agv::internal::text::console_print(" Path Planning Algorithm             : %s\n", simulation_path_algo_report_label(sim->path_algo));
+    agv::internal::text::console_print(" Total Physical Time Steps           : %d\n", recorded_steps);
+    agv::internal::text::console_print(" Operating AGVs                     : %d\n", simulation_active_agent_count(am));
 
-    printf(" Tasks Completed (total)             : %llu\n", sim->tasks_completed_total);
-    printf(" Throughput [task / total physical time] : %.4f\n", throughput);
-    printf(" Total Movement Cost (cells)         : %.2f\n", sim->total_movement_cost);
+    agv::internal::text::console_print(" Tasks Completed (total)             : %llu\n", sim->tasks_completed_total);
+    agv::internal::text::console_print(" Throughput [task / total physical time] : %.4f\n", throughput);
+    agv::internal::text::console_print(" Total Movement Cost (cells)         : %.2f\n", sim->total_movement_cost);
 
-    printf(" Requests Created (total)            : %llu\n", sim->requests_created_total);
-    printf(" Request Wait Ticks (sum)            : %llu\n", sim->request_wait_ticks_sum);
-    printf(" Process Memory Usage Sum            : %.2f KB\n", sim->memory_usage_sum_kb);
-    printf(" Process Memory Usage Average        : %.2f KB\n", avg_memory_kb);
-    printf(" Process Memory Usage Peak           : %.2f KB\n", sim->memory_usage_peak_kb);
-    printf(" Remaining Parked Vehicles           : %d\n", am ? am->total_cars_parked : 0);
-    printf("\n -- Algorithm and Planner Statistics --\n");
-    printf(" Nodes Expanded (total)             : %llu\n", sim->algo_nodes_expanded_total);
-    printf(" Heap Moves (total)                  : %llu\n", sim->algo_heap_moves_total);
-    printf(" Generated Nodes (total)            : %llu\n", sim->algo_generated_nodes_total);
-    printf(" Valid Expansions (total)           : %llu\n", sim->algo_valid_expansions_total);
+    agv::internal::text::console_print(" Requests Created (total)            : %llu\n", sim->requests_created_total);
+    agv::internal::text::console_print(" Request Wait Ticks (sum)            : %llu\n", sim->request_wait_ticks_sum);
+    agv::internal::text::console_print(" Process Memory Usage Sum            : %.2f KB\n", sim->memory_usage_sum_kb);
+    agv::internal::text::console_print(" Process Memory Usage Average        : %.2f KB\n", avg_memory_kb);
+    agv::internal::text::console_print(" Process Memory Usage Peak           : %.2f KB\n", sim->memory_usage_peak_kb);
+    agv::internal::text::console_print(" Remaining Parked Vehicles           : %d\n", am ? am->total_cars_parked : 0);
+    agv::internal::text::console_print("\n -- Algorithm and Planner Statistics --\n");
+    agv::internal::text::console_print(" Nodes Expanded (total)             : %llu\n", sim->algo_nodes_expanded_total);
+    agv::internal::text::console_print(" Heap Moves (total)                  : %llu\n", sim->algo_heap_moves_total);
+    agv::internal::text::console_print(" Generated Nodes (total)            : %llu\n", sim->algo_generated_nodes_total);
+    agv::internal::text::console_print(" Valid Expansions (total)           : %llu\n", sim->algo_valid_expansions_total);
     double valid_ratio_total = (sim->algo_generated_nodes_total > 0) ? (double)sim->algo_valid_expansions_total / (double)sim->algo_generated_nodes_total : 0.0;
-    printf(" Valid Expansion Ratio (valid/gen) : %.4f\n", valid_ratio_total);
+    agv::internal::text::console_print(" Valid Expansion Ratio (valid/gen) : %.4f\n", valid_ratio_total);
     if (recorded_steps > 0) {
         const double avg_nodes_per_step = (double)sim->algo_nodes_expanded_total / (double)recorded_steps;
         const double avg_heap_moves_per_step = (double)sim->algo_heap_moves_total / (double)recorded_steps;
         const double avg_generated_per_step = (double)sim->algo_generated_nodes_total / (double)recorded_steps;
         const double avg_valid_per_step = (double)sim->algo_valid_expansions_total / (double)recorded_steps;
-        printf(" Nodes Expanded (avg per step)      : %.2f\n", avg_nodes_per_step);
-        printf(" Heap Moves (avg per step)          : %.2f\n", avg_heap_moves_per_step);
-        printf(" Generated Nodes (avg per step)     : %.2f\n", avg_generated_per_step);
-        printf(" Valid Expansions (avg per step)    : %.2f\n", avg_valid_per_step);
+        agv::internal::text::console_print(" Nodes Expanded (avg per step)      : %.2f\n", avg_nodes_per_step);
+        agv::internal::text::console_print(" Heap Moves (avg per step)          : %.2f\n", avg_heap_moves_per_step);
+        agv::internal::text::console_print(" Generated Nodes (avg per step)     : %.2f\n", avg_generated_per_step);
+        agv::internal::text::console_print(" Valid Expansions (avg per step)    : %.2f\n", avg_valid_per_step);
     }
 
     if (sc && sc->mode == MODE_CUSTOM) {
-        printf("\n -- Custom Scenario Breakdown --\n");
+        agv::internal::text::console_print("\n -- Custom Scenario Breakdown --\n");
         for (int i = 0; i < sc->num_phases; i++) {
             const DynamicPhase* ph = &sc->phases[i];
             const int planned = ph->task_count;
             const int completed = sim->phase_completed_tasks[i];
             const int step_count = sim->phase_step_counts[i];
-            printf(" Phase %d (%s)\n", i + 1, ph->type_name.c_str());
-            printf("   Planned Tasks           : %d\n", planned);
-            printf("   Completed Tasks         : %d\n", completed);
+            agv::internal::text::console_print(" Phase %d (%s)\n", i + 1, ph->type_name.c_str());
+            agv::internal::text::console_print("   Planned Tasks           : %d\n", planned);
+            agv::internal::text::console_print("   Completed Tasks         : %d\n", completed);
             if (step_count > 0) {
-                printf("   Step Span               : %d step(s)", step_count);
+                agv::internal::text::console_print("   Step Span               : %d step(s)", step_count);
                 if (sim->phase_first_step[i] >= 0 && sim->phase_last_step[i] >= 0) {
-                    printf(" [#%d -> #%d]\n", sim->phase_first_step[i], sim->phase_last_step[i]);
+                    agv::internal::text::console_print(" [#%d -> #%d]\n", sim->phase_first_step[i], sim->phase_last_step[i]);
                 } else {
-                    printf("\n");
+                    agv::internal::text::console_print("\n");
                 }
                 const double phase_avg_cpu = sim->phase_cpu_time_ms[i] / (double)step_count;
-                printf("   CPU Time                : %.2f ms (avg %.4f ms/step)\n",
+                agv::internal::text::console_print("   CPU Time                : %.2f ms (avg %.4f ms/step)\n",
                     sim->phase_cpu_time_ms[i], phase_avg_cpu);
             } else {
-                printf("   Step Span               : N/A\n");
+                agv::internal::text::console_print("   Step Span               : N/A\n");
             }
             if (completed < planned) {
-                printf("   Remaining Tasks         : %d\n", planned - completed);
+                agv::internal::text::console_print("   Remaining Tasks         : %d\n", planned - completed);
             }
         }
     } else if (sc && sc->mode == MODE_REALTIME) {
-        printf("\n -- Custom Scenario Breakdown --\n");
+        agv::internal::text::console_print("\n -- Custom Scenario Breakdown --\n");
 
-        printf(" Phase 1 (%s)\n", "Real-Time");
-        printf("   Planned Tasks           : %d\n", (int)sim->tasks_completed_total);
-        printf("   Completed Tasks         : %d\n", (int)sim->tasks_completed_total);
+        agv::internal::text::console_print(" Phase 1 (%s)\n", "Real-Time");
+        agv::internal::text::console_print("   Planned Tasks           : %d\n", (int)sim->tasks_completed_total);
+        agv::internal::text::console_print("   Completed Tasks         : %d\n", (int)sim->tasks_completed_total);
         if (recorded_steps > 0) {
-            printf("   Step Span               : %d step(s) [#%d -> #%d]\n", recorded_steps, 1, recorded_steps);
+            agv::internal::text::console_print("   Step Span               : %d step(s) [#%d -> #%d]\n", recorded_steps, 1, recorded_steps);
             const double phase_avg_cpu = sim->total_cpu_time_ms / (double)recorded_steps;
-            printf("   CPU Time                : %.2f ms (avg %.4f ms/step)\n", sim->total_cpu_time_ms, phase_avg_cpu);
+            agv::internal::text::console_print("   CPU Time                : %.2f ms (avg %.4f ms/step)\n", sim->total_cpu_time_ms, phase_avg_cpu);
         } else {
-            printf("   Step Span               : N/A\n");
-            printf("   CPU Time                : 0.00 ms (avg 0.0000 ms/step)\n");
+            agv::internal::text::console_print("   Step Span               : N/A\n");
+            agv::internal::text::console_print("   CPU Time                : 0.00 ms (avg 0.0000 ms/step)\n");
         }
     }
 
-    printf("============================================\n");
+    agv::internal::text::console_print("============================================\n");
 }
 
 void simulation_print_performance_summary(const Simulation* sim) {
