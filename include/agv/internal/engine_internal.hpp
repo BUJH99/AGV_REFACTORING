@@ -85,7 +85,7 @@ int agv_current_whca_horizon();
 int agv_current_conflict_score();
 void agv_set_whca_runtime_state(int conflict_score, int horizon);
 void agv_begin_apply_config(Simulation_* sim, int suppress_stdout);
-int agv_finalize_apply_config(Simulation_* sim, const char* step_metrics_path);
+int agv_finalize_apply_config(Simulation_* sim);
 AgentWorkloadSnapshot agv_collect_agent_workload(const AgentManager* am);
 Node* agv_select_best_charge_station(Agent* ag, GridMap* map, AgentManager* am, Logger* lg);
 void agv_set_goal_if_needed(Agent* ag, GridMap* map, AgentManager* am, Logger* lg);

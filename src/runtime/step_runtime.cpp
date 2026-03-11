@@ -286,7 +286,6 @@ private:
         sim->collectMemorySampleAlgo();
         sim->collectMemorySample();
         sim->total_executed_steps = frame.step_label;
-        sim->appendStepMetrics(frame.step_label);
         if (!sim->render_state.suppress_flush) {
             sim->renderer.drawFrame(sim, is_paused);
         }

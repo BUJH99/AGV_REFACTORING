@@ -1,5 +1,6 @@
 #define _CRT_SECURE_NO_WARNINGS
 
+#include <algorithm>
 #include <cstdlib>
 #include <cctype>
 #include <cstdio>
@@ -130,8 +131,74 @@ ScenarioManager::~ScenarioManager() {
 
 namespace {
 
+int simulation_setup_custom_scenario_local(Simulation* sim);
+int simulation_setup_realtime_local(ScenarioManager* scenario);
+int simulation_setup_speed_local(ScenarioManager* scenario);
+
 void do_ms_pause(int ms) {
     Sleep(ms);
+}
+
+constexpr int kMinMapId = 1;
+constexpr int kMaxMapId = 5;
+
+const char* phase_type_name(PhaseType type) {
+    return (type == PARK_PHASE) ? "park" : "exit";
+}
+
+void assign_dynamic_phase(DynamicPhase& phase, PhaseType type, int task_count) {
+    phase.type = type;
+    phase.task_count = std::max(1, task_count);
+    std::snprintf(phase.type_name, sizeof(phase.type_name), "%s", phase_type_name(type));
+}
+
+void reset_scenario_runtime_state(ScenarioManager& scenario) {
+    scenario.clearTaskQueue();
+    scenario.time_step = 0;
+    scenario.num_phases = 0;
+    scenario.current_phase_index = 0;
+    scenario.tasks_completed_in_phase = 0;
+    scenario.park_chance = 0;
+    scenario.exit_chance = 0;
+}
+
+void apply_custom_config(ScenarioManager& scenario, const AgvSimulationConfig& cfg) {
+    scenario.num_phases = std::clamp(cfg.num_phases, 0, MAX_PHASES);
+    for (int i = 0; i < scenario.num_phases; ++i) {
+        const auto type = (cfg.phases[i].type == AGV_PHASECFG_EXIT) ? EXIT_PHASE : PARK_PHASE;
+        assign_dynamic_phase(scenario.phases[i], type, cfg.phases[i].task_count);
+    }
+}
+
+void apply_realtime_config(ScenarioManager& scenario, const AgvSimulationConfig& cfg) {
+    scenario.park_chance = cfg.realtime_park_chance;
+    scenario.exit_chance = cfg.realtime_exit_chance;
+}
+
+void apply_selected_algorithm(Simulation* sim, int algorithm_choice) {
+    sim->path_algo = (algorithm_choice == 2) ? PATHALGO_ASTAR_SIMPLE :
+        (algorithm_choice == 3) ? PATHALGO_DSTAR_BASIC : PATHALGO_DEFAULT;
+    logger_log(sim->logger, "[%sAlgo%s] Algorithm selected: %d", C_B_CYN, C_NRM, algorithm_choice);
+    sim->render_state.configureForAlgorithm(sim->path_algo);
+    sim->planner = planner_from_pathalgo(sim->path_algo);
+}
+
+bool run_mode_setup(Simulation* sim, char mode) {
+    ScenarioManager* const scenario = sim->scenario_manager;
+    switch (mode) {
+    case 'a':
+        scenario->mode = MODE_CUSTOM;
+        return simulation_setup_custom_scenario_local(sim) &&
+            simulation_setup_speed_local(scenario);
+    case 'b':
+        scenario->mode = MODE_REALTIME;
+        return simulation_setup_realtime_local(scenario) &&
+            simulation_setup_speed_local(scenario);
+    case 'q':
+        return false;
+    default:
+        return false;
+    }
 }
 
 char get_single_char_local() {
@@ -194,15 +261,11 @@ int simulation_setup_custom_scenario_local(Simulation* sim) {
 
         char prompt[64];
         std::snprintf(prompt, sizeof(prompt), "Phase task count (1~%d): ", max_per_phase);
-        scenario->phases[i].task_count = get_integer_input_local(prompt, 1, max_per_phase);
-
-        if (phase_kind == 'a') {
-            scenario->phases[i].type = PARK_PHASE;
-            std::snprintf(scenario->phases[i].type_name, sizeof(scenario->phases[i].type_name), "park");
-        } else {
-            scenario->phases[i].type = EXIT_PHASE;
-            std::snprintf(scenario->phases[i].type_name, sizeof(scenario->phases[i].type_name), "exit");
-        }
+        const int task_count = get_integer_input_local(prompt, 1, max_per_phase);
+        assign_dynamic_phase(
+            scenario->phases[i],
+            (phase_kind == 'a') ? PARK_PHASE : EXIT_PHASE,
+            task_count);
 
         std::printf(C_GRN "Phase %d configured: %s x %d.\n" C_NRM,
             i + 1, scenario->phases[i].type_name, scenario->phases[i].task_count);
@@ -233,12 +296,7 @@ int simulation_setup_speed_local(ScenarioManager* scenario) {
     scenario->speed_multiplier = get_float_input_local(
         "Enter speed multiplier (0.0=as fast as possible, up to 10000.0): ",
         0.0f, MAX_SPEED_MULTIPLIER);
-    if (scenario->speed_multiplier <= 0.0f) {
-        scenario->simulation_speed = 0;
-    } else {
-        scenario->simulation_speed = (int)(100.0f / scenario->speed_multiplier);
-        if (scenario->simulation_speed < 0) scenario->simulation_speed = 0;
-    }
+    scenario->applySpeedMultiplier(scenario->speed_multiplier);
 
     std::printf(C_B_GRN "\n--- %.1fx simulation speed configured. ---\n" C_NRM, scenario->speed_multiplier);
     do_ms_pause(1500);
@@ -261,20 +319,17 @@ int simulation_setup_map_local(Simulation* sim) {
 }
 
 int agv_clamp_map_id_local(int map_id) {
-    if (map_id < 1) return 1;
-    if (map_id > 5) return 5;
-    return map_id;
+    return std::clamp(map_id, kMinMapId, kMaxMapId);
 }
 
 PathAlgo agv_path_algo_from_config_local(int path_algo) {
-    if (path_algo == PATHALGO_ASTAR_SIMPLE || path_algo == 1) return PATHALGO_ASTAR_SIMPLE;
-    if (path_algo == PATHALGO_DSTAR_BASIC || path_algo == 2 || path_algo == 3) return PATHALGO_DSTAR_BASIC;
+    if (path_algo == PATHALGO_ASTAR_SIMPLE || path_algo == 1) {
+        return PATHALGO_ASTAR_SIMPLE;
+    }
+    if (path_algo == PATHALGO_DSTAR_BASIC || path_algo == 2 || path_algo == 3) {
+        return PATHALGO_DSTAR_BASIC;
+    }
     return PATHALGO_DEFAULT;
-}
-
-void agv_apply_speed_to_scenario_local(ScenarioManager* scenario, float speed_multiplier) {
-    if (!scenario) return;
-    scenario->applySpeedMultiplier(speed_multiplier);
 }
 
 class TaskDispatchService final {
@@ -403,39 +458,14 @@ int simulation_setup(Simulation* sim) {
     std::printf("1. %sDefault (WHCA* + D* Lite + WFG + CBS)%s\n", C_B_GRN, C_NRM);
     std::printf("2. %sA* (single-agent)%s - recomputes the path from scratch each step\n", C_YEL, C_NRM);
     std::printf("3. %sD* Lite (incremental)%s - reuses previous search when the map changes\n\n", C_YEL, C_NRM);
-    {
-        int algorithm = get_integer_input_local("Select algorithm (1~3): ", 1, 3);
-        sim->path_algo = (algorithm == 2) ? PATHALGO_ASTAR_SIMPLE :
-            (algorithm == 3) ? PATHALGO_DSTAR_BASIC : PATHALGO_DEFAULT;
-        logger_log(sim->logger, "[%sAlgo%s] Algorithm selected: %d", C_B_CYN, C_NRM, algorithm);
-        sim->render_state.configureForAlgorithm(sim->path_algo);
-        sim->planner = planner_from_pathalgo(sim->path_algo);
-    }
+    apply_selected_algorithm(sim, get_integer_input_local("Select algorithm (1~3): ", 1, 3));
 
     std::printf(C_B_WHT "\n--- Select Simulation Mode ---\n" C_NRM);
     std::printf("a. %sCustom phased scenario%s\n", C_YEL, C_NRM);
     std::printf("b. %sReal-time random scenario%s\n", C_CYN, C_NRM);
     std::printf("q. %sQuit%s\n\n", C_RED, C_NRM);
 
-    char mode = get_char_input_local("Select mode: ", "abq");
-    int ok = 0;
-    switch (mode) {
-    case 'a':
-        sim->scenario_manager->mode = MODE_CUSTOM;
-        if (simulation_setup_custom_scenario_local(sim)) {
-            ok = simulation_setup_speed_local(sim->scenario_manager);
-        }
-        break;
-    case 'b':
-        sim->scenario_manager->mode = MODE_REALTIME;
-        if (simulation_setup_realtime_local(sim->scenario_manager)) {
-            ok = simulation_setup_speed_local(sim->scenario_manager);
-        }
-        break;
-    case 'q':
-        return 0;
-    }
-
+    const int ok = run_mode_setup(sim, get_char_input_local("Select mode: ", "abq")) ? 1 : 0;
     if (ok) ui_clear_screen_optimized();
     return ok;
 }
@@ -468,36 +498,18 @@ int agv_apply_config(Simulation* sim, const AgvSimulationConfig* cfg) {
     sim->planner = planner_from_pathalgo(sim->path_algo);
     sim->render_state.configureForAlgorithm(sim->path_algo);
 
-    ScenarioManager* scenario = sim->scenario_manager;
-    scenario->clearTaskQueue();
-    scenario->mode = (cfg->mode == AGV_MODECFG_REALTIME) ? MODE_REALTIME : MODE_CUSTOM;
-    scenario->time_step = 0;
-    scenario->num_phases = 0;
-    scenario->current_phase_index = 0;
-    scenario->tasks_completed_in_phase = 0;
-    scenario->task_queue.clear();
-    scenario->task_count = 0;
-    scenario->park_chance = 0;
-    scenario->exit_chance = 0;
+    ScenarioManager& scenario = *sim->scenario_manager;
+    reset_scenario_runtime_state(scenario);
+    scenario.mode = (cfg->mode == AGV_MODECFG_REALTIME) ? MODE_REALTIME : MODE_CUSTOM;
 
-    if (scenario->mode == MODE_REALTIME) {
-        scenario->park_chance = cfg->realtime_park_chance;
-        scenario->exit_chance = cfg->realtime_exit_chance;
+    if (scenario.mode == MODE_REALTIME) {
+        apply_realtime_config(scenario, *cfg);
     } else {
-        scenario->num_phases = cfg->num_phases;
-        if (scenario->num_phases < 0) scenario->num_phases = 0;
-        if (scenario->num_phases > MAX_PHASES) scenario->num_phases = MAX_PHASES;
-        for (int i = 0; i < scenario->num_phases; i++) {
-            scenario->phases[i].type = (cfg->phases[i].type == AGV_PHASECFG_EXIT) ? EXIT_PHASE : PARK_PHASE;
-            scenario->phases[i].task_count = cfg->phases[i].task_count;
-            if (scenario->phases[i].task_count < 1) scenario->phases[i].task_count = 1;
-            std::snprintf(scenario->phases[i].type_name, sizeof(scenario->phases[i].type_name), "%s",
-                (scenario->phases[i].type == PARK_PHASE) ? "park" : "exit");
-        }
+        apply_custom_config(scenario, *cfg);
     }
 
-    agv_apply_speed_to_scenario_local(scenario, cfg->speed_multiplier);
-    return agv_finalize_apply_config(sim, cfg->step_metrics_path);
+    scenario.applySpeedMultiplier(cfg->speed_multiplier);
+    return agv_finalize_apply_config(sim);
 }
 
 void agv_update_task_dispatch(Simulation* sim) {

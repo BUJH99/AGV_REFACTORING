@@ -2,8 +2,9 @@
 
 #include "agv/sim_bridge.hpp"
 
+#include <algorithm>
 #include <stdexcept>
-#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -65,8 +66,34 @@ int toLegacyPhase(PhaseType phase) {
     return phase == PhaseType::Exit ? kPhaseExit : kPhasePark;
 }
 
-std::string pathToUtf8(const std::filesystem::path& path) {
-    return path.string();
+MetricsSnapshot toMetricsSnapshot(const AgvRunSummary& legacy) {
+    MetricsSnapshot snapshot;
+    snapshot.seed = legacy.seed;
+    snapshot.mapId = legacy.map_id;
+    snapshot.algorithm = fromLegacyAlgo(legacy.path_algo);
+    snapshot.mode = fromLegacyMode(legacy.mode);
+    snapshot.activeAgents = legacy.active_agents;
+    snapshot.recordedSteps = legacy.recorded_steps;
+    snapshot.tasksCompletedTotal = legacy.tasks_completed_total;
+    snapshot.throughput = legacy.throughput;
+    snapshot.totalMovementCost = legacy.total_movement_cost;
+    snapshot.deadlockCount = legacy.deadlock_count;
+    snapshot.totalCpuTimeMs = legacy.total_cpu_time_ms;
+    snapshot.avgCpuTimeMs = legacy.avg_cpu_time_ms;
+    snapshot.totalPlanningTimeMs = legacy.total_planning_time_ms;
+    snapshot.avgPlanningTimeMs = legacy.avg_planning_time_ms;
+    snapshot.memoryUsageSumKb = legacy.memory_usage_sum_kb;
+    snapshot.avgMemoryUsageKb = legacy.avg_memory_usage_kb;
+    snapshot.memoryUsagePeakKb = legacy.memory_usage_peak_kb;
+    snapshot.algoNodesExpandedTotal = legacy.algo_nodes_expanded_total;
+    snapshot.algoHeapMovesTotal = legacy.algo_heap_moves_total;
+    snapshot.algoGeneratedNodesTotal = legacy.algo_generated_nodes_total;
+    snapshot.algoValidExpansionsTotal = legacy.algo_valid_expansions_total;
+    snapshot.validExpansionRatio = legacy.valid_expansion_ratio;
+    snapshot.requestsCreatedTotal = legacy.requests_created_total;
+    snapshot.requestWaitTicksSum = legacy.request_wait_ticks_sum;
+    snapshot.remainingParkedVehicles = legacy.remaining_parked_vehicles;
+    return snapshot;
 }
 
 }  // namespace
@@ -75,32 +102,40 @@ struct SimulationEngine::Impl {
     std::unique_ptr<Simulation, SimulationDeleter> simulation;
     AgvSimulationConfig config{};
     bool dirty{true};
-    std::string stepMetricsPath;
+    std::vector<char> renderBuffer;
 
-    Impl() {
+    Impl()
+        : renderBuffer(static_cast<std::size_t>(kAgvRenderBufferSize), '\0') {
         agv_default_config(&config);
     }
 
-    void refreshPathPointer() {
-        config.step_metrics_path = stepMetricsPath.empty() ? nullptr : stepMetricsPath.c_str();
-    }
-
-    void rebuildSimulationIfNeeded() {
-        if (!dirty && simulation != nullptr) {
-            return;
-        }
-
+    Simulation& createFreshSimulation() {
         simulation.reset(simulation_create());
         if (simulation == nullptr) {
             throw std::runtime_error("simulation_create failed");
         }
+        return *simulation;
+    }
 
-        refreshPathPointer();
+    Simulation& requireInitialized(std::string_view operation) const {
+        if (simulation == nullptr) {
+            throw std::runtime_error(std::string(operation));
+        }
+        return *simulation;
+    }
+
+    Simulation& rebuildSimulationIfNeeded() {
+        if (!dirty && simulation != nullptr) {
+            return *simulation;
+        }
+
+        createFreshSimulation();
         if (!agv_apply_config(simulation.get(), &config)) {
             throw std::runtime_error("agv_apply_config failed");
         }
 
         dirty = false;
+        return *simulation;
     }
 };
 
@@ -133,19 +168,13 @@ void SimulationEngine::configureScenario(const ScenarioConfig& config) {
     impl_->config.speed_multiplier = static_cast<float>(config.speedMultiplier);
     impl_->config.realtime_park_chance = config.realtimeParkChance;
     impl_->config.realtime_exit_chance = config.realtimeExitChance;
-    impl_->config.num_phases = static_cast<int>(config.phases.size());
-    if (impl_->config.num_phases > kAgvMaxPhases) {
-        impl_->config.num_phases = kAgvMaxPhases;
-    }
+    impl_->config.num_phases = std::min<int>(static_cast<int>(config.phases.size()), kAgvMaxPhases);
 
-    for (int i = 0; i < kAgvMaxPhases; ++i) {
-        impl_->config.phases[i].type = kPhasePark;
-        impl_->config.phases[i].task_count = 1;
-    }
-
+    std::fill_n(impl_->config.phases, kAgvMaxPhases, AgvPhaseConfig{kPhasePark, 1});
     for (int i = 0; i < impl_->config.num_phases; ++i) {
-        impl_->config.phases[i].type = toLegacyPhase(config.phases[static_cast<std::size_t>(i)].type);
-        impl_->config.phases[i].task_count = config.phases[static_cast<std::size_t>(i)].taskCount;
+        const auto& phase = config.phases[static_cast<std::size_t>(i)];
+        impl_->config.phases[i].type = toLegacyPhase(phase.type);
+        impl_->config.phases[i].task_count = phase.taskCount;
     }
 
     impl_->dirty = true;
@@ -156,35 +185,22 @@ void SimulationEngine::setSuppressOutput(bool suppress) {
     impl_->dirty = true;
 }
 
-void SimulationEngine::setStepMetricsOutput(const std::optional<std::filesystem::path>& outputPath) {
-    impl_->stepMetricsPath.clear();
-    if (outputPath.has_value()) {
-        impl_->stepMetricsPath = pathToUtf8(outputPath.value());
-    }
-    impl_->dirty = true;
-}
-
 void SimulationEngine::prepareConsole() {
     agv_prepare_console();
 }
 
 bool SimulationEngine::interactiveSetup() {
-    impl_->simulation.reset(simulation_create());
-    if (impl_->simulation == nullptr) {
-        throw std::runtime_error("simulation_create failed");
-    }
+    Simulation& simulation = impl_->createFreshSimulation();
     impl_->dirty = false;
-    return simulation_setup(impl_->simulation.get()) != 0;
+    return simulation_setup(&simulation) != 0;
 }
 
 void SimulationEngine::runInteractiveConsole() {
-    if (impl_->simulation == nullptr) {
-        throw std::runtime_error("interactiveSetup must be called first");
-    }
+    Simulation& simulation = impl_->requireInitialized("interactiveSetup must be called first");
 
     ui_enter_alt_screen();
     try {
-        simulation_run(impl_->simulation.get());
+        simulation_run(&simulation);
     } catch (...) {
         ui_leave_alt_screen();
         throw;
@@ -193,84 +209,42 @@ void SimulationEngine::runInteractiveConsole() {
 }
 
 void SimulationEngine::printPerformanceSummary() const {
-    if (impl_->simulation == nullptr) {
-        throw std::runtime_error("simulation is not initialized");
-    }
-    simulation_print_performance_summary(impl_->simulation.get());
+    simulation_print_performance_summary(&impl_->requireInitialized("simulation is not initialized"));
 }
 
 void SimulationEngine::step() {
-    impl_->rebuildSimulationIfNeeded();
-    agv_execute_headless_step(impl_->simulation.get());
+    agv_execute_headless_step(&impl_->rebuildSimulationIfNeeded());
 }
 
 void SimulationEngine::runUntilComplete() {
-    impl_->rebuildSimulationIfNeeded();
-    if (!agv_run_to_completion(impl_->simulation.get())) {
+    Simulation& simulation = impl_->rebuildSimulationIfNeeded();
+    if (!agv_run_to_completion(&simulation)) {
         throw std::runtime_error("agv_run_to_completion failed");
     }
 }
 
 bool SimulationEngine::isComplete() {
-    impl_->rebuildSimulationIfNeeded();
-    return agv_is_complete(impl_->simulation.get()) != 0;
+    return agv_is_complete(&impl_->rebuildSimulationIfNeeded()) != 0;
 }
 
 MetricsSnapshot SimulationEngine::snapshotMetrics() {
-    impl_->rebuildSimulationIfNeeded();
-
     AgvRunSummary legacy{};
-    agv_collect_run_summary(impl_->simulation.get(), &legacy);
-
-    MetricsSnapshot snapshot;
-    snapshot.seed = legacy.seed;
-    snapshot.mapId = legacy.map_id;
-    snapshot.algorithm = fromLegacyAlgo(legacy.path_algo);
-    snapshot.mode = fromLegacyMode(legacy.mode);
-    snapshot.activeAgents = legacy.active_agents;
-    snapshot.recordedSteps = legacy.recorded_steps;
-    snapshot.tasksCompletedTotal = legacy.tasks_completed_total;
-    snapshot.throughput = legacy.throughput;
-    snapshot.totalMovementCost = legacy.total_movement_cost;
-    snapshot.deadlockCount = legacy.deadlock_count;
-    snapshot.totalCpuTimeMs = legacy.total_cpu_time_ms;
-    snapshot.avgCpuTimeMs = legacy.avg_cpu_time_ms;
-    snapshot.totalPlanningTimeMs = legacy.total_planning_time_ms;
-    snapshot.avgPlanningTimeMs = legacy.avg_planning_time_ms;
-    snapshot.memoryUsageSumKb = legacy.memory_usage_sum_kb;
-    snapshot.avgMemoryUsageKb = legacy.avg_memory_usage_kb;
-    snapshot.memoryUsagePeakKb = legacy.memory_usage_peak_kb;
-    snapshot.algoNodesExpandedTotal = legacy.algo_nodes_expanded_total;
-    snapshot.algoHeapMovesTotal = legacy.algo_heap_moves_total;
-    snapshot.algoGeneratedNodesTotal = legacy.algo_generated_nodes_total;
-    snapshot.algoValidExpansionsTotal = legacy.algo_valid_expansions_total;
-    snapshot.validExpansionRatio = legacy.valid_expansion_ratio;
-    snapshot.requestsCreatedTotal = legacy.requests_created_total;
-    snapshot.requestWaitTicksSum = legacy.request_wait_ticks_sum;
-    snapshot.remainingParkedVehicles = legacy.remaining_parked_vehicles;
-    return snapshot;
+    agv_collect_run_summary(&impl_->rebuildSimulationIfNeeded(), &legacy);
+    return toMetricsSnapshot(legacy);
 }
 
 RenderFrame SimulationEngine::snapshotFrame(bool paused) {
-    impl_->rebuildSimulationIfNeeded();
-
-    std::vector<char> buffer(static_cast<std::size_t>(kAgvRenderBufferSize), '\0');
     const int written = agv_copy_render_frame(
-        impl_->simulation.get(), paused ? 1 : 0, buffer.data(), buffer.size());
+        &impl_->rebuildSimulationIfNeeded(),
+        paused ? 1 : 0,
+        impl_->renderBuffer.data(),
+        impl_->renderBuffer.size());
 
     RenderFrame frame;
     if (written > 0) {
-        frame.text.assign(buffer.data(), static_cast<std::size_t>(written));
+        frame.text.assign(impl_->renderBuffer.data(), static_cast<std::size_t>(written));
     }
     return frame;
-}
-
-void SimulationEngine::writeRunSummary(const std::filesystem::path& outputPath) {
-    impl_->rebuildSimulationIfNeeded();
-    const std::string utf8Path = pathToUtf8(outputPath);
-    if (!agv_write_run_summary_json(impl_->simulation.get(), utf8Path.c_str())) {
-        throw std::runtime_error("agv_write_run_summary_json failed");
-    }
 }
 
 }  // namespace agv::core

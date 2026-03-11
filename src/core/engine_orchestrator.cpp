@@ -169,10 +169,10 @@ void agv_begin_apply_config(Simulation* sim, int suppress_stdout) {
     sim->suppress_stdout = suppress_stdout ? TRUE : FALSE;
     renderer_state().suppress_flush = suppress_stdout ? TRUE : FALSE;
 }
-int agv_finalize_apply_config(Simulation* sim, const char* step_metrics_path) {
+int agv_finalize_apply_config(Simulation* sim) {
     if (!sim) return FALSE;
     sim->resetRuntimeStats();
-    return sim->openStepMetricsFile(step_metrics_path);
+    return TRUE;
 }
 void agv_accumulate_cbs_step_metrics(
     unsigned long long nodes_expanded,
@@ -359,7 +359,6 @@ struct AgvSimulationConfig {
     int num_phases;
     AgvPhaseConfig phases[MAX_PHASES];
     int suppress_stdout;
-    const char* step_metrics_path;
 };
 
 struct AgvRunSummary {
@@ -412,9 +411,6 @@ int agv_run_to_completion(Simulation* sim);
 int agv_is_complete(const Simulation* sim);
 void agv_collect_run_summary(const Simulation* sim, AgvRunSummary* out);
 int agv_copy_render_frame(Simulation* sim, int is_paused, char* buffer, size_t buffer_size);
-int agv_open_step_metrics(Simulation* sim, const char* path);
-void agv_close_step_metrics(Simulation* sim);
-int agv_write_run_summary_json(const Simulation* sim, const char* path);
 void agv_update_task_dispatch(Simulation* sim);
 int agv_apply_moves_and_update_stuck(Simulation* sim, Node* next_pos[MAX_AGENTS], Node* prev_pos[MAX_AGENTS]);
 void agv_update_deadlock_counter(Simulation* sim, int moved_this_step, int is_custom_mode);
@@ -563,11 +559,6 @@ void Logger::log(const char* fmt, ...) {
 }
 
 void Simulation_::destroyOwnedResources() {
-    if (step_metrics_stream) {
-        fclose(step_metrics_stream);
-        step_metrics_stream = NULL;
-    }
-    step_metrics_header_written = FALSE;
     map.reset();
     agent_manager.reset();
     scenario_manager.reset();
@@ -813,6 +804,52 @@ static void maybe_report_realtime_dashboard(Simulation* sim) {
     }
 }
 
+static int are_all_agents_idle(const AgentManager* agent_manager) {
+    if (!agent_manager) return TRUE;
+    for (int i = 0; i < MAX_AGENTS; i++) {
+        if (agent_manager->agents[i].state != IDLE) return FALSE;
+    }
+    return TRUE;
+}
+
+static void print_completion_message_if_needed(const Simulation* sim, const char* message) {
+    if (!sim || sim->suppress_stdout) return;
+    printf(C_B_GRN "\n%s\n" C_NRM, message);
+}
+
+static int is_custom_scenario_complete(const Simulation* sim) {
+    const ScenarioManager* scenario = sim->scenario_manager;
+    if (!scenario || scenario->mode != MODE_CUSTOM) return FALSE;
+    if (scenario->current_phase_index < scenario->num_phases) return FALSE;
+    return are_all_agents_idle(sim->agent_manager);
+}
+
+static int is_realtime_scenario_complete(const Simulation* sim) {
+    const ScenarioManager* scenario = sim->scenario_manager;
+    return scenario && scenario->mode == MODE_REALTIME &&
+        scenario->time_step >= REALTIME_MODE_TIMELIMIT;
+}
+
+static int read_control_key() {
+    return _kbhit() ? _getch() : 0;
+}
+
+static void handle_control_input(Simulation* sim, int last_key, int* is_paused, int* quit_flag) {
+    if (!last_key) return;
+    ui_handle_control_key(sim, last_key, is_paused, quit_flag);
+    sim->renderer.drawFrame(sim, *is_paused);
+}
+
+static int should_wait_while_paused(int is_paused, int last_key) {
+    return is_paused && std::tolower(last_key) != 's';
+}
+
+static void maybe_sleep_for_simulation_speed(const ScenarioManager* scenario) {
+    if (scenario && scenario->simulation_speed > 0) {
+        sleep_ms(scenario->simulation_speed);
+    }
+}
+
 // =============================================================================
 // 4.5) Renderer Facade Implementation (delegates to simulation_display_status)
 // =============================================================================
@@ -873,15 +910,12 @@ void Simulation_::executeOneStep(int is_paused) {
 }
 bool Simulation_::isComplete() const {
     const Simulation* sim = this;
-    const ScenarioManager* sc = sim->scenario_manager;
-    const AgentManager* am = sim->agent_manager;
-    if (sc->mode == MODE_CUSTOM && sc->current_phase_index >= sc->num_phases) {
-        for (int i = 0; i < MAX_AGENTS; i++) if (am->agents[i].state != IDLE) return FALSE;
-        if (!sim->suppress_stdout) printf(C_B_GRN "\nCustom scenario completed.\n" C_NRM);
+    if (is_custom_scenario_complete(sim)) {
+        print_completion_message_if_needed(sim, "Custom scenario completed.");
         return TRUE;
     }
-    if (sc->mode == MODE_REALTIME && sc->time_step >= REALTIME_MODE_TIMELIMIT) {
-        if (!sim->suppress_stdout) printf(C_B_GRN "\nReal-time simulation completed.\n" C_NRM);
+    if (is_realtime_scenario_complete(sim)) {
+        print_completion_message_if_needed(sim, "Real-time simulation completed.");
         return TRUE;
     }
     return FALSE;
@@ -892,20 +926,16 @@ void Simulation_::run() {
     Simulation* sim = this;
     int is_paused = FALSE;
     int quit_flag = FALSE;
-    int last_key = 0;
 
     sim->resetRuntimeStats();
 
     sim->renderer.drawFrame(sim, is_paused);
 
     while (!quit_flag) {
-        last_key = _kbhit() ? _getch() : 0;
-        if (last_key) {
-            ui_handle_control_key(sim, last_key, &is_paused, &quit_flag);
-            sim->renderer.drawFrame(sim, is_paused);
-            if (quit_flag) continue;
-        }
-        if (is_paused && tolower(last_key) != 's') {
+        const int last_key = read_control_key();
+        handle_control_input(sim, last_key, &is_paused, &quit_flag);
+        if (quit_flag) continue;
+        if (should_wait_while_paused(is_paused, last_key)) {
             sleep_ms(PAUSE_POLL_INTERVAL_MS);
             continue;
         }
@@ -914,7 +944,7 @@ void Simulation_::run() {
             break;
         }
         maybe_report_realtime_dashboard(sim);
-        if (sim->scenario_manager->simulation_speed > 0) sleep_ms(sim->scenario_manager->simulation_speed);
+        maybe_sleep_for_simulation_speed(sim->scenario_manager);
     }
 }
 
@@ -979,14 +1009,6 @@ int agv_copy_render_frame(Simulation* sim, int is_paused, char* buffer, size_t b
     }
     snprintf(buffer, buffer_size, "%s", sim->display_buffer.data());
     return (int)strlen(buffer);
-}
-
-int agv_open_step_metrics(Simulation* sim, const char* path) {
-    return sim ? sim->openStepMetricsFile(path) : FALSE;
-}
-
-void agv_close_step_metrics(Simulation* sim) {
-    if (sim) sim->closeStepMetricsFile();
 }
 
 #ifndef AGV_NO_MAIN

@@ -417,9 +417,6 @@ public:
     bool isComplete() const;
     void run();
     void printPerformanceSummary() const;
-    bool openStepMetricsFile(const char* path);
-    void closeStepMetricsFile();
-    void appendStepMetrics(int step_label);
 
     OwnedPtr<GridMap> map{};
     OwnedPtr<AgentManager> agent_manager{};
@@ -480,8 +477,6 @@ public:
     unsigned long long algo_valid_expansions_total{0};
     unsigned long long algo_generated_nodes_last_step{0};
     unsigned long long algo_valid_expansions_last_step{0};
-    FILE* step_metrics_stream{nullptr};
-    int step_metrics_header_written{FALSE};
     int suppress_stdout{FALSE};
     unsigned int configured_seed{0};
 };

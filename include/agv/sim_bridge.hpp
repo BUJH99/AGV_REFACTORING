@@ -24,7 +24,6 @@ struct AgvSimulationConfig {
     int num_phases;
     AgvPhaseConfig phases[kAgvMaxPhases];
     int suppress_stdout;
-    const char* step_metrics_path;
 };
 
 struct AgvRunSummary {
@@ -71,6 +70,3 @@ int agv_run_to_completion(Simulation* sim);
 int agv_is_complete(const Simulation* sim);
 void agv_collect_run_summary(const Simulation* sim, AgvRunSummary* out);
 int agv_copy_render_frame(Simulation* sim, int is_paused, char* buffer, std::size_t buffer_size);
-int agv_open_step_metrics(Simulation* sim, const char* path);
-void agv_close_step_metrics(Simulation* sim);
-int agv_write_run_summary_json(const Simulation* sim, const char* path);

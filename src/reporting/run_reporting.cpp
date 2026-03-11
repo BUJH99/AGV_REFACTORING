@@ -38,18 +38,6 @@ static int agv_summary_mode_value(const ScenarioManager* sc) {
     return (sc->mode == MODE_REALTIME) ? AGV_MODECFG_REALTIME : AGV_MODECFG_CUSTOM;
 }
 
-static const char* agv_summary_mode_label(int mode) {
-    if (mode == AGV_MODECFG_CUSTOM) return "custom";
-    if (mode == AGV_MODECFG_REALTIME) return "realtime";
-    return "uninitialized";
-}
-
-static const char* agv_summary_path_algo_label(int path_algo) {
-    if (path_algo == PATHALGO_ASTAR_SIMPLE) return "astar";
-    if (path_algo == PATHALGO_DSTAR_BASIC) return "dstar";
-    return "default";
-}
-
 static AgvRunSummary build_run_summary(const Simulation* sim) {
     AgvRunSummary summary{};
     if (!sim) return summary;
@@ -86,65 +74,6 @@ static AgvRunSummary build_run_summary(const Simulation* sim) {
     summary.request_wait_ticks_sum = sim->request_wait_ticks_sum;
     summary.remaining_parked_vehicles = am ? am->total_cars_parked : 0;
     return summary;
-}
-
-static void write_run_summary_json_payload(FILE* fp, const AgvRunSummary& summary) {
-    const char* mode_label = agv_summary_mode_label(summary.mode);
-    const char* algo_label = agv_summary_path_algo_label(summary.path_algo);
-
-    fprintf(fp, "{\n");
-    fprintf(fp, "  \"seed\": %u,\n", summary.seed);
-    fprintf(fp, "  \"map_id\": %d,\n", summary.map_id);
-    fprintf(fp, "  \"path_algo\": %d,\n", summary.path_algo);
-    fprintf(fp, "  \"path_algo_label\": \"%s\",\n", algo_label);
-    fprintf(fp, "  \"mode\": %d,\n", summary.mode);
-    fprintf(fp, "  \"mode_label\": \"%s\",\n", mode_label);
-    fprintf(fp, "  \"active_agents\": %d,\n", summary.active_agents);
-    fprintf(fp, "  \"recorded_steps\": %d,\n", summary.recorded_steps);
-    fprintf(fp, "  \"tasks_completed_total\": %llu,\n", summary.tasks_completed_total);
-    fprintf(fp, "  \"throughput\": %.10f,\n", summary.throughput);
-    fprintf(fp, "  \"total_movement_cost\": %.10f,\n", summary.total_movement_cost);
-    fprintf(fp, "  \"deadlock_count\": %llu,\n", summary.deadlock_count);
-    fprintf(fp, "  \"total_cpu_time_ms\": %.10f,\n", summary.total_cpu_time_ms);
-    fprintf(fp, "  \"avg_cpu_time_ms\": %.10f,\n", summary.avg_cpu_time_ms);
-    fprintf(fp, "  \"total_planning_time_ms\": %.10f,\n", summary.total_planning_time_ms);
-    fprintf(fp, "  \"avg_planning_time_ms\": %.10f,\n", summary.avg_planning_time_ms);
-    fprintf(fp, "  \"memory_usage_sum_kb\": %.10f,\n", summary.memory_usage_sum_kb);
-    fprintf(fp, "  \"avg_memory_usage_kb\": %.10f,\n", summary.avg_memory_usage_kb);
-    fprintf(fp, "  \"memory_usage_peak_kb\": %.10f,\n", summary.memory_usage_peak_kb);
-    fprintf(fp, "  \"algo_nodes_expanded_total\": %llu,\n", summary.algo_nodes_expanded_total);
-    fprintf(fp, "  \"algo_heap_moves_total\": %llu,\n", summary.algo_heap_moves_total);
-    fprintf(fp, "  \"algo_generated_nodes_total\": %llu,\n", summary.algo_generated_nodes_total);
-    fprintf(fp, "  \"algo_valid_expansions_total\": %llu,\n", summary.algo_valid_expansions_total);
-    fprintf(fp, "  \"valid_expansion_ratio\": %.10f,\n", summary.valid_expansion_ratio);
-    fprintf(fp, "  \"requests_created_total\": %llu,\n", summary.requests_created_total);
-    fprintf(fp, "  \"request_wait_ticks_sum\": %llu,\n", summary.request_wait_ticks_sum);
-    fprintf(fp, "  \"remaining_parked_vehicles\": %d\n", summary.remaining_parked_vehicles);
-    fprintf(fp, "}\n");
-}
-
-static void write_step_metrics_csv_header(FILE* fp) {
-    fprintf(fp,
-        "step,tasks_completed_total,total_movement_cost,deadlock_count,last_step_cpu_ms,total_cpu_ms,last_planning_ms,total_planning_ms,algo_nodes_expanded_last,algo_heap_moves_last,algo_generated_nodes_last,algo_valid_expansions_last,requests_created_total,request_wait_ticks_sum\n");
-}
-
-static void write_step_metrics_csv_row(FILE* fp, const Simulation* sim, int step_label) {
-    fprintf(fp,
-        "%d,%llu,%.6f,%llu,%.6f,%.6f,%.6f,%.6f,%llu,%llu,%llu,%llu,%llu,%llu\n",
-        step_label,
-        sim->tasks_completed_total,
-        sim->total_movement_cost,
-        sim->deadlock_count,
-        sim->last_step_cpu_time_ms,
-        sim->total_cpu_time_ms,
-        sim->last_planning_time_ms,
-        sim->total_planning_time_ms,
-        sim->algo_nodes_expanded_last_step,
-        sim->algo_heap_moves_last_step,
-        sim->algo_generated_nodes_last_step,
-        sim->algo_valid_expansions_last_step,
-        sim->requests_created_total,
-        sim->request_wait_ticks_sum);
 }
 
 void Simulation_::printPerformanceSummary() const {
@@ -244,48 +173,7 @@ void simulation_print_performance_summary(const Simulation* sim) {
     if (sim) sim->printPerformanceSummary();
 }
 
-bool Simulation_::openStepMetricsFile(const char* path) {
-    closeStepMetricsFile();
-    if (!path || !path[0]) return TRUE;
-
-    step_metrics_stream = fopen(path, "w");
-    if (!step_metrics_stream) return FALSE;
-
-    write_step_metrics_csv_header(step_metrics_stream);
-    fflush(step_metrics_stream);
-    step_metrics_header_written = TRUE;
-    return TRUE;
-}
-
-void Simulation_::closeStepMetricsFile() {
-    if (step_metrics_stream) {
-        fclose(step_metrics_stream);
-        step_metrics_stream = nullptr;
-    }
-    step_metrics_header_written = FALSE;
-}
-
-void Simulation_::appendStepMetrics(int step_label) {
-    if (!step_metrics_stream || !step_metrics_header_written) return;
-    write_step_metrics_csv_row(step_metrics_stream, this, step_label);
-    fflush(step_metrics_stream);
-}
-
 void agv_collect_run_summary(const Simulation* sim, AgvRunSummary* out) {
     if (!out) return;
     *out = build_run_summary(sim);
-}
-
-int agv_write_run_summary_json(const Simulation* sim, const char* path) {
-    if (!sim || !path || !path[0]) return FALSE;
-
-    FILE* fp = fopen(path, "w");
-    if (!fp) return FALSE;
-
-    AgvRunSummary summary;
-    agv_collect_run_summary(sim, &summary);
-    write_run_summary_json_payload(fp, summary);
-
-    fclose(fp);
-    return TRUE;
 }

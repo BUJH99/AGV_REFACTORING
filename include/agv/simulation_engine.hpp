@@ -1,9 +1,7 @@
 #pragma once
 
 #include <cstdint>
-#include <filesystem>
 #include <memory>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -96,7 +94,6 @@ public:
     void setAlgorithm(PathAlgo algorithm);
     void configureScenario(const ScenarioConfig& config);
     void setSuppressOutput(bool suppress);
-    void setStepMetricsOutput(const std::optional<std::filesystem::path>& outputPath);
 
     void prepareConsole();
     bool interactiveSetup();
@@ -108,7 +105,6 @@ public:
     bool isComplete();
     MetricsSnapshot snapshotMetrics();
     RenderFrame snapshotFrame(bool paused = false);
-    void writeRunSummary(const std::filesystem::path& outputPath);
 
 private:
     struct Impl;

@@ -3,7 +3,6 @@
 #include <conio.h>
 
 #include <cstdlib>
-#include <filesystem>
 #include <iostream>
 #include <optional>
 #include <stdexcept>
@@ -27,9 +26,67 @@ struct CliOptions {
     ScenarioConfig scenario{};
     bool suppressOutput{true};
     std::optional<int> maxSteps;
-    std::optional<std::filesystem::path> summaryPath;
-    std::optional<std::filesystem::path> stepMetricsPath;
 };
+
+PathAlgo parseAlgorithm(const std::string& value);
+SimulationMode parseMode(const std::string& value);
+PhaseConfig parsePhase(const std::string& value);
+
+void mark_headless_mode(CliOptions& options) {
+    options.interactive = false;
+}
+
+std::string next_argument_value(int& index, int argc, char* argv[], std::string_view name) {
+    if (index + 1 >= argc) {
+        throw std::runtime_error(std::string("missing value for ") + std::string(name));
+    }
+    return argv[++index];
+}
+
+bool parse_headless_option(CliOptions& options, std::string_view argument, int& index, int argc, char* argv[]) {
+    if (argument == "--headless") {
+        mark_headless_mode(options);
+    } else if (argument == "--seed") {
+        options.seed = static_cast<std::uint32_t>(std::stoul(next_argument_value(index, argc, argv, "--seed")));
+        mark_headless_mode(options);
+    } else if (argument == "--map") {
+        options.mapId = std::stoi(next_argument_value(index, argc, argv, "--map"));
+        mark_headless_mode(options);
+    } else if (argument == "--algo") {
+        options.algorithm = parseAlgorithm(next_argument_value(index, argc, argv, "--algo"));
+        mark_headless_mode(options);
+    } else if (argument == "--mode") {
+        options.scenario.mode = parseMode(next_argument_value(index, argc, argv, "--mode"));
+        mark_headless_mode(options);
+    } else if (argument == "--speed") {
+        options.scenario.speedMultiplier = std::stod(next_argument_value(index, argc, argv, "--speed"));
+        mark_headless_mode(options);
+    } else if (argument == "--phase") {
+        if (options.scenario.phases.size() == 1 &&
+            options.scenario.phases.front().type == PhaseType::Park &&
+            options.scenario.phases.front().taskCount == 1) {
+            options.scenario.phases.clear();
+        }
+        options.scenario.phases.push_back(parsePhase(next_argument_value(index, argc, argv, "--phase")));
+        mark_headless_mode(options);
+    } else if (argument == "--park-chance") {
+        options.scenario.realtimeParkChance = std::stoi(next_argument_value(index, argc, argv, "--park-chance"));
+        mark_headless_mode(options);
+    } else if (argument == "--exit-chance") {
+        options.scenario.realtimeExitChance = std::stoi(next_argument_value(index, argc, argv, "--exit-chance"));
+        mark_headless_mode(options);
+    } else if (argument == "--max-steps") {
+        options.maxSteps = std::stoi(next_argument_value(index, argc, argv, "--max-steps"));
+        mark_headless_mode(options);
+    } else if (argument == "--render") {
+        options.suppressOutput = false;
+        mark_headless_mode(options);
+    } else {
+        return false;
+    }
+
+    return true;
+}
 
 void printUsage() {
     std::cout
@@ -45,8 +102,6 @@ void printUsage() {
         << "  --phase <park:N|exit:N>\n"
         << "  --park-chance <0-100>\n"
         << "  --exit-chance <0-100>\n"
-        << "  --summary <path.json>\n"
-        << "  --steps <path.csv>\n"
         << "  --max-steps <n>\n"
         << "  --render\n";
 }
@@ -96,60 +151,13 @@ CliOptions parseArgs(int argc, char* argv[]) {
     CliOptions options;
 
     for (int i = 1; i < argc; ++i) {
-        const std::string arg = argv[i];
-
-        auto nextValue = [&](std::string_view name) -> std::string {
-            if (i + 1 >= argc) {
-                throw std::runtime_error(std::string("missing value for ") + std::string(name));
-            }
-            return argv[++i];
-        };
+        const std::string_view arg = argv[i];
 
         if (arg == "--help" || arg == "-h") {
             printUsage();
             std::exit(0);
-        } else if (arg == "--headless") {
-            options.interactive = false;
-        } else if (arg == "--seed") {
-            options.seed = static_cast<std::uint32_t>(std::stoul(nextValue("--seed")));
-        } else if (arg == "--map") {
-            options.mapId = std::stoi(nextValue("--map"));
-        } else if (arg == "--algo") {
-            options.algorithm = parseAlgorithm(nextValue("--algo"));
-        } else if (arg == "--mode") {
-            options.scenario.mode = parseMode(nextValue("--mode"));
-            options.interactive = false;
-        } else if (arg == "--speed") {
-            options.scenario.speedMultiplier = std::stod(nextValue("--speed"));
-            options.interactive = false;
-        } else if (arg == "--phase") {
-            if (options.scenario.phases.size() == 1 &&
-                options.scenario.phases.front().type == PhaseType::Park &&
-                options.scenario.phases.front().taskCount == 1) {
-                options.scenario.phases.clear();
-            }
-            options.scenario.phases.push_back(parsePhase(nextValue("--phase")));
-            options.interactive = false;
-        } else if (arg == "--park-chance") {
-            options.scenario.realtimeParkChance = std::stoi(nextValue("--park-chance"));
-            options.interactive = false;
-        } else if (arg == "--exit-chance") {
-            options.scenario.realtimeExitChance = std::stoi(nextValue("--exit-chance"));
-            options.interactive = false;
-        } else if (arg == "--summary") {
-            options.summaryPath = std::filesystem::path(nextValue("--summary"));
-            options.interactive = false;
-        } else if (arg == "--steps") {
-            options.stepMetricsPath = std::filesystem::path(nextValue("--steps"));
-            options.interactive = false;
-        } else if (arg == "--max-steps") {
-            options.maxSteps = std::stoi(nextValue("--max-steps"));
-            options.interactive = false;
-        } else if (arg == "--render") {
-            options.suppressOutput = false;
-            options.interactive = false;
-        } else {
-            throw std::runtime_error("unknown argument: " + arg);
+        } else if (!parse_headless_option(options, arg, i, argc, argv)) {
+            throw std::runtime_error("unknown argument: " + std::string(arg));
         }
     }
 
@@ -177,18 +185,11 @@ int runInteractive() {
 
 int runHeadless(const CliOptions& options) {
     SimulationEngine engine;
-    if (options.stepMetricsPath.has_value()) {
-        const auto parent = options.stepMetricsPath->parent_path();
-        if (!parent.empty()) {
-            std::filesystem::create_directories(parent);
-        }
-    }
     engine.setSeed(options.seed);
     engine.loadMap(options.mapId);
     engine.setAlgorithm(options.algorithm);
     engine.configureScenario(options.scenario);
     engine.setSuppressOutput(options.suppressOutput);
-    engine.setStepMetricsOutput(options.stepMetricsPath);
     if (options.maxSteps.has_value()) {
         for (int step = 0; step < *options.maxSteps && !engine.isComplete(); ++step) {
             engine.step();
@@ -197,23 +198,13 @@ int runHeadless(const CliOptions& options) {
         engine.runUntilComplete();
     }
 
-    if (options.summaryPath.has_value()) {
-        const auto parent = options.summaryPath->parent_path();
-        if (!parent.empty()) {
-            std::filesystem::create_directories(parent);
-        }
-        engine.writeRunSummary(*options.summaryPath);
-    }
-
     const auto metrics = engine.snapshotMetrics();
-    if (!options.summaryPath.has_value()) {
-        std::cout
-            << "steps=" << metrics.recordedSteps
-            << " tasks=" << metrics.tasksCompletedTotal
-            << " movement=" << metrics.totalMovementCost
-            << " deadlocks=" << metrics.deadlockCount
-            << '\n';
-    }
+    std::cout
+        << "steps=" << metrics.recordedSteps
+        << " tasks=" << metrics.tasksCompletedTotal
+        << " movement=" << metrics.totalMovementCost
+        << " deadlocks=" << metrics.deadlockCount
+        << '\n';
     return 0;
 }
 
