@@ -23,6 +23,37 @@ constexpr int kTurn90Wait = 2;
 constexpr int kDir5X[5] = {0, 1, -1, 0, 0};
 constexpr int kDir5Y[5] = {0, 0, 0, 1, -1};
 
+PlannerMetricsState& planner_metrics(const PlanningContext& context) {
+    return *context.planner_metrics;
+}
+
+void accumulate_cbs_metrics(
+    const PlanningContext& context,
+    unsigned long long nodes_expanded,
+    unsigned long long heap_moves,
+    unsigned long long generated_nodes,
+    unsigned long long valid_expansions) {
+    PlannerMetricsState& metrics = planner_metrics(context);
+    metrics.whca_nodes_expanded_this_step += nodes_expanded;
+    metrics.whca_heap_moves_this_step += heap_moves;
+    metrics.whca_generated_nodes_this_step += generated_nodes;
+    metrics.whca_valid_expansions_this_step += valid_expansions;
+}
+
+void record_cbs_success(const PlanningContext& context, int expansions) {
+    PlannerMetricsState& metrics = planner_metrics(context);
+    metrics.cbs_ok_last = 1;
+    metrics.cbs_exp_last = expansions;
+    metrics.cbs_success_sum++;
+}
+
+void record_cbs_failure(const PlanningContext& context, int expansions) {
+    PlannerMetricsState& metrics = planner_metrics(context);
+    metrics.cbs_ok_last = 0;
+    metrics.cbs_exp_last = expansions;
+    metrics.cbs_fail_sum++;
+}
+
 struct PullOverCandidate final {
     Node* node{nullptr};
     int is_goal{0};
@@ -106,16 +137,17 @@ int pull_over_can_enter(
     const Agent* agent,
     int current_t,
     const Node* current,
-    const Node* next) {
+    const Node* next,
+    int horizon) {
     if (!table || !agent || !current || !next) return 0;
     if (next->is_obstacle || next->is_parked) return 0;
     if (next->reserved_by_agent != -1 && next->reserved_by_agent != agent->id) return 0;
 
     const int next_t = current_t + 1;
-    if (ReservationTable_isOccupied(table, next_t, next)) return 0;
+    if (ReservationTable_isOccupied(table, next_t, next, horizon)) return 0;
 
-    const int previous_occupant = ReservationTable_getOccupant(table, current_t, next);
-    const int occupant_into_current = ReservationTable_getOccupant(table, next_t, current);
+    const int previous_occupant = ReservationTable_getOccupant(table, current_t, next, horizon);
+    const int occupant_into_current = ReservationTable_getOccupant(table, next_t, current, horizon);
     if (previous_occupant != -1 && previous_occupant == occupant_into_current) return 0;
 
     return 1;
@@ -139,10 +171,10 @@ Node* reconstruct_pull_over_first_step(
     return &map->grid[y][x];
 }
 
-Node* try_pull_over_via_search(GridMap* map, const ReservationTable* table, Agent* agent) {
+Node* try_pull_over_via_search(const PlanningContext& context, GridMap* map, const ReservationTable* table, Agent* agent) {
     if (!map || !table || !agent || !agent->pos) return nullptr;
 
-    const int t_limit = agv_current_whca_horizon();
+    const int t_limit = context.whcaHorizon();
     const int total = (t_limit + 1) * GRID_WIDTH * GRID_HEIGHT;
     if (total > kMaxTot) return nullptr;
 
@@ -185,7 +217,7 @@ Node* try_pull_over_via_search(GridMap* map, const ReservationTable* table, Agen
             if (!grid_is_valid_coord(next_x, next_y)) continue;
 
             const Node* next = &map->grid[next_y][next_x];
-            if (!pull_over_can_enter(table, agent, cur_t, current, next)) continue;
+            if (!pull_over_can_enter(table, agent, cur_t, current, next, t_limit)) continue;
 
             const int next_t = cur_t + 1;
             const int next_idx = st_index_local(next_t, next_y, next_x);
@@ -559,9 +591,9 @@ int detect_first_conflict(Node* const plans[MAX_AGENTS][MAX_WHCA_HORIZON + 1], i
     return 0;
 }
 
-void copy_ext_occ_without_group(const ReservationTable* base, int group_mask,
+void copy_ext_occ_without_group(const PlanningContext& context, const ReservationTable* base, int group_mask,
     int out_occ[MAX_WHCA_HORIZON + 1][GRID_HEIGHT][GRID_WIDTH]) {
-    for (int t = 0; t <= agv_current_whca_horizon(); ++t) {
+    for (int t = 0; t <= context.whcaHorizon(); ++t) {
         for (int y = 0; y < GRID_HEIGHT; ++y) {
             for (int x = 0; x < GRID_WIDTH; ++x) {
                 const int who = base->occ[t][y][x];
@@ -607,6 +639,7 @@ CBSNode cbs_heap_pop(CBSNode* heap, int* size) {
 }
 
 int cbs_plan_agent_with_metrics(
+    const PlanningContext& context,
     AgentManager* manager,
     GridMap* map,
     int agent_id,
@@ -625,7 +658,7 @@ int cbs_plan_agent_with_metrics(
             map,
             agent->pos,
             agent->goal,
-            agv_current_whca_horizon(),
+            context.whcaHorizon(),
             ext_occ,
             constraints,
             constraint_count,
@@ -638,7 +671,7 @@ int cbs_plan_agent_with_metrics(
         return 0;
     }
 
-    agv_accumulate_cbs_step_metrics(nodes_expanded, heap_moves, generated_nodes, valid_expansions);
+    accumulate_cbs_metrics(context, nodes_expanded, heap_moves, generated_nodes, valid_expansions);
     return 1;
 }
 
@@ -659,9 +692,9 @@ void ReservationTable_clear(ReservationTable* table) {
     }
 }
 
-void ReservationTable_clearAgent(ReservationTable* table, int agent_id) {
+void ReservationTable_clearAgent(ReservationTable* table, int agent_id, int horizon) {
     if (!table) return;
-    for (int t = 1; t <= agv_current_whca_horizon(); ++t) {
+    for (int t = 1; t <= horizon; ++t) {
         for (int y = 0; y < GRID_HEIGHT; ++y) {
             for (int x = 0; x < GRID_WIDTH; ++x) {
                 if (table->occ[t][y][x] == agent_id) {
@@ -681,24 +714,26 @@ void ReservationTable_seedCurrent(ReservationTable* table, AgentManager* manager
     }
 }
 
-int ReservationTable_isOccupied(const ReservationTable* table, int t, const Node* node) {
-    if (t < 0 || t > agv_current_whca_horizon()) return true;
+int ReservationTable_isOccupied(const ReservationTable* table, int t, const Node* node, int horizon) {
+    if (t < 0 || t > horizon) return true;
     return table->occ[t][node->y][node->x] != -1;
 }
 
-int ReservationTable_getOccupant(const ReservationTable* table, int t, const Node* node) {
-    if (t < 0 || t > agv_current_whca_horizon()) return -1;
+int ReservationTable_getOccupant(const ReservationTable* table, int t, const Node* node, int horizon) {
+    if (t < 0 || t > horizon) return -1;
     return table->occ[t][node->y][node->x];
 }
 
-void ReservationTable_setOccupant(ReservationTable* table, int t, const Node* node, int agent_id) {
-    if (t < 0 || t > agv_current_whca_horizon()) return;
+void ReservationTable_setOccupant(ReservationTable* table, int t, const Node* node, int agent_id, int horizon) {
+    if (t < 0 || t > horizon) return;
     table->occ[t][node->y][node->x] = agent_id;
 }
 
-void WHCA_adjustHorizon(int wf_edges, int scc, Logger* logger) {
-    int conflict_score = static_cast<int>(agv_current_conflict_score() * 0.6) + wf_edges + (scc ? 5 : 0);
-    int horizon = agv_current_whca_horizon();
+void WHCA_adjustHorizon(const PlanningContext& context, int wf_edges, int scc, Logger* logger) {
+    RuntimeTuningState& tuning = *context.runtime_tuning;
+    PlannerMetricsState& metrics = *context.planner_metrics;
+    int conflict_score = static_cast<int>(tuning.conflict_score * 0.6) + wf_edges + (scc ? 5 : 0);
+    int horizon = tuning.whca_horizon;
     const int old_horizon = horizon;
     constexpr int high_conflict = 24;
     constexpr int low_conflict = 10;
@@ -713,7 +748,9 @@ void WHCA_adjustHorizon(int wf_edges, int scc, Logger* logger) {
         logger_log(logger, "[%sWHCA*%s] Horizon adjusted %d -> %d (score=%d)", "\x1b[1;36m", "\x1b[0m", old_horizon, horizon, conflict_score);
     }
 
-    agv_set_whca_runtime_state(conflict_score, horizon);
+    tuning.conflict_score = conflict_score;
+    tuning.whca_horizon = horizon;
+    metrics.whca_h = horizon;
 }
 
 void add_wait_edge(WaitEdge* edges, int* count, int from, int to, int t, CauseType cause, int x1, int y1, int x2, int y2) {
@@ -764,8 +801,9 @@ int build_scc_mask_from_edges(const WaitEdge* edges, int count) {
     return mask;
 }
 
-Node* try_pull_over(GridMap* map, const ReservationTable* table, Agent* agent) {
-    if (Node* searched = try_pull_over_via_search(map, table, agent)) {
+Node* try_pull_over(const PlanningContext& context, const ReservationTable* table, Agent* agent) {
+    GridMap* map = context.map;
+    if (Node* searched = try_pull_over_via_search(context, map, table, agent)) {
         return searched;
     }
 
@@ -777,7 +815,7 @@ Node* try_pull_over(GridMap* map, const ReservationTable* table, Agent* agent) {
         Node* candidate = &map->grid[next_y][next_x];
         if (candidate->is_obstacle || candidate->is_parked) continue;
         if (candidate->reserved_by_agent != -1 && candidate->reserved_by_agent != agent->id) continue;
-        if (ReservationTable_isOccupied(table, 1, candidate)) continue;
+        if (ReservationTable_isOccupied(table, 1, candidate, context.whcaHorizon())) continue;
 
         const PullOverCandidate current{
             candidate,
@@ -793,25 +831,28 @@ Node* try_pull_over(GridMap* map, const ReservationTable* table, Agent* agent) {
     if (best.node) return best.node;
 
     Node* current = agent->pos;
-    if (current && !ReservationTable_isOccupied(table, 1, current)) return current;
+    if (current && !ReservationTable_isOccupied(table, 1, current, context.whcaHorizon())) return current;
     return agent->pos;
 }
 
 int run_partial_CBS(
-    AgentManager* manager,
-    GridMap* map,
-    Logger* logger,
+    const PlanningContext& context,
     int group_ids[],
     int group_n,
     const ReservationTable* base_rt,
     Node* out_plans[MAX_AGENTS][MAX_WHCA_HORIZON + 1]) {
     if (group_n <= 1) return 0;
 
+    AgentManager* manager = context.agents;
+    GridMap* map = context.map;
+    Logger* logger = context.logger;
+    const int horizon = context.whcaHorizon();
+
     int group_mask = 0;
     for (int i = 0; i < group_n; ++i) group_mask |= (1 << group_ids[i]);
 
     static int ext_occ[MAX_WHCA_HORIZON + 1][GRID_HEIGHT][GRID_WIDTH];
-    copy_ext_occ_without_group(base_rt, group_mask, ext_occ);
+    copy_ext_occ_without_group(context, base_rt, group_mask, ext_occ);
 
     static CBSNode heap[kMaxCbsNodes];
     int heap_size = 0;
@@ -823,16 +864,16 @@ int run_partial_CBS(
     for (int i = 0; i < group_n; ++i) {
         const int id = group_ids[i];
         Node* plan[MAX_WHCA_HORIZON + 1];
-        if (!cbs_plan_agent_with_metrics(manager, map, id, ext_occ, root.cons, root.ncons, plan)) {
-            agv_record_cbs_failure(expansions);
+        if (!cbs_plan_agent_with_metrics(context, manager, map, id, ext_occ, root.cons, root.ncons, plan)) {
+            record_cbs_failure(context, expansions);
             return 0;
         }
-        for (int t = 0; t <= agv_current_whca_horizon(); ++t) root.plans[id][t] = plan[t];
+        for (int t = 0; t <= horizon; ++t) root.plans[id][t] = plan[t];
     }
 
     Node* goals[MAX_AGENTS] = {0};
     for (int i = 0; i < group_n; ++i) goals[group_ids[i]] = manager->agents[group_ids[i]].goal;
-    root.cost = cbs_cost_sum_adv(group_ids, group_n, root.plans, goals, agv_current_whca_horizon());
+    root.cost = cbs_cost_sum_adv(group_ids, group_n, root.plans, goals, horizon);
     cbs_heap_push(heap, &heap_size, &root);
 
     while (heap_size > 0 && expansions < expansion_budget) {
@@ -841,13 +882,13 @@ int run_partial_CBS(
         if (expansions > expansion_budget) break;
 
         CBSConflict conflict;
-        if (!detect_first_conflict(current.plans, group_ids, group_n, &conflict, agv_current_whca_horizon())) {
+        if (!detect_first_conflict(current.plans, group_ids, group_n, &conflict, horizon)) {
             for (int i = 0; i < group_n; ++i) {
                 const int id = group_ids[i];
-                for (int t = 0; t <= agv_current_whca_horizon(); ++t) out_plans[id][t] = current.plans[id][t];
+                for (int t = 0; t <= horizon; ++t) out_plans[id][t] = current.plans[id][t];
             }
             logger_log(logger, "[%sCBS%s] Partial CBS succeeded (group=%d agents, expansions=%d).", "\x1b[1;32m", "\x1b[0m", group_n, expansions);
-            agv_record_cbs_success(expansions);
+            record_cbs_success(context, expansions);
             return 1;
         }
 
@@ -885,21 +926,21 @@ int run_partial_CBS(
             for (int i = 0; i < group_n; ++i) {
                 const int id = group_ids[i];
                 Node* plan[MAX_WHCA_HORIZON + 1];
-                if (!cbs_plan_agent_with_metrics(manager, map, id, ext_occ, child.cons, child.ncons, plan)) {
+                if (!cbs_plan_agent_with_metrics(context, manager, map, id, ext_occ, child.cons, child.ncons, plan)) {
                     ok = 0;
                     break;
                 }
-                for (int t = 0; t <= agv_current_whca_horizon(); ++t) child.plans[id][t] = plan[t];
+                for (int t = 0; t <= horizon; ++t) child.plans[id][t] = plan[t];
             }
             if (!ok) continue;
 
             for (int i = 0; i < group_n; ++i) goals[group_ids[i]] = manager->agents[group_ids[i]].goal;
-            child.cost = cbs_cost_sum_adv(group_ids, group_n, child.plans, goals, agv_current_whca_horizon());
+            child.cost = cbs_cost_sum_adv(group_ids, group_n, child.plans, goals, horizon);
             cbs_heap_push(heap, &heap_size, &child);
         }
     }
 
     logger_log(logger, "[%sCBS%s] Partial CBS failed within the search budget (%d). Falling back to pull-over.", "\x1b[1;31m", "\x1b[0m", expansion_budget);
-    agv_record_cbs_failure(expansions);
+    record_cbs_failure(context, expansions);
     return 0;
 }

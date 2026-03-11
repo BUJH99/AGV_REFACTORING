@@ -103,108 +103,16 @@
 
 #include "agv/internal/engine_internal.hpp"
 
-static thread_local Simulation* g_active_simulation = nullptr;
-
-static Simulation* simulation_active();
-static void simulation_set_active(Simulation* sim);
-static Simulation& require_active_simulation();
-static PlannerMetricsState& planner_metrics_state();
-static RuntimeTuningState& runtime_tuning_state();
-static RendererState& renderer_state();
-static StepScratch& step_scratch_state();
-static std::array<char, DISPLAY_BUFFER_SIZE>& display_buffer_state();
-static int& whca_horizon_state();
-static int& conflict_score_state();
-
-static Simulation* simulation_active() { return g_active_simulation; }
-static void simulation_set_active(Simulation* sim) { g_active_simulation = sim; }
-static Simulation& require_active_simulation() { return *g_active_simulation; }
-static PlannerMetricsState& planner_metrics_state() { return require_active_simulation().planner_metrics; }
-static RuntimeTuningState& runtime_tuning_state() { return require_active_simulation().runtime_tuning; }
-static RendererState& renderer_state() { return require_active_simulation().render_state; }
-static StepScratch& step_scratch_state() { return require_active_simulation().step_scratch; }
-static std::array<char, DISPLAY_BUFFER_SIZE>& display_buffer_state() { return require_active_simulation().display_buffer; }
-static int& whca_horizon_state() { return runtime_tuning_state().whca_horizon; }
-static int& conflict_score_state() { return runtime_tuning_state().conflict_score; }
-
-int agv_current_whca_horizon() { return whca_horizon_state(); }
-int agv_current_conflict_score() { return conflict_score_state(); }
-void agv_set_whca_runtime_state(int conflict_score, int horizon) {
-    conflict_score_state() = conflict_score;
-    whca_horizon_state() = horizon;
-    planner_metrics_state().whca_h = whca_horizon_state();
+static PlanningContext make_planning_context(Simulation* sim) {
+    return PlanningContext{
+        sim,
+        sim ? sim->agent_manager : nullptr,
+        sim ? sim->map : nullptr,
+        sim ? sim->logger : nullptr,
+        sim ? &sim->runtime_tuning : nullptr,
+        sim ? &sim->planner_metrics : nullptr,
+    };
 }
-void agv_accumulate_cbs_step_metrics(
-    unsigned long long nodes_expanded,
-    unsigned long long heap_moves,
-    unsigned long long generated_nodes,
-    unsigned long long valid_expansions) {
-    planner_metrics_state().whca_nodes_expanded_this_step += nodes_expanded;
-    planner_metrics_state().whca_heap_moves_this_step += heap_moves;
-    planner_metrics_state().whca_generated_nodes_this_step += generated_nodes;
-    planner_metrics_state().whca_valid_expansions_this_step += valid_expansions;
-}
-void agv_accumulate_whca_dstar_step_metrics(
-    unsigned long long nodes_expanded,
-    unsigned long long heap_moves,
-    unsigned long long generated_nodes,
-    unsigned long long valid_expansions) {
-    planner_metrics_state().whca_dstar_nodes_expanded_this_step += nodes_expanded;
-    planner_metrics_state().whca_dstar_heap_moves_this_step += heap_moves;
-    planner_metrics_state().whca_dstar_generated_nodes_this_step += generated_nodes;
-    planner_metrics_state().whca_dstar_valid_expansions_this_step += valid_expansions;
-}
-void agv_accumulate_astar_step_metrics(
-    unsigned long long nodes_expanded,
-    unsigned long long heap_moves,
-    unsigned long long generated_nodes,
-    unsigned long long valid_expansions) {
-    planner_metrics_state().astar_nodes_expanded_this_step += nodes_expanded;
-    planner_metrics_state().astar_heap_moves_this_step += heap_moves;
-    planner_metrics_state().astar_generated_nodes_this_step += generated_nodes;
-    planner_metrics_state().astar_valid_expansions_this_step += valid_expansions;
-}
-void agv_accumulate_dstar_step_metrics(
-    unsigned long long nodes_expanded,
-    unsigned long long heap_moves,
-    unsigned long long generated_nodes,
-    unsigned long long valid_expansions) {
-    planner_metrics_state().dstar_nodes_expanded_this_step += nodes_expanded;
-    planner_metrics_state().dstar_heap_moves_this_step += heap_moves;
-    planner_metrics_state().dstar_generated_nodes_this_step += generated_nodes;
-    planner_metrics_state().dstar_valid_expansions_this_step += valid_expansions;
-}
-void agv_record_wf_scc_metrics(int wf_edges, int scc) {
-    planner_metrics_state().wf_edges_last = wf_edges;
-    planner_metrics_state().wf_edges_sum += wf_edges;
-    planner_metrics_state().scc_last = scc;
-    planner_metrics_state().scc_sum += scc;
-}
-void agv_record_cbs_success(int expansions) {
-    planner_metrics_state().cbs_ok_last = 1;
-    planner_metrics_state().cbs_exp_last = expansions;
-    planner_metrics_state().cbs_success_sum++;
-}
-void agv_record_cbs_failure(int expansions) {
-    planner_metrics_state().cbs_ok_last = 0;
-    planner_metrics_state().cbs_exp_last = expansions;
-    planner_metrics_state().cbs_fail_sum++;
-}
-
-class SimulationContextGuard final {
-public:
-    explicit SimulationContextGuard(Simulation* sim)
-        : previous_(simulation_active()) {
-        simulation_set_active(sim);
-    }
-
-    ~SimulationContextGuard() {
-        simulation_set_active(previous_);
-    }
-
-private:
-    Simulation* previous_{ nullptr };
-};
 
 static const int DIR4_X[4] = { 0, 0, 1, -1 };
 static const int DIR4_Y[4] = { 1, -1, 0, 0 };
@@ -222,96 +130,6 @@ static inline double manhattan_xy(int x1, int y1, int x2, int y2) {
     return fabs((double)x1 - (double)x2) + fabs((double)y1 - (double)y2);
 }
 
-typedef void (*MetricsObserverFn)(void* ctx, const MetricsSnapshot* snap);
-struct MetricsObserver {
-    MetricsObserverFn fn{ nullptr };
-    void* ctx{ nullptr };
-};
-
-#ifndef MAX_METRICS_OBSERVERS
-#define MAX_METRICS_OBSERVERS 8
-#endif
-
-static inline MetricsSnapshot metrics_build_snapshot(void) {
-    MetricsSnapshot s;
-    PlannerMetricsState& metrics = planner_metrics_state();
-    RuntimeTuningState& tuning = runtime_tuning_state();
-    s.whca_h = metrics.whca_h;
-    s.wf_edges_last = metrics.wf_edges_last;
-    s.wf_edges_sum = metrics.wf_edges_sum;
-    s.scc_last = metrics.scc_last;
-    s.scc_sum = metrics.scc_sum;
-    s.cbs_ok_last = metrics.cbs_ok_last;
-    s.cbs_exp_last = metrics.cbs_exp_last;
-    s.cbs_success_sum = metrics.cbs_success_sum;
-    s.cbs_fail_sum = metrics.cbs_fail_sum;
-    s.whca_horizon = tuning.whca_horizon;
-    return s;
-}
-
-class MetricsObserverRegistry final {
-public:
-    void subscribe(MetricsObserverFn fn, void* ctx) {
-        if (!fn) return;
-        if (observer_count_ >= MAX_METRICS_OBSERVERS) return;
-        observers_[observer_count_++] = MetricsObserver{ fn, ctx };
-    }
-
-    void unsubscribe(void* ctx) {
-        if (!ctx) return;
-        int write_index = 0;
-        for (int read_index = 0; read_index < observer_count_; ++read_index) {
-            if (observers_[read_index].ctx == ctx) {
-                continue;
-            }
-            observers_[write_index++] = observers_[read_index];
-        }
-        for (int i = write_index; i < observer_count_; ++i) {
-            observers_[i] = MetricsObserver{};
-        }
-        observer_count_ = write_index;
-    }
-
-    void notifyAll() const {
-        MetricsSnapshot snap = metrics_build_snapshot();
-        for (int i = 0; i < observer_count_; i++) {
-            if (observers_[i].fn) observers_[i].fn(observers_[i].ctx, &snap);
-        }
-    }
-
-private:
-    MetricsObserver observers_[MAX_METRICS_OBSERVERS]{};
-    int observer_count_{ 0 };
-};
-static MetricsObserverRegistry g_metrics_registry;
-
-static void metrics_subscribe(MetricsObserverFn fn, void* ctx) {
-    g_metrics_registry.subscribe(fn, ctx);
-}
-
-static void metrics_unsubscribe(void* ctx) {
-    g_metrics_registry.unsubscribe(ctx);
-}
-
-static void metrics_notify_all(void) {
-    g_metrics_registry.notifyAll();
-}
-
-static void simulation_metrics_observer(void* ctx, const MetricsSnapshot* s) {
-    Simulation* sim = (Simulation*)ctx;
-    if (!sim || !s) return;
-    sim->whca_horizon_shadow = s->whca_horizon;
-    sim->algo_rt_metrics_shadow.whca_h = s->whca_h;
-    sim->algo_rt_metrics_shadow.wf_edges_last = s->wf_edges_last;
-    sim->algo_rt_metrics_shadow.wf_edges_sum = s->wf_edges_sum;
-    sim->algo_rt_metrics_shadow.scc_last = s->scc_last;
-    sim->algo_rt_metrics_shadow.scc_sum = s->scc_sum;
-    sim->algo_rt_metrics_shadow.cbs_ok_last = s->cbs_ok_last;
-    sim->algo_rt_metrics_shadow.cbs_exp_last = s->cbs_exp_last;
-    sim->algo_rt_metrics_shadow.cbs_success_sum = s->cbs_success_sum;
-    sim->algo_rt_metrics_shadow.cbs_fail_sum = s->cbs_fail_sum;
-}
-
 #define grid_is_valid_coord Grid_isValidCoord
 #define grid_is_node_blocked Grid_isNodeBlocked
 
@@ -325,14 +143,14 @@ RendererFacade renderer_create_facade(void);
 void logger_log(Logger* logger, const char* format, ...);
 int grid_is_valid_coord(int x, int y);
 int grid_is_node_blocked(const GridMap*, const AgentManager*, const Node*, const struct Agent_*);
-void agent_manager_plan_and_resolve_collisions(AgentManager*, GridMap*, Logger*, Node* next_pos[MAX_AGENTS]);
-void agent_manager_plan_and_resolve_collisions_core(AgentManager*, GridMap*, Logger*, Node* next_pos[MAX_AGENTS]);
+void agent_manager_plan_and_resolve_collisions(const PlanningContext& context, Node* next_pos[MAX_AGENTS]);
+void agent_manager_plan_and_resolve_collisions_core(const PlanningContext& context, Node* next_pos[MAX_AGENTS]);
 void agent_manager_update_state_after_move(AgentManager*, ScenarioManager*, GridMap*, Logger*, Simulation*);
 void agent_manager_update_charge_state(AgentManager*, GridMap*, Logger*);
-void agent_manager_plan_and_resolve_collisions_astar(AgentManager*, GridMap*, Logger*, Node* next_pos[MAX_AGENTS]);
-void agent_manager_plan_and_resolve_collisions_dstar_basic(AgentManager*, GridMap*, Logger*, Node* next_pos[MAX_AGENTS]);
-void agent_manager_plan_and_resolve_collisions_astar_core(AgentManager*, GridMap*, Logger*, Node* next_pos[MAX_AGENTS]);
-void agent_manager_plan_and_resolve_collisions_dstar_basic_core(AgentManager*, GridMap*, Logger*, Node* next_pos[MAX_AGENTS]);
+void agent_manager_plan_and_resolve_collisions_astar(const PlanningContext& context, Node* next_pos[MAX_AGENTS]);
+void agent_manager_plan_and_resolve_collisions_dstar_basic(const PlanningContext& context, Node* next_pos[MAX_AGENTS]);
+void agent_manager_plan_and_resolve_collisions_astar_core(const PlanningContext& context, Node* next_pos[MAX_AGENTS]);
+void agent_manager_plan_and_resolve_collisions_dstar_basic_core(const PlanningContext& context, Node* next_pos[MAX_AGENTS]);
 
 Pathfinder* pathfinder_create(Node* start, Node* goal, const struct Agent_* agent);
 void pathfinder_reset_goal(Pathfinder* pf, Node* new_goal);
@@ -343,15 +161,18 @@ Node* pathfinder_get_next_step(Pathfinder* pf, GridMap* map, const AgentManager*
 
 void ReservationTable_clear(ReservationTable* r);
 void ReservationTable_seedCurrent(ReservationTable* r, AgentManager* m);
-int ReservationTable_isOccupied(const ReservationTable* r, int t, const Node* n);
-int ReservationTable_getOccupant(const ReservationTable* r, int t, const Node* n);
-void ReservationTable_setOccupant(ReservationTable* r, int t, const Node* n, int agent_id);
+int ReservationTable_isOccupied(const ReservationTable* r, int t, const Node* n, int horizon);
+int ReservationTable_getOccupant(const ReservationTable* r, int t, const Node* n, int horizon);
+void ReservationTable_setOccupant(ReservationTable* r, int t, const Node* n, int agent_id, int horizon);
 void add_wait_edge(WaitEdge* edges, int* cnt, int from, int to, int t, CauseType cause, int x1, int y1, int x2, int y2);
 int build_scc_mask_from_edges(const WaitEdge* edges, int cnt);
-int run_partial_CBS(AgentManager* m, GridMap* map, Logger* lg,
-    int group_ids[], int group_n, const ReservationTable* base_rt,
+int run_partial_CBS(
+    const PlanningContext& context,
+    int group_ids[],
+    int group_n,
+    const ReservationTable* base_rt,
     Node* out_plans[MAX_AGENTS][MAX_WHCA_HORIZON + 1]);
-Node* try_pull_over(GridMap* map, const ReservationTable* rt, Agent* ag);
+Node* try_pull_over(const PlanningContext& context, const ReservationTable* rt, Agent* ag);
 int priority_score(const Agent* ag);
 void sort_agents_by_priority(AgentManager* m, int order[MAX_AGENTS]);
 int best_candidate_order(Pathfinder* pf, GridMap* map, const AgentManager* am,
@@ -389,9 +210,9 @@ void Planner::reset(std::unique_ptr<PlannerStrategy> strategy) {
     strategy_ = std::move(strategy);
 }
 
-void Planner::planStep(AgentManager* agents, GridMap* map, Logger* logger, Node* next_pos[MAX_AGENTS]) const {
+void Planner::planStep(const PlanningContext& context, Node* next_pos[MAX_AGENTS]) const {
     if (strategy_) {
-        strategy_->planStep(agents, map, logger, next_pos);
+        strategy_->planStep(context, next_pos);
     }
 }
 
@@ -438,7 +259,6 @@ void Logger::log(const char* fmt, ...) {
 }
 
 Simulation_::Simulation_() {
-    simulation_set_active(this);
     map_id = 1;
     path_algo = PATHALGO_DEFAULT;
     planner = planner_from_pathalgo(path_algo);
@@ -446,15 +266,9 @@ Simulation_::Simulation_() {
     render_state.configureForAlgorithm(path_algo);
     planner_metrics.whca_h = runtime_tuning.whca_horizon;
     grid_map_load_scenario(map, agent_manager, map_id);
-    metrics_subscribe(simulation_metrics_observer, this);
 }
 
-Simulation_::~Simulation_() {
-    metrics_unsubscribe(this);
-    if (simulation_active() == this) {
-        simulation_set_active(nullptr);
-    }
-}
+Simulation_::~Simulation_() = default;
 
 
 // =============================================================================
@@ -597,7 +411,8 @@ static void reset_planner_step_metrics(Simulation* sim) {
     sim->algo_heap_moves_last_step = 0;
     sim->algo_generated_nodes_last_step = 0;
     sim->algo_valid_expansions_last_step = 0;
-    planner_metrics_state().resetStepCounters();
+    sim->planner_metrics.resetStepCounters();
+    sim->planner_metrics.whca_h = sim->runtime_tuning.whca_horizon;
 
     AgentManager* agent_manager = sim->agent_manager;
     if (!agent_manager) return;
@@ -661,22 +476,20 @@ static void record_planner_step_results(
     sim->algorithm_operation_count += (unsigned long long)((metrics.wf_edges_last > 0 ? metrics.wf_edges_last : 0) +
         (metrics.scc_last > 0 ? metrics.scc_last : 0) +
         (metrics.cbs_exp_last > 0 ? metrics.cbs_exp_last : 0));
-
-    metrics_notify_all();
 }
 
 
 void Simulation_::planStep(Node* next_pos[MAX_AGENTS]) {
-    SimulationContextGuard guard(this);
     Simulation* sim = this;
     clock_t plan_start_cpu = clock();
 
     // Reset per-step metrics
     reset_planner_step_metrics(sim);
 
-    sim->planner.planStep(sim->agent_manager, sim->map, sim->logger, next_pos);
+    const PlanningContext context = make_planning_context(sim);
+    sim->planner.planStep(context, next_pos);
 
-    const PlannerMetricsState& metrics = planner_metrics_state();
+    const PlannerMetricsState& metrics = sim->planner_metrics;
     const PlannerStepCounters step_counters = collect_planner_step_counters(sim->path_algo, metrics);
 
     clock_t plan_end_cpu = clock();
@@ -786,12 +599,10 @@ int grid_is_node_blocked(const GridMap* map, const AgentManager* am, const Node*
 // =============================================================================
 
 void Simulation_::updateState() {
-    SimulationContextGuard guard(this);
     agv_update_task_dispatch(this);
 }
 
 void Simulation_::executeOneStep(int is_paused) {
-    SimulationContextGuard guard(this);
     agv_execute_step_service(this, is_paused);
 }
 bool Simulation_::isComplete() const {
@@ -808,7 +619,6 @@ bool Simulation_::isComplete() const {
 }
 
 void Simulation_::run() {
-    SimulationContextGuard guard(this);
     Simulation* sim = this;
     int is_paused = false;
     int quit_flag = false;
@@ -853,12 +663,11 @@ bool run_simulation_to_completion(Simulation* sim) {
 
 int copy_render_frame(Simulation* sim, bool is_paused, char* buffer, size_t buffer_size) {
     if (!sim || !buffer || buffer_size == 0) return 0;
-    SimulationContextGuard guard(sim);
     {
-        const bool prev_suppress = renderer_state().suppress_flush;
-        renderer_state().suppress_flush = true;
+        const bool prev_suppress = sim->render_state.suppress_flush;
+        sim->render_state.suppress_flush = true;
         simulation_display_status(sim, is_paused);
-        renderer_state().suppress_flush = prev_suppress;
+        sim->render_state.suppress_flush = prev_suppress;
     }
     snprintf(buffer, buffer_size, "%s", sim->display_buffer.data());
     return (int)strlen(buffer);

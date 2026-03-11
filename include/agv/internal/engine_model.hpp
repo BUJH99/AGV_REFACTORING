@@ -224,18 +224,6 @@ public:
 
 using Simulation = Simulation_;
 
-struct AlgoRTMetrics {
-    int whca_h{0};
-    int wf_edges_last{0};
-    long long wf_edges_sum{0};
-    int scc_last{0};
-    long long scc_sum{0};
-    int cbs_ok_last{0};
-    int cbs_exp_last{0};
-    long long cbs_success_sum{0};
-    long long cbs_fail_sum{0};
-};
-
 struct RuntimeTuningState {
     int whca_horizon{MIN_WHCA_HORIZON};
     int conflict_score{0};
@@ -315,10 +303,27 @@ struct StepScratch {
     }
 };
 
+struct PlanningContext final {
+    Simulation_* sim{nullptr};
+    AgentManager* agents{nullptr};
+    GridMap* map{nullptr};
+    Logger* logger{nullptr};
+    RuntimeTuningState* runtime_tuning{nullptr};
+    PlannerMetricsState* planner_metrics{nullptr};
+
+    int whcaHorizon() const {
+        return runtime_tuning ? runtime_tuning->whca_horizon : MIN_WHCA_HORIZON;
+    }
+
+    int conflictScore() const {
+        return runtime_tuning ? runtime_tuning->conflict_score : 0;
+    }
+};
+
 class PlannerStrategy {
 public:
     virtual ~PlannerStrategy() = default;
-    virtual void planStep(AgentManager* agents, GridMap* map, Logger* logger, Node* next_pos[MAX_AGENTS]) const = 0;
+    virtual void planStep(const PlanningContext& context, Node* next_pos[MAX_AGENTS]) const = 0;
     virtual std::unique_ptr<PlannerStrategy> clone() const = 0;
 };
 
@@ -332,7 +337,7 @@ public:
     Planner& operator=(Planner&&) noexcept = default;
     ~Planner() = default;
 
-    void planStep(AgentManager* agents, GridMap* map, Logger* logger, Node* next_pos[MAX_AGENTS]) const;
+    void planStep(const PlanningContext& context, Node* next_pos[MAX_AGENTS]) const;
     void reset(std::unique_ptr<PlannerStrategy> strategy);
 
 private:
@@ -396,8 +401,6 @@ public:
     AgentWorkloadSnapshot workload_snapshot{};
     StepScratch step_scratch{};
     std::array<char, DISPLAY_BUFFER_SIZE> display_buffer{};
-    int whca_horizon_shadow{0};
-    AlgoRTMetrics algo_rt_metrics_shadow{};
     double total_cpu_time_ms{0.0};
     double last_step_cpu_time_ms{0.0};
     double max_step_cpu_time_ms{0.0};
@@ -444,18 +447,3 @@ public:
     bool suppress_stdout{false};
     unsigned int configured_seed{0};
 };
-
-struct MetricsSnapshot_ {
-    int whca_h{0};
-    int wf_edges_last{0};
-    long long wf_edges_sum{0};
-    int scc_last{0};
-    long long scc_sum{0};
-    int cbs_ok_last{0};
-    int cbs_exp_last{0};
-    long long cbs_success_sum{0};
-    long long cbs_fail_sum{0};
-    int whca_horizon{0};
-};
-
-using MetricsSnapshot = MetricsSnapshot_;

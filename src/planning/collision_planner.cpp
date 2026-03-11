@@ -30,9 +30,52 @@ Node* pathfinder_get_next_step(Pathfinder* pf, GridMap* map, const AgentManager*
 void logger_log(Logger* logger, const char* format, ...);
 
 namespace {
+
+PlannerMetricsState& planner_metrics(const PlanningContext& context) {
+    return *context.planner_metrics;
+}
+
+void accumulate_whca_dstar_metrics(const PlanningContext& context, const Pathfinder& pathfinder) {
+    PlannerMetricsState& metrics = planner_metrics(context);
+    metrics.whca_dstar_nodes_expanded_this_step += pathfinder.nodes_expanded_this_call;
+    metrics.whca_dstar_heap_moves_this_step += pathfinder.heap_moves_this_call;
+    metrics.whca_dstar_generated_nodes_this_step += pathfinder.nodes_generated_this_call;
+    metrics.whca_dstar_valid_expansions_this_step += pathfinder.valid_expansions_this_call;
+}
+
+void accumulate_ordered_planning_metrics(
+    const PlanningContext& context,
+    OrderedPlanningMetric metric_kind,
+    const Pathfinder& pathfinder) {
+    PlannerMetricsState& metrics = planner_metrics(context);
+    if (metric_kind == ORDERED_PLANNING_ASTAR) {
+        metrics.astar_nodes_expanded_this_step += pathfinder.nodes_expanded_this_call;
+        metrics.astar_heap_moves_this_step += pathfinder.heap_moves_this_call;
+        metrics.astar_generated_nodes_this_step += pathfinder.nodes_generated_this_call;
+        metrics.astar_valid_expansions_this_step += pathfinder.valid_expansions_this_call;
+        return;
+    }
+
+    metrics.dstar_nodes_expanded_this_step += pathfinder.nodes_expanded_this_call;
+    metrics.dstar_heap_moves_this_step += pathfinder.heap_moves_this_call;
+    metrics.dstar_generated_nodes_this_step += pathfinder.nodes_generated_this_call;
+    metrics.dstar_valid_expansions_this_step += pathfinder.valid_expansions_this_call;
+}
+
+void record_wf_scc_metrics(const PlanningContext& context, int wf_edges, int scc) {
+    PlannerMetricsState& metrics = planner_metrics(context);
+    metrics.wf_edges_last = wf_edges;
+    metrics.wf_edges_sum += wf_edges;
+    metrics.scc_last = scc;
+    metrics.scc_sum += scc;
+}
 }  // namespace
 
-void agent_manager_plan_and_resolve_collisions_core(AgentManager* m, GridMap* map, Logger* lg, Node* next_pos[MAX_AGENTS]) {
+void agent_manager_plan_and_resolve_collisions_core(const PlanningContext& context, Node* next_pos[MAX_AGENTS]) {
+    AgentManager* m = context.agents;
+    GridMap* map = context.map;
+    Logger* lg = context.logger;
+
     for (int i = 0; i < MAX_AGENTS; i++) next_pos[i] = m->agents[i].pos;
 
     int order[MAX_AGENTS];
@@ -49,25 +92,25 @@ void agent_manager_plan_and_resolve_collisions_core(AgentManager* m, GridMap* ma
         if (!default_planner_agent_is_active(agent)) continue;
 
         if (default_planner_agent_is_busy_at_goal(agent)) {
-            default_planner_reserve_waiting_agent_path(&rt, agent, next_pos);
+            default_planner_reserve_waiting_agent_path(context, &rt, agent, next_pos);
             continue;
         }
 
-        default_planner_plan_whca_path_for_agent(m, map, &rt, wf_edges, &wf_cnt, agent, next_pos);
+        default_planner_plan_whca_path_for_agent(context, &rt, wf_edges, &wf_cnt, agent, next_pos);
     }
 
     default_planner_record_first_step_conflicts(m, next_pos, wf_edges, &wf_cnt);
 
     const int scc_mask = build_scc_mask_from_edges(wf_edges, wf_cnt);
-    agv_record_wf_scc_metrics(wf_cnt, scc_mask ? 1 : 0);
+    record_wf_scc_metrics(context, wf_cnt, scc_mask ? 1 : 0);
 
     int fallback_leader = -1;
     int pull_over_mask = 0;
-    default_planner_apply_fallbacks(m, map, lg, &rt, scc_mask, next_pos, &fallback_leader, &pull_over_mask);
+    default_planner_apply_fallbacks(context, m, &rt, scc_mask, next_pos, &fallback_leader, &pull_over_mask);
 
     default_planner_resolve_pairwise_first_step_conflicts(m, lg, next_pos, fallback_leader, pull_over_mask);
 
-    WHCA_adjustHorizon(wf_cnt, scc_mask ? 1 : 0, lg);
+    WHCA_adjustHorizon(context, wf_cnt, scc_mask ? 1 : 0, lg);
 }
 
 int agent_should_skip_ordered_planning_local(const Agent* agent) {
@@ -81,10 +124,12 @@ int agent_should_skip_ordered_planning_local(const Agent* agent) {
 }
 
 void run_ordered_planning_core_local(
-    AgentManager* manager,
-    GridMap* map,
+    const PlanningContext& context,
     OrderedPlanningMetric metric_kind,
     Node* next_pos[MAX_AGENTS]) {
+    AgentManager* manager = context.agents;
+    GridMap* map = context.map;
+
     int order[MAX_AGENTS];
     sort_agents_by_priority(manager, order);
 
@@ -107,6 +152,7 @@ void run_ordered_planning_core_local(
 
         if (agent->pf) {
             desired_move = compute_ordered_pathfinder_move(agent, map, manager, metric_kind);
+            accumulate_ordered_planning_metrics(context, metric_kind, *agent->pf);
         }
         restore_temporarily_unparked_goal(agent, agent->pf.get(), map, manager, goal_was_parked);
         apply_rotation_and_step(agent, current_pos, desired_move, &next_pos[agent_id]);
@@ -115,14 +161,12 @@ void run_ordered_planning_core_local(
     resolve_conflicts_by_order(manager, order, next_pos);
 }
 
-void agent_manager_plan_and_resolve_collisions_astar_core(AgentManager* manager, GridMap* map, Logger* logger, Node* next_pos[MAX_AGENTS]) {
-    (void)logger;
-    run_ordered_planning_core_local(manager, map, ORDERED_PLANNING_ASTAR, next_pos);
+void agent_manager_plan_and_resolve_collisions_astar_core(const PlanningContext& context, Node* next_pos[MAX_AGENTS]) {
+    run_ordered_planning_core_local(context, ORDERED_PLANNING_ASTAR, next_pos);
 }
 
-void agent_manager_plan_and_resolve_collisions_dstar_basic_core(AgentManager* manager, GridMap* map, Logger* logger, Node* next_pos[MAX_AGENTS]) {
-    (void)logger;
-    run_ordered_planning_core_local(manager, map, ORDERED_PLANNING_DSTAR, next_pos);
+void agent_manager_plan_and_resolve_collisions_dstar_basic_core(const PlanningContext& context, Node* next_pos[MAX_AGENTS]) {
+    run_ordered_planning_core_local(context, ORDERED_PLANNING_DSTAR, next_pos);
 }
 
 void assign_goals_for_active_agents_local(AgentManager* manager, GridMap* map, Logger* logger) {
@@ -138,32 +182,30 @@ void seed_next_positions_from_current_local(AgentManager* manager, Node* next_po
     }
 }
 
-using PlannerCoreFnLocal = void (*)(AgentManager* manager, GridMap* map, Logger* logger, Node* next_pos[MAX_AGENTS]);
+using PlannerCoreFnLocal = void (*)(const PlanningContext& context, Node* next_pos[MAX_AGENTS]);
 
 void run_planner_entry_local(
-    AgentManager* manager,
-    GridMap* map,
-    Logger* logger,
+    const PlanningContext& context,
     Node* next_pos[MAX_AGENTS],
     PlannerCoreFnLocal planner_core,
     int seed_next_positions) {
-    assign_goals_for_active_agents_local(manager, map, logger);
+    assign_goals_for_active_agents_local(context.agents, context.map, context.logger);
     if (seed_next_positions) {
-        seed_next_positions_from_current_local(manager, next_pos);
+        seed_next_positions_from_current_local(context.agents, next_pos);
     }
-    planner_core(manager, map, logger, next_pos);
+    planner_core(context, next_pos);
 }
 
-void agent_manager_plan_and_resolve_collisions(AgentManager* manager, GridMap* map, Logger* logger, Node* next_pos[MAX_AGENTS]) {
-    run_planner_entry_local(manager, map, logger, next_pos, agent_manager_plan_and_resolve_collisions_core, false);
+void agent_manager_plan_and_resolve_collisions(const PlanningContext& context, Node* next_pos[MAX_AGENTS]) {
+    run_planner_entry_local(context, next_pos, agent_manager_plan_and_resolve_collisions_core, false);
 }
 
-void agent_manager_plan_and_resolve_collisions_astar(AgentManager* manager, GridMap* map, Logger* logger, Node* next_pos[MAX_AGENTS]) {
-    run_planner_entry_local(manager, map, logger, next_pos, agent_manager_plan_and_resolve_collisions_astar_core, true);
+void agent_manager_plan_and_resolve_collisions_astar(const PlanningContext& context, Node* next_pos[MAX_AGENTS]) {
+    run_planner_entry_local(context, next_pos, agent_manager_plan_and_resolve_collisions_astar_core, true);
 }
 
-void agent_manager_plan_and_resolve_collisions_dstar_basic(AgentManager* manager, GridMap* map, Logger* logger, Node* next_pos[MAX_AGENTS]) {
-    run_planner_entry_local(manager, map, logger, next_pos, agent_manager_plan_and_resolve_collisions_dstar_basic_core, true);
+void agent_manager_plan_and_resolve_collisions_dstar_basic(const PlanningContext& context, Node* next_pos[MAX_AGENTS]) {
+    run_planner_entry_local(context, next_pos, agent_manager_plan_and_resolve_collisions_dstar_basic_core, true);
 }
 
 namespace {
@@ -173,8 +215,8 @@ public:
     explicit FunctionPlannerStrategy(PlannerCoreFnLocal plan_step)
         : plan_step_(plan_step) {}
 
-    void planStep(AgentManager* agents, GridMap* map, Logger* logger, Node* next_pos[MAX_AGENTS]) const override {
-        plan_step_(agents, map, logger, next_pos);
+    void planStep(const PlanningContext& context, Node* next_pos[MAX_AGENTS]) const override {
+        plan_step_(context, next_pos);
     }
 
     std::unique_ptr<PlannerStrategy> clone() const override {

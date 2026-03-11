@@ -73,40 +73,21 @@ struct RunSummary {
     int remaining_parked_vehicles{0};
 };
 
-int agv_current_whca_horizon();
-int agv_current_conflict_score();
-void agv_set_whca_runtime_state(int conflict_score, int horizon);
 AgentWorkloadSnapshot agv_collect_agent_workload(const AgentManager* am);
 Node* agv_select_best_charge_station(Agent* ag, GridMap* map, AgentManager* am, Logger* lg);
 void agv_set_goal_if_needed(Agent* ag, GridMap* map, AgentManager* am, Logger* lg);
 void agv_update_task_dispatch(Simulation* sim);
+void agent_manager_update_state_after_move(
+    AgentManager* manager,
+    ScenarioManager* scenario,
+    GridMap* map,
+    Logger* logger,
+    Simulation* sim);
+void agent_manager_update_charge_state(AgentManager* manager, GridMap* map, Logger* logger);
 int agv_apply_moves_and_update_stuck(Simulation* sim, Node* next_pos[MAX_AGENTS], Node* prev_pos[MAX_AGENTS]);
 void agv_update_deadlock_counter(Simulation* sim, int moved_this_step, int is_custom_mode);
 void agv_accumulate_wait_ticks_if_realtime(Simulation* sim);
 void agv_execute_step_service(Simulation* sim, int is_paused);
-void agv_accumulate_cbs_step_metrics(
-    unsigned long long nodes_expanded,
-    unsigned long long heap_moves,
-    unsigned long long generated_nodes,
-    unsigned long long valid_expansions);
-void agv_accumulate_whca_dstar_step_metrics(
-    unsigned long long nodes_expanded,
-    unsigned long long heap_moves,
-    unsigned long long generated_nodes,
-    unsigned long long valid_expansions);
-void agv_accumulate_astar_step_metrics(
-    unsigned long long nodes_expanded,
-    unsigned long long heap_moves,
-    unsigned long long generated_nodes,
-    unsigned long long valid_expansions);
-void agv_accumulate_dstar_step_metrics(
-    unsigned long long nodes_expanded,
-    unsigned long long heap_moves,
-    unsigned long long generated_nodes,
-    unsigned long long valid_expansions);
-void agv_record_wf_scc_metrics(int wf_edges, int scc);
-void agv_record_cbs_success(int expansions);
-void agv_record_cbs_failure(int expansions);
 
 SimulationConfig default_simulation_config();
 bool apply_simulation_config(Simulation* sim, const SimulationConfig& config);

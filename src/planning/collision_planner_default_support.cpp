@@ -23,9 +23,27 @@ constexpr int kReturnHomeEscapePriorityStuck = 20;
 constexpr int kReturnHomeEscapeBoost = 250;
 constexpr int kReturnHomeBayMoveBoost = 1000;
 
-void reserve_goal_tail_local(ReservationTable* table, int start_step, Node* goal, int agent_id, Node* plan[MAX_WHCA_HORIZON + 1]) {
-    for (int step = start_step; step <= agv_current_whca_horizon(); ++step) {
-        ReservationTable_setOccupant(table, step, goal, agent_id);
+PlannerMetricsState& planner_metrics(const PlanningContext& context) {
+    return *context.planner_metrics;
+}
+
+void accumulate_whca_dstar_metrics(const PlanningContext& context, const Pathfinder& pathfinder) {
+    PlannerMetricsState& metrics = planner_metrics(context);
+    metrics.whca_dstar_nodes_expanded_this_step += pathfinder.nodes_expanded_this_call;
+    metrics.whca_dstar_heap_moves_this_step += pathfinder.heap_moves_this_call;
+    metrics.whca_dstar_generated_nodes_this_step += pathfinder.nodes_generated_this_call;
+    metrics.whca_dstar_valid_expansions_this_step += pathfinder.valid_expansions_this_call;
+}
+
+void reserve_goal_tail_local(
+    const PlanningContext& context,
+    ReservationTable* table,
+    int start_step,
+    Node* goal,
+    int agent_id,
+    Node* plan[MAX_WHCA_HORIZON + 1]) {
+    for (int step = start_step; step <= context.whcaHorizon(); ++step) {
+        ReservationTable_setOccupant(table, step, goal, agent_id, context.whcaHorizon());
         plan[step] = goal;
     }
 }
@@ -62,8 +80,8 @@ void apply_cbs_solution_local(const int group_ids[], int group_size, Node* cbs_p
 }
 
 int apply_pull_over_fallback_local(
+    const PlanningContext& context,
     AgentManager* manager,
-    GridMap* map,
     ReservationTable* table,
     const int group_ids[],
     int group_size,
@@ -76,16 +94,16 @@ int apply_pull_over_fallback_local(
     for (int group_index = 0; group_index < group_size; ++group_index) {
         const int agent_id = group_ids[group_index];
         if (agent_id == leader) continue;
-        ReservationTable_clearAgent(table, agent_id);
+        ReservationTable_clearAgent(table, agent_id, context.whcaHorizon());
     }
 
     for (int group_index = 0; group_index < group_size; ++group_index) {
         const int agent_id = group_ids[group_index];
         if (agent_id == leader) continue;
-        Node* pull_over = try_pull_over(map, table, &manager->agents[agent_id]);
+        Node* pull_over = try_pull_over(context, table, &manager->agents[agent_id]);
         if (pull_over) {
             next_pos[agent_id] = pull_over;
-            ReservationTable_setOccupant(table, 1, pull_over, agent_id);
+            ReservationTable_setOccupant(table, 1, pull_over, agent_id, context.whcaHorizon());
             if (out_pull_over_mask && pull_over != manager->agents[agent_id].pos) {
                 *out_pull_over_mask |= (1 << agent_id);
             }
@@ -131,15 +149,15 @@ int conflict_priority_local(const Agent* agent, Node* next) {
 class FallbackResolutionPolicyLocal final {
 public:
     FallbackResolutionPolicyLocal(
+        const PlanningContext& context,
         AgentManager* manager,
-        GridMap* map,
         Logger* logger,
         ReservationTable* table,
         Node* next_pos[MAX_AGENTS],
         int* fallback_leader,
         int* pull_over_mask)
-        : manager_(manager),
-          map_(map),
+        : context_(context),
+          manager_(manager),
           logger_(logger),
           table_(table),
           next_pos_(next_pos),
@@ -154,13 +172,13 @@ public:
         if (group_n < 2) return;
 
         Node* cbs_plans[MAX_AGENTS][MAX_WHCA_HORIZON + 1] = {{0}};
-        const int ok = run_partial_CBS(manager_, map_, logger_, group_ids, group_n, table_, cbs_plans);
+        const int ok = run_partial_CBS(context_, group_ids, group_n, table_, cbs_plans);
         if (ok) {
             apply_cbs_solution_local(group_ids, group_n, cbs_plans, next_pos_);
             return;
         }
 
-        const int leader = apply_pull_over_fallback_local(manager_, map_, table_, group_ids, group_n, scc_mask, next_pos_, pull_over_mask_);
+        const int leader = apply_pull_over_fallback_local(context_, manager_, table_, group_ids, group_n, scc_mask, next_pos_, pull_over_mask_);
         if (leader >= 0) {
             if (fallback_leader_) *fallback_leader_ = leader;
             logger_log(logger_, "[%sWFG%s] SCC detected: leader=%c commits, others pull over.",
@@ -186,7 +204,7 @@ public:
         if (group_n < 2) return;
 
         Node* cbs_plans[MAX_AGENTS][MAX_WHCA_HORIZON + 1] = {{0}};
-        const int ok = run_partial_CBS(manager_, map_, logger_, group_ids, group_n, table_, cbs_plans);
+        const int ok = run_partial_CBS(context_, group_ids, group_n, table_, cbs_plans);
         if (ok) {
             apply_cbs_solution_local(group_ids, group_n, cbs_plans, next_pos_);
             logger_log(logger_, "[%sCBS%s] Deadlock fallback CBS engaged (group=%d).", C_B_CYN, C_NRM, group_n);
@@ -194,14 +212,14 @@ public:
         }
 
         const int all_agents_mask = (MAX_AGENTS >= static_cast<int>(sizeof(int) * 8)) ? -1 : ((1 << MAX_AGENTS) - 1);
-        const int leader = apply_pull_over_fallback_local(manager_, map_, table_, group_ids, group_n, all_agents_mask, next_pos_, pull_over_mask_);
+        const int leader = apply_pull_over_fallback_local(context_, manager_, table_, group_ids, group_n, all_agents_mask, next_pos_, pull_over_mask_);
         if (fallback_leader_) *fallback_leader_ = leader;
         logger_log(logger_, "[%sWFG%s] Deadlock fallback: leader-only move, others pull-over.", C_B_YEL, C_NRM);
     }
 
 private:
+    const PlanningContext& context_;
     AgentManager* manager_{nullptr};
-    GridMap* map_{nullptr};
     Logger* logger_{nullptr};
     ReservationTable* table_{nullptr};
     Node** next_pos_{nullptr};
@@ -223,21 +241,26 @@ int default_planner_agent_is_busy_at_goal(const Agent* agent) {
         agent->pos == agent->goal;
 }
 
-void default_planner_reserve_waiting_agent_path(ReservationTable* table, const Agent* agent, Node* next_pos[MAX_AGENTS]) {
-    for (int step = 1; step <= agv_current_whca_horizon(); ++step) {
-        ReservationTable_setOccupant(table, step, agent->pos, agent->id);
+void default_planner_reserve_waiting_agent_path(
+    const PlanningContext& context,
+    ReservationTable* table,
+    const Agent* agent,
+    Node* next_pos[MAX_AGENTS]) {
+    for (int step = 1; step <= context.whcaHorizon(); ++step) {
+        ReservationTable_setOccupant(table, step, agent->pos, agent->id, context.whcaHorizon());
     }
     next_pos[agent->id] = agent->pos;
 }
 
 void default_planner_plan_whca_path_for_agent(
-    AgentManager* manager,
-    GridMap* map,
+    const PlanningContext& context,
     ReservationTable* table,
     WaitEdge* wait_edges,
     int* wait_edge_count,
     Agent* agent,
     Node* next_pos[MAX_AGENTS]) {
+    AgentManager* manager = context.agents;
+    GridMap* map = context.map;
     ensure_pathfinder_for_agent(agent);
 
     const int goal_was_parked = (agent->state == GOING_TO_COLLECT && agent->goal->is_parked);
@@ -248,18 +271,14 @@ void default_planner_plan_whca_path_for_agent(
     if (agent->pf) {
         pathfinder_update_start(agent->pf.get(), agent->pos);
         pathfinder_compute_shortest_path(agent->pf.get(), map, manager);
-        agv_accumulate_whca_dstar_step_metrics(
-            agent->pf->nodes_expanded_this_call,
-            agent->pf->heap_moves_this_call,
-            agent->pf->nodes_generated_this_call,
-            agent->pf->valid_expansions_this_call);
+        accumulate_whca_dstar_metrics(context, *agent->pf);
     }
 
     Node* plan[MAX_WHCA_HORIZON + 1];
     plan[0] = agent->pos;
     Node* current = agent->pos;
 
-    for (int step = 1; step <= agv_current_whca_horizon(); ++step) {
+    for (int step = 1; step <= context.whcaHorizon(); ++step) {
         Node* candidates[5];
         int candidate_count = 0;
         best_candidate_order(agent->pf.get(), map, manager, current, agent->pf->goal_node, candidates, &candidate_count);
@@ -267,16 +286,16 @@ void default_planner_plan_whca_path_for_agent(
         Node* chosen = current;
         for (int candidate_index = 0; candidate_index < candidate_count; ++candidate_index) {
             Node* candidate = candidates[candidate_index];
-            if (ReservationTable_isOccupied(table, step, candidate)) {
-                const int occupant = ReservationTable_getOccupant(table, step, candidate);
+            if (ReservationTable_isOccupied(table, step, candidate, context.whcaHorizon())) {
+                const int occupant = ReservationTable_getOccupant(table, step, candidate, context.whcaHorizon());
                 if (occupant != -1) {
                     add_wait_edge(wait_edges, wait_edge_count, agent->id, occupant, step, CAUSE_VERTEX, candidate->x, candidate->y, 0, 0);
                 }
                 continue;
             }
 
-            const int previous_occupant = ReservationTable_getOccupant(table, step - 1, candidate);
-            const int occupant_into_current = ReservationTable_getOccupant(table, step, current);
+            const int previous_occupant = ReservationTable_getOccupant(table, step - 1, candidate, context.whcaHorizon());
+            const int occupant_into_current = ReservationTable_getOccupant(table, step, current, context.whcaHorizon());
             if (previous_occupant != -1 && previous_occupant == occupant_into_current) {
                 add_wait_edge(wait_edges, wait_edge_count, agent->id, previous_occupant, step, CAUSE_SWAP, current->x, current->y, candidate->x, candidate->y);
                 continue;
@@ -288,11 +307,11 @@ void default_planner_plan_whca_path_for_agent(
         }
 
         plan[step] = chosen;
-        ReservationTable_setOccupant(table, step, chosen, agent->id);
+        ReservationTable_setOccupant(table, step, chosen, agent->id, context.whcaHorizon());
         current = chosen;
 
         if (current == agent->goal) {
-            reserve_goal_tail_local(table, step + 1, current, agent->id, plan);
+            reserve_goal_tail_local(context, table, step + 1, current, agent->id, plan);
             break;
         }
     }
@@ -331,9 +350,8 @@ void default_planner_record_first_step_conflicts(
 }
 
 void default_planner_apply_fallbacks(
+    const PlanningContext& context,
     AgentManager* manager,
-    GridMap* map,
-    Logger* logger,
     ReservationTable* table,
     int scc_mask,
     Node* next_pos[MAX_AGENTS],
@@ -343,9 +361,9 @@ void default_planner_apply_fallbacks(
     if (out_pull_over_mask) *out_pull_over_mask = 0;
 
     const FallbackResolutionPolicyLocal fallback_policy(
+        context,
         manager,
-        map,
-        logger,
+        context.logger,
         table,
         next_pos,
         out_fallback_leader,

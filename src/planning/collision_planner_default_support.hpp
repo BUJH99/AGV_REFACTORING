@@ -4,10 +4,13 @@
 
 int default_planner_agent_is_active(const Agent* agent);
 int default_planner_agent_is_busy_at_goal(const Agent* agent);
-void default_planner_reserve_waiting_agent_path(ReservationTable* table, const Agent* agent, Node* next_pos[MAX_AGENTS]);
+void default_planner_reserve_waiting_agent_path(
+    const PlanningContext& context,
+    ReservationTable* table,
+    const Agent* agent,
+    Node* next_pos[MAX_AGENTS]);
 void default_planner_plan_whca_path_for_agent(
-    AgentManager* manager,
-    GridMap* map,
+    const PlanningContext& context,
     ReservationTable* table,
     WaitEdge* wait_edges,
     int* wait_edge_count,
@@ -19,9 +22,8 @@ void default_planner_record_first_step_conflicts(
     WaitEdge* wait_edges,
     int* wait_edge_count);
 void default_planner_apply_fallbacks(
+    const PlanningContext& context,
     AgentManager* manager,
-    GridMap* map,
-    Logger* logger,
     ReservationTable* table,
     int scc_mask,
     Node* next_pos[MAX_AGENTS],

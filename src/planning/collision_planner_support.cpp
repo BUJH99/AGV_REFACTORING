@@ -260,23 +260,10 @@ void restore_temporarily_unparked_goal(Agent* agent, Pathfinder* pf, GridMap* ma
 
 Node* compute_ordered_pathfinder_move(Agent* agent, GridMap* map, AgentManager* manager, OrderedPlanningMetric metric_kind) {
     if (!agent || !agent->pf) return agent ? agent->pos : nullptr;
+    (void)metric_kind;
 
     pathfinder_update_start(agent->pf.get(), agent->pos);
     pathfinder_compute_shortest_path(agent->pf.get(), map, manager);
-
-    if (metric_kind == ORDERED_PLANNING_ASTAR) {
-        agv_accumulate_astar_step_metrics(
-            agent->pf->nodes_expanded_this_call,
-            agent->pf->heap_moves_this_call,
-            agent->pf->nodes_generated_this_call,
-            agent->pf->valid_expansions_this_call);
-    } else {
-        agv_accumulate_dstar_step_metrics(
-            agent->pf->nodes_expanded_this_call,
-            agent->pf->heap_moves_this_call,
-            agent->pf->nodes_generated_this_call,
-            agent->pf->valid_expansions_this_call);
-    }
 
     return pathfinder_get_next_step(agent->pf.get(), map, manager, agent->pos);
 }
