@@ -7,10 +7,6 @@
 #include <cmath>
 #include <cstring>
 
-#define grid_is_valid_coord Grid_isValidCoord
-
-int grid_is_valid_coord(int x, int y);
-
 namespace {
 
 constexpr double kCollisionInf = 1e18;
@@ -76,15 +72,15 @@ SpaceTimeSearchBuffers& search_buffers_local() {
 }
 
 AgentDir dir_from_delta(int dx, int dy) {
-    if (dx == 1 && dy == 0) return DIR_RIGHT;
-    if (dx == -1 && dy == 0) return DIR_LEFT;
-    if (dx == 0 && dy == -1) return DIR_UP;
-    if (dx == 0 && dy == 1) return DIR_DOWN;
-    return DIR_NONE;
+    if (dx == 1 && dy == 0) return AgentDir::Right;
+    if (dx == -1 && dy == 0) return AgentDir::Left;
+    if (dx == 0 && dy == -1) return AgentDir::Up;
+    if (dx == 0 && dy == 1) return AgentDir::Down;
+    return AgentDir::None;
 }
 
 int dir_turn_steps(AgentDir from, AgentDir to) {
-    if (from == DIR_NONE || to == DIR_NONE) return 0;
+    if (from == AgentDir::None || to == AgentDir::None) return 0;
     const int diff = (static_cast<int>(to) - static_cast<int>(from) + 4) % 4;
     return diff <= 2 ? diff : 4 - diff;
 }
@@ -452,7 +448,7 @@ int st_astar_plan_single(
             double next_g = g[cur] + 1.0;
             if (cur_t == 0 && !(next_x == cur_x && next_y == cur_y)) {
                 const AgentDir move_heading = dir_from_delta(next_x - cur_x, next_y - cur_y);
-                if (initial_heading != DIR_NONE) {
+                if (initial_heading != AgentDir::None) {
                     const int turn_steps = dir_turn_steps(initial_heading, move_heading);
                     if (turn_steps == 1) next_g += static_cast<double>(kTurn90Wait);
                 }
@@ -707,7 +703,7 @@ void ReservationTable_clearAgent(ReservationTable* table, int agent_id, int hori
 void ReservationTable_seedCurrent(ReservationTable* table, AgentManager* manager) {
     for (int i = 0; i < MAX_AGENTS; ++i) {
         Agent* agent = &manager->agents[i];
-        if (agent->pos && agent->state != CHARGING) {
+        if (agent->pos && agent->state != AgentState::Charging) {
             table->occ[0][agent->pos->y][agent->pos->x] = agent->id;
         }
     }

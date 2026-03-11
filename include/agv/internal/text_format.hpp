@@ -310,18 +310,6 @@ inline std::string printf_like(std::string_view format_string, Args&&... args) {
     return PrintfFormatter<Args...>(std::forward<Args>(args)...).format(format_string);
 }
 
-inline void copy_c_str(char* buffer, std::size_t buffer_size, std::string_view text) {
-    if (!buffer || buffer_size == 0) {
-        return;
-    }
-
-    const std::size_t copy_size = std::min(buffer_size - 1, text.size());
-    if (copy_size > 0) {
-        std::memcpy(buffer, text.data(), copy_size);
-    }
-    buffer[copy_size] = '\0';
-}
-
 template <typename... Args>
 inline void console_print(std::string_view format_string, Args&&... args) {
     std::cout << printf_like(format_string, std::forward<Args>(args)...);

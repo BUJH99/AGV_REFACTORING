@@ -5,6 +5,7 @@
 #include <array>
 #include <deque>
 #include <memory>
+#include <random>
 #include <string>
 #include <string_view>
 
@@ -31,38 +32,38 @@ struct Node {
     int reserved_by_agent{-1};
 };
 
-enum AgentState {
-    IDLE,
-    GOING_TO_PARK,
-    RETURNING_HOME_EMPTY,
-    GOING_TO_COLLECT,
-    RETURNING_WITH_CAR,
-    GOING_TO_CHARGE,
-    CHARGING,
-    RETURNING_HOME_MAINTENANCE
+enum class AgentState {
+    Idle,
+    GoingToPark,
+    ReturningHomeEmpty,
+    GoingToCollect,
+    ReturningWithCar,
+    GoingToCharge,
+    Charging,
+    ReturningHomeMaintenance
 };
 
-enum PhaseType { PARK_PHASE, EXIT_PHASE };
+enum class PhaseType { Park, Exit };
 
 struct DynamicPhase {
-    PhaseType type{PARK_PHASE};
+    PhaseType type{PhaseType::Park};
     int task_count{0};
     std::string type_name{};
 };
 
-enum TaskType { TASK_NONE, TASK_PARK, TASK_EXIT };
+enum class TaskType { None, Park, Exit };
 
 struct TaskNode {
-    TaskType type{TASK_NONE};
+    TaskType type{TaskType::None};
     int created_at_step{0};
 };
 
-enum SimulationMode { MODE_UNINITIALIZED, MODE_CUSTOM, MODE_REALTIME };
+enum class SimulationMode { Uninitialized, Custom, Realtime };
 
-enum PathAlgo {
-    PATHALGO_DEFAULT = 0,
-    PATHALGO_ASTAR_SIMPLE = 1,
-    PATHALGO_DSTAR_BASIC = 2
+enum class PathAlgo {
+    Default = 0,
+    AStarSimple = 1,
+    DStarBasic = 2
 };
 
 class GridMap final {
@@ -94,6 +95,7 @@ struct NodePQ {
 
 struct Pathfinder_;
 struct Agent_;
+class AgentManager;
 class Logger;
 class ScenarioManager;
 class Simulation_;
@@ -102,6 +104,15 @@ using Agent = Agent_;
 using Pathfinder = Pathfinder_;
 
 struct Pathfinder_ {
+    Pathfinder_() = default;
+    Pathfinder_(Node* start, Node* goal, const Agent_* agent);
+
+    void resetGoal(Node* new_goal);
+    void updateStart(Node* new_start);
+    void notifyCellChange(GridMap* map, const AgentManager* am, Node* changed);
+    void computeShortestPath(GridMap* map, const AgentManager* am);
+    Node* getNextStep(GridMap* map, const AgentManager* am, Node* current);
+
     NodePQ pq{};
     SearchCell cells[GRID_HEIGHT][GRID_WIDTH]{};
     Node* start_node{nullptr};
@@ -119,13 +130,13 @@ struct ReservationTable {
     int occ[MAX_WHCA_HORIZON + 1][GRID_HEIGHT][GRID_WIDTH]{};
 };
 
-enum CauseType { CAUSE_VERTEX = 0, CAUSE_SWAP = 1 };
+enum class CauseType { Vertex = 0, Swap = 1 };
 
 struct WaitEdge {
     int from_id{0};
     int to_id{0};
     int t{0};
-    CauseType cause{CAUSE_VERTEX};
+    CauseType cause{CauseType::Vertex};
     int x1{0};
     int y1{0};
     int x2{0};
@@ -160,11 +171,11 @@ struct Agent_ {
     Node* pos{nullptr};
     Node* home_base{nullptr};
     Node* goal{nullptr};
-    AgentState state{IDLE};
+    AgentState state{AgentState::Idle};
     double total_distance_traveled{0.0};
     int charge_timer{0};
     int action_timer{0};
-    AgentDir heading{DIR_NONE};
+    AgentDir heading{AgentDir::None};
     int rotation_wait{0};
     std::unique_ptr<Pathfinder> pf{};
     int stuck_steps{0};
@@ -197,7 +208,7 @@ public:
     bool tryDequeueAssignableTask(int lot_full, int parked_count, TaskType* out_type);
     void applySpeedMultiplier(float speedMultiplier);
 
-    SimulationMode mode{MODE_UNINITIALIZED};
+    SimulationMode mode{SimulationMode::Uninitialized};
     int time_step{0};
     int simulation_speed{100};
     float speed_multiplier{1.0f};
@@ -217,7 +228,7 @@ public:
 
     void appendLine(std::string_view message);
 
-    char logs[LOG_BUFFER_LINES][LOG_BUFFER_WIDTH]{};
+    std::array<std::string, LOG_BUFFER_LINES> logs{};
     int log_head{0};
     int log_count{0};
 };
@@ -244,7 +255,7 @@ struct RendererState {
     bool suppress_flush{false};
 
     void configureForAlgorithm(PathAlgo algo) {
-        render_stride = (algo == PATHALGO_DEFAULT) ? 1 : 2;
+        render_stride = (algo == PathAlgo::Default) ? 1 : 2;
     }
 };
 
@@ -300,10 +311,13 @@ struct AgentWorkloadSnapshot {
     int active_exit_agents{0};
 };
 
+using AgentNodeSlots = std::array<Node*, MAX_AGENTS>;
+using AgentOrder = std::array<int, MAX_AGENTS>;
+
 struct StepScratch {
-    std::array<Node*, MAX_AGENTS> next_positions{};
-    std::array<Node*, MAX_AGENTS> previous_positions{};
-    std::array<int, MAX_AGENTS> priority_order{};
+    AgentNodeSlots next_positions{};
+    AgentNodeSlots previous_positions{};
+    AgentOrder priority_order{};
     std::array<int, GRID_WIDTH * GRID_HEIGHT> cell_owner{};
 
     void resetCellOwner(int value = -1) {
@@ -331,7 +345,7 @@ struct PlanningContext final {
 class PlannerStrategy {
 public:
     virtual ~PlannerStrategy() = default;
-    virtual void planStep(const PlanningContext& context, Node* next_pos[MAX_AGENTS]) const = 0;
+    virtual void planStep(const PlanningContext& context, AgentNodeSlots& next_positions) const = 0;
     virtual std::unique_ptr<PlannerStrategy> clone() const = 0;
 };
 
@@ -345,7 +359,7 @@ public:
     Planner& operator=(Planner&&) noexcept = default;
     ~Planner() = default;
 
-    void planStep(const PlanningContext& context, Node* next_pos[MAX_AGENTS]) const;
+    void planStep(const PlanningContext& context, AgentNodeSlots& next_positions) const;
     void reset(std::unique_ptr<PlannerStrategy> strategy);
 
 private:
@@ -355,7 +369,7 @@ private:
 class RendererStrategy {
 public:
     virtual ~RendererStrategy() = default;
-    virtual void drawFrame(Simulation_* sim, int is_paused) const = 0;
+    virtual void drawFrame(Simulation_* sim, bool is_paused) const = 0;
     virtual std::unique_ptr<RendererStrategy> clone() const = 0;
 };
 
@@ -369,7 +383,7 @@ public:
     RendererFacade& operator=(RendererFacade&&) noexcept = default;
     ~RendererFacade() = default;
 
-    void drawFrame(Simulation_* sim, int is_paused) const;
+    void drawFrame(Simulation_* sim, bool is_paused) const;
 
 private:
     std::unique_ptr<RendererStrategy> strategy_{};
@@ -382,11 +396,13 @@ public:
 
     void collectMemorySample();
     void collectMemorySampleAlgo();
+    void reseedRandom(unsigned int seed);
+    int nextRandomInt(int exclusive_upper_bound);
     void resetRuntimeStats();
     void reportRealtimeDashboard();
-    void planStep(Node* next_pos[MAX_AGENTS]);
+    void planStep(AgentNodeSlots& next_positions);
     void updateState();
-    void executeOneStep(int is_paused);
+    void executeOneStep(bool is_paused);
     bool isComplete() const;
     void run();
     void printPerformanceSummary() const;
@@ -400,7 +416,7 @@ public:
     ScenarioManager* scenario_manager{&scenario_manager_storage};
     Logger* logger{&logger_storage};
     int map_id{0};
-    PathAlgo path_algo{PATHALGO_DEFAULT};
+    PathAlgo path_algo{PathAlgo::Default};
     Planner planner{};
     RendererFacade renderer{};
     RuntimeTuningState runtime_tuning{};
@@ -408,7 +424,7 @@ public:
     PlannerMetricsState planner_metrics{};
     AgentWorkloadSnapshot workload_snapshot{};
     StepScratch step_scratch{};
-    std::array<char, DISPLAY_BUFFER_SIZE> display_buffer{};
+    std::string display_buffer{};
     double total_cpu_time_ms{0.0};
     double last_step_cpu_time_ms{0.0};
     double max_step_cpu_time_ms{0.0};
@@ -454,4 +470,5 @@ public:
     unsigned long long algo_valid_expansions_last_step{0};
     bool suppress_stdout{false};
     unsigned int configured_seed{0};
+    std::mt19937 random_engine{};
 };

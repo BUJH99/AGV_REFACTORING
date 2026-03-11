@@ -1,9 +1,12 @@
 #define _CRT_SECURE_NO_WARNINGS
 
+#include <chrono>
 #include <clocale>
+#include <conio.h>
+#include <thread>
 #include <windows.h>
 
-#include "agv/internal/text_format.hpp"
+#include "agv/internal/engine_internal.hpp"
 
 void system_enable_virtual_terminal() {
     SetConsoleOutputCP(65001);
@@ -67,4 +70,22 @@ void ui_enter_alt_screen(void) {
 
 void ui_leave_alt_screen(void) {
     agv::internal::text::console_write("\x1b[?1049l\x1b[?25h");
+}
+
+void platform_sleep_for_ms(int ms) {
+    if (ms <= 0) {
+        return;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+}
+
+int console_read_key_blocking() {
+    return _getch();
+}
+
+std::optional<int> console_read_key_nonblocking() {
+    if (!_kbhit()) {
+        return std::nullopt;
+    }
+    return _getch();
 }

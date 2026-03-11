@@ -17,25 +17,25 @@ static int simulation_active_agent_count(const AgentManager* am) {
     return active_agents;
 }
 
-static const char* simulation_mode_report_label(const ScenarioManager* sc) {
+static std::string_view simulation_mode_report_label(const ScenarioManager* sc) {
     if (!sc) return "Uninitialized";
 
     switch (sc->mode) {
-    case MODE_CUSTOM: return "Custom";
-    case MODE_REALTIME: return "Real-Time";
+    case SimulationMode::Custom: return "Custom";
+    case SimulationMode::Realtime: return "Real-Time";
     default: return "Uninitialized";
     }
 }
 
-static const char* simulation_path_algo_report_label(PathAlgo path_algo) {
-    if (path_algo == PATHALGO_ASTAR_SIMPLE) return "A* (Single-Agent)";
-    if (path_algo == PATHALGO_DSTAR_BASIC) return "D* Lite (Incremental)";
+static std::string_view simulation_path_algo_report_label(PathAlgo path_algo) {
+    if (path_algo == PathAlgo::AStarSimple) return "A* (Single-Agent)";
+    if (path_algo == PathAlgo::DStarBasic) return "D* Lite (Incremental)";
     return "Default (WHCA* + D* Lite + WFG + CBS)";
 }
 
 static SimulationMode summary_mode_value(const ScenarioManager* sc) {
-    if (!sc) return MODE_CUSTOM;
-    return (sc->mode == MODE_REALTIME) ? MODE_REALTIME : MODE_CUSTOM;
+    if (!sc) return SimulationMode::Custom;
+    return (sc->mode == SimulationMode::Realtime) ? SimulationMode::Realtime : SimulationMode::Custom;
 }
 
 RunSummary collect_run_summary(const Simulation* sim) {
@@ -123,7 +123,7 @@ void Simulation_::printPerformanceSummary() const {
         agv::internal::text::console_print(" Valid Expansions (avg per step)    : %.2f\n", avg_valid_per_step);
     }
 
-    if (sc && sc->mode == MODE_CUSTOM) {
+    if (sc && sc->mode == SimulationMode::Custom) {
         agv::internal::text::console_print("\n -- Custom Scenario Breakdown --\n");
         for (int i = 0; i < sc->num_phases; i++) {
             const DynamicPhase* ph = &sc->phases[i];
@@ -150,7 +150,7 @@ void Simulation_::printPerformanceSummary() const {
                 agv::internal::text::console_print("   Remaining Tasks         : %d\n", planned - completed);
             }
         }
-    } else if (sc && sc->mode == MODE_REALTIME) {
+    } else if (sc && sc->mode == SimulationMode::Realtime) {
         agv::internal::text::console_print("\n -- Custom Scenario Breakdown --\n");
 
         agv::internal::text::console_print(" Phase 1 (%s)\n", "Real-Time");

@@ -5,7 +5,6 @@
 #include <algorithm>
 #include <stdexcept>
 #include <string_view>
-#include <vector>
 
 namespace agv::core {
 
@@ -14,37 +13,37 @@ namespace {
 ::PathAlgo toInternalAlgo(PathAlgo algorithm) {
     switch (algorithm) {
         case PathAlgo::AStarSimple:
-            return PATHALGO_ASTAR_SIMPLE;
+            return ::PathAlgo::AStarSimple;
         case PathAlgo::DStarBasic:
-            return PATHALGO_DSTAR_BASIC;
+            return ::PathAlgo::DStarBasic;
         case PathAlgo::Default:
         default:
-            return PATHALGO_DEFAULT;
+            return ::PathAlgo::Default;
     }
 }
 
 PathAlgo fromInternalAlgo(::PathAlgo algorithm) {
     switch (algorithm) {
-        case PATHALGO_ASTAR_SIMPLE:
+        case ::PathAlgo::AStarSimple:
             return PathAlgo::AStarSimple;
-        case PATHALGO_DSTAR_BASIC:
+        case ::PathAlgo::DStarBasic:
             return PathAlgo::DStarBasic;
-        case PATHALGO_DEFAULT:
+        case ::PathAlgo::Default:
         default:
             return PathAlgo::Default;
     }
 }
 
 ::SimulationMode toInternalMode(SimulationMode mode) {
-    return mode == SimulationMode::Realtime ? MODE_REALTIME : MODE_CUSTOM;
+    return mode == SimulationMode::Realtime ? ::SimulationMode::Realtime : ::SimulationMode::Custom;
 }
 
 SimulationMode fromInternalMode(::SimulationMode mode) {
-    return mode == MODE_REALTIME ? SimulationMode::Realtime : SimulationMode::Custom;
+    return mode == ::SimulationMode::Realtime ? SimulationMode::Realtime : SimulationMode::Custom;
 }
 
 ::PhaseType toInternalPhase(PhaseType phase) {
-    return phase == PhaseType::Exit ? EXIT_PHASE : PARK_PHASE;
+    return phase == PhaseType::Exit ? ::PhaseType::Exit : ::PhaseType::Park;
 }
 
 MetricsSnapshot toMetricsSnapshot(const RunSummary& legacy) {
@@ -83,11 +82,9 @@ struct SimulationEngine::Impl {
     std::unique_ptr<Simulation> simulation;
     SimulationConfig config{};
     bool dirty{true};
-    std::vector<char> renderBuffer;
-
+ 
     Impl()
-        : config(default_simulation_config()),
-          renderBuffer(static_cast<std::size_t>(DISPLAY_BUFFER_SIZE), '\0') {
+        : config(default_simulation_config()) {
     }
 
     Simulation& createFreshSimulation() {
@@ -148,7 +145,7 @@ void SimulationEngine::configureScenario(const ScenarioConfig& config) {
     impl_->config.realtime_exit_chance = config.realtimeExitChance;
     impl_->config.num_phases = std::min<int>(static_cast<int>(config.phases.size()), MAX_PHASES);
 
-    std::fill(impl_->config.phases.begin(), impl_->config.phases.end(), ConfigPhase{PARK_PHASE, 1});
+    std::fill(impl_->config.phases.begin(), impl_->config.phases.end(), ConfigPhase{::PhaseType::Park, 1});
     for (int i = 0; i < impl_->config.num_phases; ++i) {
         const auto& phase = config.phases[static_cast<std::size_t>(i)];
         impl_->config.phases[i].type = toInternalPhase(phase.type);
@@ -210,16 +207,8 @@ MetricsSnapshot SimulationEngine::snapshotMetrics() {
 }
 
 RenderFrame SimulationEngine::snapshotFrame(bool paused) {
-    const int written = copy_render_frame(
-        &impl_->rebuildSimulationIfNeeded(),
-        paused,
-        impl_->renderBuffer.data(),
-        impl_->renderBuffer.size());
-
     RenderFrame frame;
-    if (written > 0) {
-        frame.text.assign(impl_->renderBuffer.data(), static_cast<std::size_t>(written));
-    }
+    frame.text = build_render_frame_text(&impl_->rebuildSimulationIfNeeded(), paused);
     return frame;
 }
 

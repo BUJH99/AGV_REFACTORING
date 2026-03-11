@@ -4,12 +4,6 @@
 
 #include "agv/internal/engine_internal.hpp"
 
-#define grid_is_valid_coord Grid_isValidCoord
-#define grid_is_node_blocked Grid_isNodeBlocked
-
-int grid_is_valid_coord(int x, int y);
-int grid_is_node_blocked(const GridMap* map, const AgentManager* am, const Node* node, const struct Agent_* agent);
-
 namespace {
 
 constexpr double kPathfinderInf = 1e18;
@@ -54,25 +48,30 @@ void pq_swap(Pathfinder* pf, Node** a, Node** b) {
 }
 
 void heapify_up(Pathfinder* pf, NodePQ* pq, int index) {
-    if (index == 0) return;
-    int parent = (index - 1) / 2;
-    if (compare_keys(pathfinder_key(pf, pq->nodes[index]), pathfinder_key(pf, pq->nodes[parent])) < 0) {
+    while (index > 0) {
+        const int parent = (index - 1) / 2;
+        if (compare_keys(pathfinder_key(pf, pq->nodes[index]), pathfinder_key(pf, pq->nodes[parent])) >= 0) {
+            break;
+        }
         pq_swap(pf, &pq->nodes[index], &pq->nodes[parent]);
         if (pf) pf->heap_moves_this_call++;
-        heapify_up(pf, pq, parent);
+        index = parent;
     }
 }
 
 void heapify_down(Pathfinder* pf, NodePQ* pq, int index) {
-    int left = 2 * index + 1;
-    int right = 2 * index + 2;
-    int smallest = index;
-    if (left < pq->size && compare_keys(pathfinder_key(pf, pq->nodes[left]), pathfinder_key(pf, pq->nodes[smallest])) < 0) smallest = left;
-    if (right < pq->size && compare_keys(pathfinder_key(pf, pq->nodes[right]), pathfinder_key(pf, pq->nodes[smallest])) < 0) smallest = right;
-    if (smallest != index) {
+    while (true) {
+        const int left = 2 * index + 1;
+        const int right = 2 * index + 2;
+        int smallest = index;
+        if (left < pq->size && compare_keys(pathfinder_key(pf, pq->nodes[left]), pathfinder_key(pf, pq->nodes[smallest])) < 0) smallest = left;
+        if (right < pq->size && compare_keys(pathfinder_key(pf, pq->nodes[right]), pathfinder_key(pf, pq->nodes[smallest])) < 0) smallest = right;
+        if (smallest == index) {
+            break;
+        }
         pq_swap(pf, &pq->nodes[index], &pq->nodes[smallest]);
         if (pf) pf->heap_moves_this_call++;
-        heapify_down(pf, pq, smallest);
+        index = smallest;
     }
 }
 
@@ -181,129 +180,127 @@ void reset_pathfinder_cells(Pathfinder* pf) {
 
 }  // namespace
 
-Pathfinder* pathfinder_create(Node* start, Node* goal, const Agent* agent) {
-    Pathfinder* pf = new Pathfinder();
-    pq_init(&pf->pq, GRID_WIDTH * GRID_HEIGHT);
-    pf->start_node = start;
-    pf->last_start = start;
-    pf->goal_node = goal;
-    pf->km = 0.0;
-    pf->agent = agent;
-    pf->nodes_expanded_this_call = 0;
-    pf->heap_moves_this_call = 0;
-    pf->nodes_generated_this_call = 0;
-    pf->valid_expansions_this_call = 0;
-    reset_pathfinder_cells(pf);
+Pathfinder_::Pathfinder_(Node* start, Node* goal, const Agent* owning_agent) {
+    pq_init(&pq, GRID_WIDTH * GRID_HEIGHT);
+    start_node = start;
+    last_start = start;
+    goal_node = goal;
+    km = 0.0;
+    agent = owning_agent;
+    nodes_expanded_this_call = 0;
+    heap_moves_this_call = 0;
+    nodes_generated_this_call = 0;
+    valid_expansions_this_call = 0;
+    reset_pathfinder_cells(this);
 
     if (goal) {
-        SearchCell* goal_cell = &pf->cells[goal->y][goal->x];
+        SearchCell* goal_cell = &cells[goal->y][goal->x];
         goal_cell->rhs = 0.0;
-        goal_cell->key = calculate_key(pf, goal);
-        pq_push(pf, &pf->pq, goal);
+        goal_cell->key = calculate_key(this, goal);
+        pq_push(this, &pq, goal);
     }
-    return pf;
 }
 
-void pathfinder_reset_goal(Pathfinder* pf, Node* new_goal) {
-    pf->goal_node = new_goal;
-    pf->km = 0.0;
-    pf->last_start = pf->start_node;
-    pf->pq.size = 0;
-    reset_pathfinder_cells(pf);
+void Pathfinder_::resetGoal(Node* new_goal) {
+    goal_node = new_goal;
+    km = 0.0;
+    last_start = start_node;
+    pq.size = 0;
+    reset_pathfinder_cells(this);
     if (new_goal) {
-        pf->cells[new_goal->y][new_goal->x].rhs = 0.0;
-        pf->cells[new_goal->y][new_goal->x].key = calculate_key(pf, new_goal);
-        pq_push(pf, &pf->pq, new_goal);
+        cells[new_goal->y][new_goal->x].rhs = 0.0;
+        cells[new_goal->y][new_goal->x].key = calculate_key(this, new_goal);
+        pq_push(this, &pq, new_goal);
     }
 }
 
-void pathfinder_update_start(Pathfinder* pf, Node* new_start) {
+void Pathfinder_::updateStart(Node* new_start) {
     if (new_start == nullptr) return;
-    if (pf->start_node == nullptr) {
-        pf->start_node = new_start;
-        pf->last_start = new_start;
+    if (start_node == nullptr) {
+        start_node = new_start;
+        last_start = new_start;
         return;
     }
-    pf->km += heuristic(pf->last_start, new_start);
-    pf->last_start = new_start;
-    pf->start_node = new_start;
+    km += heuristic(last_start, new_start);
+    last_start = new_start;
+    start_node = new_start;
 }
 
-void pathfinder_notify_cell_change(Pathfinder* pf, GridMap* map, const AgentManager* am, Node* changed) {
-    update_vertex(pf, map, am, changed);
+void Pathfinder_::notifyCellChange(GridMap* map, const AgentManager* am, Node* changed) {
+    update_vertex(this, map, am, changed);
     for (int i = 0; i < 4; i++) {
         int prev_x = changed->x + kDir4X[i];
         int prev_y = changed->y + kDir4Y[i];
-        if (grid_is_valid_coord(prev_x, prev_y)) update_vertex(pf, map, am, &map->grid[prev_y][prev_x]);
+        if (grid_is_valid_coord(prev_x, prev_y)) update_vertex(this, map, am, &map->grid[prev_y][prev_x]);
     }
 }
 
-void pathfinder_compute_shortest_path(Pathfinder* pf, GridMap* map, const AgentManager* am) {
-    if (!pf->start_node || !pf->goal_node) return;
+void Pathfinder_::computeShortestPath(GridMap* map, const AgentManager* am) {
+    if (!start_node || !goal_node) return;
 
-    pf->nodes_expanded_this_call = 0;
-    pf->heap_moves_this_call = 0;
+    nodes_expanded_this_call = 0;
+    heap_moves_this_call = 0;
 
     while (true) {
-        Key top = pq_top_key(pf, &pf->pq);
-        SearchCell* start_cell = pathfinder_cell(pf, pf->start_node);
-        Key start_key = calculate_key(pf, pf->start_node);
+        Key top = pq_top_key(this, &pq);
+        SearchCell* start_cell = pathfinder_cell(this, start_node);
+        Key start_key = calculate_key(this, start_node);
 
-        if (pf->pq.size == 0 || (compare_keys(top, start_key) >= 0 && std::fabs(start_cell->rhs - start_cell->g) < 1e-9)) break;
+        if (pq.size == 0 || (compare_keys(top, start_key) >= 0 && std::fabs(start_cell->rhs - start_cell->g) < 1e-9)) break;
 
         Key old_key = top;
-        Node* node = pq_pop(pf, &pf->pq);
-        if (node) pf->nodes_expanded_this_call++;
-        SearchCell* cell = pathfinder_cell(pf, node);
-        Key new_key = calculate_key(pf, node);
+        Node* node = pq_pop(this, &pq);
+        if (node) nodes_expanded_this_call++;
+        SearchCell* cell = pathfinder_cell(this, node);
+        Key new_key = calculate_key(this, node);
 
         if (compare_keys(old_key, new_key) < 0) {
             cell->key = new_key;
-            pq_push(pf, &pf->pq, node);
+            pq_push(this, &pq, node);
         } else if (cell->g > cell->rhs) {
             cell->g = cell->rhs;
-            pf->valid_expansions_this_call++;
+            valid_expansions_this_call++;
             for (int i = 0; i < 4; i++) {
                 int prev_x = node->x + kDir4X[i];
                 int prev_y = node->y + kDir4Y[i];
-                if (grid_is_valid_coord(prev_x, prev_y)) update_vertex(pf, map, am, &map->grid[prev_y][prev_x]);
+                if (grid_is_valid_coord(prev_x, prev_y)) update_vertex(this, map, am, &map->grid[prev_y][prev_x]);
             }
         } else {
             cell->g = kPathfinderInf;
-            update_vertex(pf, map, am, node);
+            update_vertex(this, map, am, node);
             for (int i = 0; i < 4; i++) {
                 int prev_x = node->x + kDir4X[i];
                 int prev_y = node->y + kDir4Y[i];
-                if (grid_is_valid_coord(prev_x, prev_y)) update_vertex(pf, map, am, &map->grid[prev_y][prev_x]);
+                if (grid_is_valid_coord(prev_x, prev_y)) update_vertex(this, map, am, &map->grid[prev_y][prev_x]);
             }
         }
     }
 }
 
-Node* pathfinder_get_next_step(Pathfinder* pf, GridMap* map, const AgentManager* am, Node* current) {
-    if (!pf->goal_node || !current) return current;
-    SearchCell* current_cell = pathfinder_cell(pf, current);
-    if (current_cell->g >= kPathfinderInf || current == pf->goal_node) return current;
+Node* Pathfinder_::getNextStep(GridMap* map, const AgentManager* am, Node* current) {
+    if (!goal_node || !current) return current;
+    SearchCell* current_cell = pathfinder_cell(this, current);
+    if (current_cell->g >= kPathfinderInf || current == goal_node) return current;
 
     double best_cost = kPathfinderInf;
     Node* best_node = current;
-    double best_distance = std::fabs((double)current->x - (double)pf->goal_node->x) +
-        std::fabs((double)current->y - (double)pf->goal_node->y);
+    double best_distance = std::fabs((double)current->x - (double)goal_node->x) +
+        std::fabs((double)current->y - (double)goal_node->y);
 
     for (int i = 0; i < 4; i++) {
         int next_x = current->x + kDir4X[i];
         int next_y = current->y + kDir4Y[i];
         if (!grid_is_valid_coord(next_x, next_y)) continue;
         Node* neighbor = &map->grid[next_y][next_x];
-        if (grid_is_node_blocked(map, am, neighbor, pf->agent)) continue;
-        double successor_g = pathfinder_cell(pf, neighbor)->g;
+        if (grid_is_node_blocked(map, am, neighbor, agent)) continue;
+        double successor_g = pathfinder_cell(this, neighbor)->g;
         double cost = 1.0 + successor_g;
         if (cost < best_cost) {
             best_cost = cost;
             best_node = neighbor;
-            best_distance = pathfinder_manhattan(neighbor, pf->goal_node);
+            best_distance = pathfinder_manhattan(neighbor, goal_node);
         } else if (std::fabs(cost - best_cost) < 1e-9) {
-            double distance = pathfinder_manhattan(neighbor, pf->goal_node);
+            double distance = pathfinder_manhattan(neighbor, goal_node);
             if (distance < best_distance) {
                 best_node = neighbor;
                 best_distance = distance;

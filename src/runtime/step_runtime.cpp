@@ -4,22 +4,9 @@
 
 #include "agv/internal/engine_internal.hpp"
 
-#ifndef CLEANUP_FORCE_IDLE_AFTER_STEPS
-#define CLEANUP_FORCE_IDLE_AFTER_STEPS 11
-#endif
-
-#ifndef TURN_90_WAIT
-#define TURN_90_WAIT 2
-#endif
-
-#ifndef C_NRM
-#define C_NRM "\x1b[0m"
-#define C_B_CYN "\x1b[1;36m"
-#endif
-
 void agent_manager_update_charge_state(AgentManager* m, GridMap* map, Logger* lg);
 void agent_manager_update_state_after_move(AgentManager* m, ScenarioManager* sc, GridMap* map, Logger* lg, Simulation* sim);
-void sort_agents_by_priority(AgentManager* m, int order[MAX_AGENTS]);
+void sort_agents_by_priority(AgentManager* m, AgentOrder& order);
 
 namespace {
 
@@ -28,15 +15,15 @@ inline int node_flat_index_local(const Node* node) {
 }
 
 inline AgentDir dir_from_delta_local(int dx, int dy) {
-    if (dx == 1 && dy == 0) return DIR_RIGHT;
-    if (dx == -1 && dy == 0) return DIR_LEFT;
-    if (dx == 0 && dy == -1) return DIR_UP;
-    if (dx == 0 && dy == 1) return DIR_DOWN;
-    return DIR_NONE;
+    if (dx == 1 && dy == 0) return AgentDir::Right;
+    if (dx == -1 && dy == 0) return AgentDir::Left;
+    if (dx == 0 && dy == -1) return AgentDir::Up;
+    if (dx == 0 && dy == 1) return AgentDir::Down;
+    return AgentDir::None;
 }
 
 inline int dir_turn_steps_local(AgentDir from, AgentDir to) {
-    if (from == DIR_NONE || to == DIR_NONE) return 0;
+    if (from == AgentDir::None || to == AgentDir::None) return 0;
     int diff = ((int)to - (int)from + 4) % 4;
     return diff <= 2 ? diff : 4 - diff;
 }
@@ -49,9 +36,9 @@ inline void agent_apply_rotation_and_step_local(Agent* agent, Node* current, Nod
     int dx = desired->x - current->x;
     int dy = desired->y - current->y;
     AgentDir new_heading = dir_from_delta_local(dx, dy);
-    if (new_heading == DIR_NONE) return;
+    if (new_heading == AgentDir::None) return;
 
-    if (agent->heading == DIR_NONE) {
+    if (agent->heading == AgentDir::None) {
         agent->heading = new_heading;
         *out_next = desired;
         return;
@@ -70,18 +57,18 @@ inline void agent_apply_rotation_and_step_local(Agent* agent, Node* current, Nod
 
 void resolve_conflicts_by_order_local(
     AgentManager* manager,
-    const int order[MAX_AGENTS],
-    Node* next_pos[MAX_AGENTS],
+    const AgentOrder& order,
+    AgentNodeSlots& next_positions,
     StepScratch& scratch) {
     scratch.resetCellOwner(-1);
 
     for (int oi = 0; oi < MAX_AGENTS; oi++) {
         int index = order[oi];
-        if (!next_pos[index]) continue;
-        int next_idx = node_flat_index_local(next_pos[index]);
+        if (!next_positions[index]) continue;
+        int next_idx = node_flat_index_local(next_positions[index]);
         if (next_idx < 0) continue;
         if (scratch.cell_owner[next_idx] != -1) {
-            next_pos[index] = manager->agents[index].pos;
+            next_positions[index] = manager->agents[index].pos;
             continue;
         }
         scratch.cell_owner[next_idx] = index;
@@ -96,15 +83,15 @@ void resolve_conflicts_by_order_local(
 
     for (int oi = 0; oi < MAX_AGENTS; oi++) {
         int index = order[oi];
-        if (!next_pos[index]) continue;
-        int dest_idx = node_flat_index_local(next_pos[index]);
+        if (!next_positions[index]) continue;
+        int dest_idx = node_flat_index_local(next_positions[index]);
         int other = (dest_idx >= 0) ? scratch.cell_owner[dest_idx] : -1;
-        if (other == -1 || other == index || !next_pos[other]) continue;
-        if (next_pos[other] == manager->agents[index].pos) {
-            next_pos[other] = manager->agents[other].pos;
-        } else if (next_pos[other] == manager->agents[other].pos &&
-            next_pos[index] == manager->agents[other].pos) {
-            next_pos[index] = manager->agents[index].pos;
+        if (other == -1 || other == index || !next_positions[other]) continue;
+        if (next_positions[other] == manager->agents[index].pos) {
+            next_positions[other] = manager->agents[other].pos;
+        } else if (next_positions[other] == manager->agents[other].pos &&
+            next_positions[index] == manager->agents[other].pos) {
+            next_positions[index] = manager->agents[index].pos;
         }
     }
 }
@@ -115,7 +102,7 @@ void force_idle_cleanup_local(AgentManager* manager, Simulation* sim, Logger* lo
     for (int i = 0; i < MAX_AGENTS; i++) {
         Agent* agent = &manager->agents[i];
         if (!agent->pos) continue;
-        if (agent->state == IDLE) continue;
+        if (agent->state == AgentState::Idle) continue;
         if (agent->goal) {
             agent->goal->reserved_by_agent = -1;
             agent->goal = nullptr;
@@ -124,7 +111,7 @@ void force_idle_cleanup_local(AgentManager* manager, Simulation* sim, Logger* lo
         agent->rotation_wait = 0;
         agent->stuck_steps = 0;
         agent->action_timer = 0;
-        agent->state = IDLE;
+        agent->state = AgentState::Idle;
         changed = 1;
     }
     if (changed && logger) {
@@ -175,7 +162,7 @@ void record_step_phase_accounting(
 
 class StepExecutorService final {
 public:
-    void execute(Simulation* sim, int is_paused) const {
+    void execute(Simulation* sim, bool is_paused) const {
         if (!sim) return;
 
         StepExecutionFrame frame = begin_frame(sim);
@@ -183,11 +170,11 @@ public:
         agv_update_task_dispatch(sim);
 
         StepScratch& scratch = sim->step_scratch;
-        Node** next_pos = scratch.next_positions.data();
-        Node** prev_pos = scratch.previous_positions.data();
-        prepare_movement_plan(sim, next_pos, prev_pos, scratch);
+        AgentNodeSlots& next_positions = scratch.next_positions;
+        AgentNodeSlots& previous_positions = scratch.previous_positions;
+        prepare_movement_plan(sim, next_positions, previous_positions, scratch);
 
-        int moved_this_step = agv_apply_moves_and_update_stuck(sim, next_pos, prev_pos);
+        const bool moved_this_step = agv_apply_moves_and_update_stuck(sim, next_positions, previous_positions);
         finalize_move_state(sim, frame.step_label);
         finalize_frame(sim, frame, moved_this_step, is_paused);
     }
@@ -197,7 +184,7 @@ private:
         StepExecutionFrame frame;
         frame.phase_idx_for_step = sim->scenario_manager->current_phase_index;
         frame.step_label = sim->scenario_manager->time_step + 1;
-        frame.is_custom_mode = (sim->scenario_manager->mode == MODE_CUSTOM);
+        frame.is_custom_mode = (sim->scenario_manager->mode == SimulationMode::Custom);
         frame.phase_active = (frame.is_custom_mode &&
             frame.phase_idx_for_step >= 0 &&
             frame.phase_idx_for_step < sim->scenario_manager->num_phases);
@@ -207,44 +194,44 @@ private:
         return frame;
     }
 
-    void prepare_movement_plan(Simulation* sim, Node** next_pos, Node** prev_pos, StepScratch& scratch) const {
+    void prepare_movement_plan(Simulation* sim, AgentNodeSlots& next_positions, AgentNodeSlots& previous_positions, StepScratch& scratch) const {
         AgentManager* agents = sim->agent_manager;
-        int* order = scratch.priority_order.data();
+        AgentOrder& order = scratch.priority_order;
 
         for (int i = 0; i < MAX_AGENTS; i++) {
-            prev_pos[i] = agents->agents[i].pos;
+            previous_positions[i] = agents->agents[i].pos;
         }
 
-        sim->planStep(next_pos);
-        apply_rotation_stage(agents, next_pos);
-        resolve_stationary_blockers(agents, next_pos, scratch);
+        sim->planStep(next_positions);
+        apply_rotation_stage(agents, next_positions);
+        resolve_stationary_blockers(agents, next_positions, scratch);
         sort_agents_by_priority(agents, order);
-        resolve_conflicts_by_order_local(agents, order, next_pos, scratch);
+        resolve_conflicts_by_order_local(agents, order, next_positions, scratch);
     }
 
-    void apply_rotation_stage(AgentManager* agents, Node** next_pos) const {
+    void apply_rotation_stage(AgentManager* agents, AgentNodeSlots& next_positions) const {
         for (int i = 0; i < MAX_AGENTS; i++) {
             Agent* agent = &agents->agents[i];
-            if (agent->state == CHARGING) continue;
+            if (agent->state == AgentState::Charging) continue;
             Node* current = agent->pos;
-            if (!current || !next_pos[i]) continue;
+            if (!current || !next_positions[i]) continue;
             if (agent->rotation_wait > 0) {
-                next_pos[i] = current;
+                next_positions[i] = current;
                 agent->rotation_wait--;
                 continue;
             }
             Node* adjusted = current;
-            agent_apply_rotation_and_step_local(agent, current, next_pos[i], &adjusted);
-            next_pos[i] = adjusted;
+            agent_apply_rotation_and_step_local(agent, current, next_positions[i], &adjusted);
+            next_positions[i] = adjusted;
         }
     }
 
-    void resolve_stationary_blockers(AgentManager* agents, Node** next_pos, StepScratch& scratch) const {
+    void resolve_stationary_blockers(AgentManager* agents, AgentNodeSlots& next_positions, StepScratch& scratch) const {
         scratch.resetCellOwner(-1);
         for (int i = 0; i < MAX_AGENTS; i++) {
             Agent* blocker = &agents->agents[i];
-            if (!blocker->pos || !next_pos[i]) continue;
-            if (blocker->rotation_wait > 0 || next_pos[i] == blocker->pos) {
+            if (!blocker->pos || !next_positions[i]) continue;
+            if (blocker->rotation_wait > 0 || next_positions[i] == blocker->pos) {
                 int blocked_idx = node_flat_index_local(blocker->pos);
                 if (blocked_idx >= 0) scratch.cell_owner[blocked_idx] = i;
             }
@@ -252,12 +239,12 @@ private:
 
         for (int j = 0; j < MAX_AGENTS; j++) {
             Agent* mover = &agents->agents[j];
-            if (!mover->pos || !next_pos[j] || next_pos[j] == mover->pos) continue;
-            int blocked_idx = node_flat_index_local(next_pos[j]);
+            if (!mover->pos || !next_positions[j] || next_positions[j] == mover->pos) continue;
+            int blocked_idx = node_flat_index_local(next_positions[j]);
             if (blocked_idx < 0) continue;
             int blocker = scratch.cell_owner[blocked_idx];
             if (blocker != -1 && blocker != j) {
-                next_pos[j] = mover->pos;
+                next_positions[j] = mover->pos;
             }
         }
     }
@@ -270,7 +257,7 @@ private:
         }
     }
 
-    void finalize_frame(Simulation* sim, const StepExecutionFrame& frame, int moved_this_step, int is_paused) const {
+    void finalize_frame(Simulation* sim, const StepExecutionFrame& frame, bool moved_this_step, bool is_paused) const {
         clock_t step_end_cpu = clock();
         double step_time_ms = ((double)(step_end_cpu - frame.step_start_cpu) * 1000.0) / CLOCKS_PER_SEC;
         sim->last_step_cpu_time_ms = step_time_ms;
@@ -295,43 +282,43 @@ const StepExecutorService kStepExecutorService{};
 
 }  // namespace
 
-int agv_apply_moves_and_update_stuck(Simulation* sim, Node* next_pos[MAX_AGENTS], Node* prev_pos[MAX_AGENTS]) {
-    int moved_this_step = 0;
+bool agv_apply_moves_and_update_stuck(Simulation* sim, AgentNodeSlots& next_positions, AgentNodeSlots& previous_positions) {
+    bool moved_this_step = false;
     for (int i = 0; i < MAX_AGENTS; i++) {
         Agent* agent = &sim->agent_manager->agents[i];
-        if (agent->state != CHARGING && next_pos[i]) {
-            if (agent->pos != next_pos[i]) {
+        if (agent->state != AgentState::Charging && next_positions[i]) {
+            if (agent->pos != next_positions[i]) {
                 agent->total_distance_traveled += 1.0;
                 sim->total_movement_cost += 1.0;
-                moved_this_step = 1;
+                moved_this_step = true;
             }
-            agent->pos = next_pos[i];
+            agent->pos = next_positions[i];
         }
     }
 
     for (int i = 0; i < MAX_AGENTS; i++) {
         Agent* agent = &sim->agent_manager->agents[i];
-        if (agent->state == CHARGING || agent->state == IDLE || agent->action_timer > 0) {
+        if (agent->state == AgentState::Charging || agent->state == AgentState::Idle || agent->action_timer > 0) {
             agent->stuck_steps = 0;
             continue;
         }
-        if (agent->pos == prev_pos[i]) agent->stuck_steps++;
+        if (agent->pos == previous_positions[i]) agent->stuck_steps++;
         else agent->stuck_steps = 0;
     }
 
     return moved_this_step;
 }
 
-void agv_update_deadlock_counter(Simulation* sim, int moved_this_step, int is_custom_mode) {
+void agv_update_deadlock_counter(Simulation* sim, bool moved_this_step, bool is_custom_mode) {
     ScenarioManager* scenario = sim->scenario_manager;
     if (moved_this_step) return;
     int unresolved = 0;
     if (is_custom_mode) {
         if (scenario->current_phase_index < scenario->num_phases) {
             const DynamicPhase* phase = &scenario->phases[scenario->current_phase_index];
-            if (scenario->tasks_completed_in_phase < phase->task_count) unresolved = 1;
+        if (scenario->tasks_completed_in_phase < phase->task_count) unresolved = 1;
         }
-    } else if (scenario->mode == MODE_REALTIME) {
+    } else if (scenario->mode == SimulationMode::Realtime) {
         if (scenario->task_count > 0) unresolved = 1;
     }
     if (unresolved) sim->deadlock_count++;
@@ -339,11 +326,11 @@ void agv_update_deadlock_counter(Simulation* sim, int moved_this_step, int is_cu
 
 void agv_accumulate_wait_ticks_if_realtime(Simulation* sim) {
     ScenarioManager* scenario = sim->scenario_manager;
-    if (scenario->mode == MODE_REALTIME && scenario->task_count > 0) {
+    if (scenario->mode == SimulationMode::Realtime && scenario->task_count > 0) {
         sim->request_wait_ticks_sum += static_cast<unsigned long long>(scenario->task_queue.size());
     }
 }
 
-void agv_execute_step_service(Simulation* sim, int is_paused) {
+void agv_execute_step_service(Simulation* sim, bool is_paused) {
     kStepExecutorService.execute(sim, is_paused);
 }

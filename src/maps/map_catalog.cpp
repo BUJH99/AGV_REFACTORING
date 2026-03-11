@@ -1,13 +1,8 @@
 #define _CRT_SECURE_NO_WARNINGS
 
 #include <algorithm>
-#include <cstring>
 
 #include "agv/internal/engine_internal.hpp"
-
-#define grid_is_valid_coord Grid_isValidCoord
-
-int grid_is_valid_coord(int x, int y) { return (x >= 0 && x < GRID_WIDTH&& y >= 0 && y < GRID_HEIGHT); }
 
 static void grid_map_clear(GridMap* map) {
     *map = GridMap{};
@@ -122,7 +117,7 @@ static void map_place_agent_at(AgentManager* am, GridMap* m, int idx, int x, int
     am->agents[idx].pos = n;
     am->agents[idx].home_base = n;
     am->agents[idx].symbol = 'A' + idx;
-    am->agents[idx].heading = DIR_NONE;
+    am->agents[idx].heading = AgentDir::None;
     am->agents[idx].rotation_wait = 0;
 }
 
@@ -145,11 +140,11 @@ static void agent_manager_reset_for_new_map(AgentManager* am) {
         am->agents[i].pos = nullptr;
         am->agents[i].home_base = nullptr;
         am->agents[i].goal = nullptr;
-        am->agents[i].state = IDLE;
+        am->agents[i].state = AgentState::Idle;
         am->agents[i].total_distance_traveled = 0.0;
         am->agents[i].charge_timer = 0;
         am->agents[i].action_timer = 0;
-        am->agents[i].heading = DIR_NONE;
+        am->agents[i].heading = AgentDir::None;
         am->agents[i].rotation_wait = 0;
         am->agents[i].stuck_steps = 0;
         am->agents[i].metrics_task_active = false;
@@ -173,14 +168,16 @@ static void map_rebuild_goal_index(GridMap* map) {
     }
 }
 
-static void grid_map_fill_from_string(GridMap* map, AgentManager* am, const char* m) {
+static void grid_map_fill_from_string(GridMap* map, AgentManager* am, std::string_view map_text) {
     grid_map_clear(map);
 
     int x = 0, y = 0;
     int last_was_cr = 0;
 
-    for (const char* p = m; *p && y < GRID_HEIGHT; ++p) {
-        char ch = *p;
+    for (const char ch : map_text) {
+        if (y >= GRID_HEIGHT) {
+            break;
+        }
 
         if (ch == '\r') {
             x = 0;

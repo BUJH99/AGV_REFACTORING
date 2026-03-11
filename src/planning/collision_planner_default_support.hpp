@@ -8,17 +8,17 @@ void default_planner_reserve_waiting_agent_path(
     const PlanningContext& context,
     ReservationTable* table,
     const Agent* agent,
-    Node* next_pos[MAX_AGENTS]);
+    AgentNodeSlots& next_positions);
 void default_planner_plan_whca_path_for_agent(
     const PlanningContext& context,
     ReservationTable* table,
     WaitEdge* wait_edges,
     int* wait_edge_count,
     Agent* agent,
-    Node* next_pos[MAX_AGENTS]);
+    AgentNodeSlots& next_positions);
 void default_planner_record_first_step_conflicts(
     const AgentManager* manager,
-    Node* next_pos[MAX_AGENTS],
+    const AgentNodeSlots& next_positions,
     WaitEdge* wait_edges,
     int* wait_edge_count);
 void default_planner_apply_fallbacks(
@@ -26,12 +26,12 @@ void default_planner_apply_fallbacks(
     AgentManager* manager,
     ReservationTable* table,
     int scc_mask,
-    Node* next_pos[MAX_AGENTS],
+    AgentNodeSlots& next_positions,
     int* out_fallback_leader,
     int* out_pull_over_mask);
 void default_planner_resolve_pairwise_first_step_conflicts(
     AgentManager* manager,
     Logger* logger,
-    Node* next_pos[MAX_AGENTS],
+    AgentNodeSlots& next_positions,
     int fallback_leader,
     int pull_over_mask);

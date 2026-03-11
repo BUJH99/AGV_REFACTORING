@@ -5,25 +5,6 @@
 #include <optional>
 #include <span>
 
-#ifndef DISTANCE_BEFORE_CHARGE
-#define DISTANCE_BEFORE_CHARGE 300.0
-#endif
-
-#ifndef INF
-#define INF 1e18
-#endif
-
-#ifndef C_NRM
-#define C_NRM "\x1b[0m"
-#define C_YEL "\x1b[33m"
-#define C_CYN "\x1b[36m"
-#define C_B_RED "\x1b[1;31m"
-#define C_B_YEL "\x1b[1;33m"
-#endif
-
-Pathfinder* pathfinder_create(Node* start, Node* goal, const struct Agent_* agent);
-void pathfinder_compute_shortest_path(Pathfinder* pf, GridMap* map, const AgentManager* am);
-
 namespace {
 
 constexpr int kReturnHomeHoldingGoalStuckSteps = 12;
@@ -72,10 +53,10 @@ public:
         if (context_.agent->pos == goal) return 0.0;
         if (goal->is_obstacle) return INF;
 
-        std::unique_ptr<Pathfinder> pathfinder(pathfinder_create(context_.agent->pos, goal, context_.agent));
+        std::unique_ptr<Pathfinder> pathfinder = std::make_unique<Pathfinder>(context_.agent->pos, goal, context_.agent);
         if (!pathfinder) return INF;
 
-        pathfinder_compute_shortest_path(pathfinder.get(), context_.map, context_.agents);
+        pathfinder->computeShortestPath(context_.map, context_.agents);
         const double cost = pathfinder->cells[context_.agent->pos->y][context_.agent->pos->x].g;
         return (cost >= INF * 0.5) ? INF : cost;
     }
@@ -152,7 +133,7 @@ Node* select_best_candidate_local(
     return best_node;
 }
 
-const char* goal_selection_log_label_local(GoalTypeLocal type) {
+std::string_view goal_selection_log_label_local(GoalTypeLocal type) {
     switch (type) {
     case GoalTypeLocal::Parking:
         return "parking goal";
@@ -162,27 +143,27 @@ const char* goal_selection_log_label_local(GoalTypeLocal type) {
         return "charge station";
     case GoalTypeLocal::HomeBase:
     default:
-        return nullptr;
+        return {};
     }
 }
 
 bool agent_returns_home_local(AgentState state) {
-    return state == RETURNING_HOME_EMPTY ||
-        state == RETURNING_WITH_CAR ||
-        state == RETURNING_HOME_MAINTENANCE;
+    return state == AgentState::ReturningHomeEmpty ||
+        state == AgentState::ReturningWithCar ||
+        state == AgentState::ReturningHomeMaintenance;
 }
 
 std::optional<GoalTypeLocal> goal_type_for_state_local(AgentState state) {
     switch (state) {
-    case GOING_TO_PARK:
+    case AgentState::GoingToPark:
         return GoalTypeLocal::Parking;
-    case GOING_TO_COLLECT:
+    case AgentState::GoingToCollect:
         return GoalTypeLocal::ParkedCar;
-    case GOING_TO_CHARGE:
+    case AgentState::GoingToCharge:
         return GoalTypeLocal::Charge;
-    case RETURNING_HOME_EMPTY:
-    case RETURNING_WITH_CAR:
-    case RETURNING_HOME_MAINTENANCE:
+    case AgentState::ReturningHomeEmpty:
+    case AgentState::ReturningWithCar:
+    case AgentState::ReturningHomeMaintenance:
         return GoalTypeLocal::HomeBase;
     default:
         return std::nullopt;
@@ -196,7 +177,7 @@ public:
 
     Node* resolveGoalForCurrentState() const {
         if (!context_.agent) return nullptr;
-        if (context_.agent->state == RETURNING_HOME_EMPTY &&
+        if (context_.agent->state == AgentState::ReturningHomeEmpty &&
             context_.agent->stuck_steps >= kReturnHomeHoldingGoalStuckSteps) {
             if (Node* holding_goal = selectTemporaryHoldingGoal()) {
                 return holding_goal;
@@ -220,14 +201,14 @@ public:
         if (!context_.agent) return;
         if (agent_returns_home_local(context_.agent->state)) {
             if (!context_.agent->home_base) {
-                context_.agent->state = IDLE;
+                context_.agent->state = AgentState::Idle;
                 logger_log(context_.logger, "[%sWarn%s] Agent %c: no home position is configured. Switching to IDLE.",
                     C_B_RED, C_NRM, context_.agent->symbol);
             }
             return;
         }
 
-        context_.agent->state = IDLE;
+        context_.agent->state = AgentState::Idle;
         logger_log(context_.logger, "[%sInfo%s] Agent %c: no valid goal found. Waiting.",
             C_YEL, C_NRM, context_.agent->symbol);
     }
@@ -265,8 +246,8 @@ private:
         const PathCostEvaluatorLocal evaluator(context_);
         Node* best = select_best_candidate_local(candidates, context_.agent, evaluator, out_cost);
 
-        const char* label = goal_selection_log_label_local(type);
-        if (label && best && out_cost) {
+        const std::string_view label = goal_selection_log_label_local(type);
+        if (!label.empty() && best && out_cost) {
             logger_log(context_.logger, "[%sPlan%s] Agent %c selected %s (%d,%d) (cost %.1f)",
                 C_CYN, C_NRM, context_.agent->symbol, label, best->x, best->y, *out_cost);
         }
@@ -285,7 +266,7 @@ void release_current_goal_reservation_local(Agent* agent) {
 
 void maybe_request_temporary_holding_goal_local(Agent* agent, Logger* logger) {
     if (!agent ||
-        agent->state != RETURNING_HOME_EMPTY ||
+        agent->state != AgentState::ReturningHomeEmpty ||
         agent->stuck_steps < kReturnHomeHoldingGoalStuckSteps ||
         !agent->goal ||
         agent->goal != agent->home_base) {
@@ -300,7 +281,7 @@ void maybe_request_temporary_holding_goal_local(Agent* agent, Logger* logger) {
 
 void maybe_switch_to_charge_mode_local(Agent* agent, Logger* logger) {
     if (!agent) return;
-    if (agent->state != RETURNING_HOME_EMPTY ||
+    if (agent->state != AgentState::ReturningHomeEmpty ||
         agent->total_distance_traveled < DISTANCE_BEFORE_CHARGE) {
         return;
     }
@@ -308,14 +289,14 @@ void maybe_switch_to_charge_mode_local(Agent* agent, Logger* logger) {
     release_current_goal_reservation_local(agent);
     logger_log(logger, "[%sCharge%s] Agent %c exceeded the mileage threshold while returning home. Switching to charge mode.",
         C_B_YEL, C_NRM, agent->symbol);
-    agent->state = GOING_TO_CHARGE;
+    agent->state = AgentState::GoingToCharge;
 }
 
 bool agent_needs_goal_assignment_local(const Agent* agent) {
     return agent &&
         agent->goal == nullptr &&
-        agent->state != IDLE &&
-        agent->state != CHARGING;
+        agent->state != AgentState::Idle &&
+        agent->state != AgentState::Charging;
 }
 
 }  // namespace
@@ -329,14 +310,14 @@ void agent_runtime_assign_goal_if_needed(Agent* agent, GridMap* map, AgentManage
 
     if (!agent->pos) {
         agent->goal = nullptr;
-        agent->state = IDLE;
+        agent->state = AgentState::Idle;
         return;
     }
 
     maybe_switch_to_charge_mode_local(agent, logger);
     maybe_request_temporary_holding_goal_local(agent, logger);
     if (!agent_needs_goal_assignment_local(agent)) return;
-    if (agent->state == IDLE || agent->state == CHARGING || agent->goal) return;
+    if (agent->state == AgentState::Idle || agent->state == AgentState::Charging || agent->goal) return;
 
     GoalAssignmentPolicyLocal policy(GoalAssignmentContextLocal{agent, map, agents, logger});
     Node* new_goal = policy.resolveGoalForCurrentState();

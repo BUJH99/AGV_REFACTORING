@@ -2,49 +2,10 @@
 
 #include <array>
 #include <cctype>
-#include <cstring>
+#include <string>
+#include <string_view>
 
 #include "agv/internal/engine_internal.hpp"
-
-#ifndef C_NRM
-#define C_NRM "\x1b[0m"
-#define C_RED "\x1b[31m"
-#define C_GRN "\x1b[32m"
-#define C_YEL "\x1b[33m"
-#define C_CYN "\x1b[36m"
-#define C_WHT "\x1b[37m"
-#define C_GRY "\x1b[90m"
-#define C_B_RED "\x1b[1;31m"
-#define C_B_GRN "\x1b[1;32m"
-#define C_B_YEL "\x1b[1;33m"
-#define C_B_MAG "\x1b[1;35m"
-#define C_B_CYN "\x1b[1;36m"
-#define C_B_WHT "\x1b[1;37m"
-#endif
-
-#ifndef STATUS_STRING_WIDTH
-#define STATUS_STRING_WIDTH 25
-#endif
-
-#ifndef DISTANCE_BEFORE_CHARGE
-#define DISTANCE_BEFORE_CHARGE 300.0
-#endif
-
-#ifndef REALTIME_MODE_TIMELIMIT
-#define REALTIME_MODE_TIMELIMIT 1000000
-#endif
-
-#ifndef MAX_SPEED_MULTIPLIER
-#define MAX_SPEED_MULTIPLIER 10000.0f
-#endif
-
-#ifndef RENDER_STRIDE_MAX
-#define RENDER_STRIDE_MAX 8
-#endif
-
-#ifndef RENDER_STRIDE_MIN
-#define RENDER_STRIDE_MIN 1
-#endif
 
 using GridCharBuffer = std::array<std::array<char, GRID_WIDTH>, GRID_HEIGHT>;
 using GridColorBuffer = std::array<std::array<const char*, GRID_WIDTH>, GRID_HEIGHT>;
@@ -66,54 +27,44 @@ struct DisplayFrameContext final {
 
 class DisplayBufferWriter final {
 public:
-    DisplayBufferWriter(char* buffer, size_t capacity)
-        : buffer_(buffer), cursor_(buffer), capacity_(capacity), remaining_(capacity) {
-        if (buffer_ && capacity_ > 0) {
-            buffer_[0] = '\0';
-        }
+    explicit DisplayBufferWriter(std::string& buffer, size_t max_size)
+        : buffer_(buffer), max_size_(max_size) {
+        buffer_.clear();
     }
 
     template <typename... Args>
     void appendf(std::string_view format, Args&&... args) {
-        if (!buffer_ || remaining_ == 0) return;
+        if (remaining() == 0) return;
         append(agv::internal::text::printf_like(format, std::forward<Args>(args)...));
     }
 
     void appendChar(char ch) {
-        if (!buffer_ || remaining_ <= 1) return;
-        *cursor_++ = ch;
-        *cursor_ = '\0';
-        remaining_--;
+        if (remaining() == 0) return;
+        buffer_.push_back(ch);
     }
 
     size_t remaining() const {
-        return remaining_;
+        if (buffer_.size() >= max_size_) {
+            return 0;
+        }
+        return max_size_ - buffer_.size();
     }
 
     void finish() {
-        if (!buffer_ || capacity_ == 0) return;
-        if (remaining_ > 0) {
-            *cursor_ = '\0';
-        } else {
-            buffer_[capacity_ - 1] = '\0';
+        if (buffer_.size() > max_size_) {
+            buffer_.resize(max_size_);
         }
     }
 
 private:
     void append(std::string_view text) {
-        if (!buffer_ || remaining_ == 0) return;
-        const size_t advance = std::min(remaining_ - 1, text.size());
+        const size_t advance = std::min(remaining(), text.size());
         if (advance == 0) return;
-        std::memcpy(cursor_, text.data(), advance);
-        cursor_ += advance;
-        *cursor_ = '\0';
-        remaining_ -= advance;
+        buffer_.append(text.data(), advance);
     }
 
-    char* buffer_{nullptr};
-    char* cursor_{nullptr};
-    size_t capacity_{0};
-    size_t remaining_{0};
+    std::string& buffer_;
+    size_t max_size_{0};
 };
 
 void ui_clear_screen_optimized();
@@ -152,14 +103,14 @@ static void ui_adjust_render_stride(Simulation* sim, int delta) {
     logger_log(sim->logger, "[CTRL] Render stride = %d", sim->render_state.render_stride);
 }
 
-void ui_handle_control_key(Simulation* sim, int ch, int* is_paused, int* quit_flag) {
+void ui_handle_control_key(Simulation* sim, int ch, bool& is_paused, bool& quit_flag) {
     switch (tolower(ch)) {
     case 'p':
-        *is_paused = !*is_paused;
-        logger_log(sim->logger, *is_paused ? "[CTRL] Simulation Paused." : "[CTRL] Simulation Resumed.");
+        is_paused = !is_paused;
+        logger_log(sim->logger, is_paused ? "[CTRL] Simulation Paused." : "[CTRL] Simulation Resumed.");
         break;
     case 's':
-        if (*is_paused) logger_log(sim->logger, "[CTRL] Advancing one step.");
+        if (is_paused) logger_log(sim->logger, "[CTRL] Advancing one step.");
         break;
     case '+':
     case '=':
@@ -171,7 +122,7 @@ void ui_handle_control_key(Simulation* sim, int ch, int* is_paused, int* quit_fl
         logger_log(sim->logger, "[CTRL] Speed decreased to %.1fx", sim->scenario_manager->speed_multiplier);
         break;
     case 'q':
-        *quit_flag = true;
+        quit_flag = true;
         logger_log(sim->logger, "[CTRL] Quit simulation.");
         break;
     case ']':
@@ -212,7 +163,7 @@ static void ui_position_frame_output(const RendererState& render_state) {
 }
 
 static void ui_write_display_buffer_contents(const Simulation* sim) {
-    agv::internal::text::console_write(std::string_view(sim->display_buffer.data()));
+    agv::internal::text::console_write(sim->display_buffer);
 }
 
 static void ui_flush_display_buffer(const Simulation* sim) {
@@ -255,7 +206,7 @@ static void grid_map_render_charge_stations(
         if (!simple_colors) {
             bool charging = false;
             for (int j = 0; j < MAX_AGENTS; j++) {
-                if (am->agents[j].state == CHARGING && am->agents[j].pos == cs) {
+                if (am->agents[j].state == AgentState::Charging && am->agents[j].pos == cs) {
                     charging = true;
                     break;
                 }
@@ -300,10 +251,10 @@ static void grid_map_append_simple_view(
     const GridCharBuffer& view) {
     for (int y = 0; y < GRID_HEIGHT; y++) {
         for (int x = 0; x < GRID_WIDTH; x++) {
-            if (writer.remaining() <= 1) break;
+            if (writer.remaining() == 0) break;
             writer.appendChar(view[y][x]);
         }
-        if (writer.remaining() <= 1) break;
+        if (writer.remaining() == 0) break;
         writer.appendChar('\n');
     }
 }
@@ -325,8 +276,8 @@ static void grid_map_render_to_writer(
     const GridMap* map,
     const AgentManager* am,
     const RendererState& render_state) {
-    static GridCharBuffer view{};
-    static GridColorBuffer colors{};
+    GridCharBuffer view{};
+    GridColorBuffer colors{};
 
     grid_map_render_base_layer(view, colors, map);
     grid_map_render_charge_stations(view, colors, map, am, render_state.simple_colors);
@@ -343,7 +294,7 @@ static void simulation_append_custom_status_header(
     DisplayBufferWriter& writer,
     const Simulation* sim,
     const ScenarioManager* sc,
-    int is_paused) {
+    bool is_paused) {
     if (sc->current_phase_index < sc->num_phases) {
         const DynamicPhase* ph = &sc->phases[sc->current_phase_index];
         writer.appendf("--- Custom Scenario: %d/%d [Speed: %.1fx] ---  (Map #%d)",
@@ -369,8 +320,8 @@ static void simulation_append_realtime_status_header(
     int park = 0;
     int exitc = 0;
     for (const TaskNode& task : frame.scenario->task_queue) {
-        if (task.type == TASK_PARK) park++;
-        else if (task.type == TASK_EXIT) exitc++;
+        if (task.type == TaskType::Park) park++;
+        else if (task.type == TaskType::Exit) exitc++;
     }
 
     writer.appendf("Time: %d / %d | Pending Tasks: %d (%sPark: %d%s, %sExit: %d%s)\n",
@@ -378,9 +329,9 @@ static void simulation_append_realtime_status_header(
         C_B_GRN, park, C_NRM, C_B_YEL, exitc, C_NRM);
 }
 
-static const char* simulation_display_path_algo_label(PathAlgo path_algo) {
-    if (path_algo == PATHALGO_ASTAR_SIMPLE) return "A* (Single-Agent)";
-    if (path_algo == PATHALGO_DSTAR_BASIC) return "D* Lite (Incremental)";
+static std::string_view simulation_display_path_algo_label(PathAlgo path_algo) {
+    if (path_algo == PathAlgo::AStarSimple) return "A* (Single-Agent)";
+    if (path_algo == PathAlgo::DStarBasic) return "D* Lite (Incremental)";
     return "Default (WHCA*+D*Lite+WFG+CBS)";
 }
 
@@ -417,19 +368,19 @@ static void simulation_append_grid_render(
 static void simulation_append_agent_status_lines(
     DisplayBufferWriter& writer,
     const AgentManager* am) {
-    static const char* stS[] = {
+    static constexpr std::array<std::string_view, 8> stS = {
         "IDLE", "GOING_TO_PARK", "RETURN_HOME_EMPTY", "GOING_TO_COLLECT",
         "RETURN_WITH_CAR", "GO_TO_CHARGE", "CHARGING", "RETURN_HOME_MAINT"
     };
-    static const char* stC[] = { C_GRY,C_YEL,C_CYN,C_YEL,C_GRN,C_B_RED,C_RED,C_CYN };
+    static constexpr std::array<std::string_view, 8> stC = { C_GRY,C_YEL,C_CYN,C_YEL,C_GRN,C_B_RED,C_RED,C_CYN };
 
     for (int i = 0; i < MAX_AGENTS; i++) {
         const Agent* ag = &am->agents[i];
-        const char* c = AGENT_COLORS[i % 10];
+        const std::string_view c = AGENT_COLORS[i % 10];
 
-        const std::string status_label = (ag->state == CHARGING)
+        const std::string status_label = (ag->state == AgentState::Charging)
             ? agv::internal::text::printf_like("CHARGING... (%d)", ag->charge_timer)
-            : std::string(stS[ag->state]);
+            : std::string(stS[static_cast<int>(ag->state)]);
 
         writer.appendf("%sAgent %c%s: (%2d,%d) ",
             c, ag->symbol, C_NRM,
@@ -440,7 +391,7 @@ static void simulation_append_agent_status_lines(
 
         writer.appendf("[Mileage: %6.1f/%d] [%s%-*s%s]  [stuck:%d]\n",
             ag->total_distance_traveled, (int)DISTANCE_BEFORE_CHARGE,
-            stC[ag->state], STATUS_STRING_WIDTH, status_label, C_NRM, ag->stuck_steps);
+            stC[static_cast<int>(ag->state)], STATUS_STRING_WIDTH, status_label, C_NRM, ag->stuck_steps);
     }
     writer.appendf("\n");
 }
@@ -449,7 +400,7 @@ static void simulation_append_log_lines(DisplayBufferWriter& writer, const Logge
     writer.appendf("%s--- Simulation Log ---%s\n", C_B_WHT, C_NRM);
     for (int i = 0; i < lg->log_count; i++) {
         int idx = (lg->log_head + i) % LOG_BUFFER_LINES;
-        writer.appendf("%s%s%s\n", C_GRY, lg->logs[idx], C_NRM);
+        writer.appendf("%s%s%s\n", C_GRY, lg->logs[idx].c_str(), C_NRM);
         if (writer.remaining() < 512) break;
     }
 }
@@ -458,9 +409,9 @@ static void simulation_append_status_header(
     DisplayBufferWriter& writer,
     const DisplayFrameContext& frame) {
     writer.appendf("%s", C_B_WHT);
-    if (frame.scenario->mode == MODE_CUSTOM) {
+    if (frame.scenario->mode == SimulationMode::Custom) {
         simulation_append_custom_status_header(writer, frame.sim, frame.scenario, frame.is_paused);
-    } else if (frame.scenario->mode == MODE_REALTIME) {
+    } else if (frame.scenario->mode == SimulationMode::Realtime) {
         simulation_append_realtime_status_header(writer, frame);
     }
 }
@@ -511,7 +462,7 @@ private:
 };
 
 static void simulation_build_display_buffer(Simulation* sim, const DisplayFrameContext& frame) {
-    DisplayBufferWriter writer(sim->display_buffer.data(), sim->display_buffer.size());
+    DisplayBufferWriter writer(sim->display_buffer, DISPLAY_BUFFER_SIZE);
     DisplayFrameComposer(writer, frame).compose();
     writer.finish();
 }
@@ -525,7 +476,7 @@ static void simulation_maybe_flush_display_buffer(const Simulation* sim) {
     }
 }
 
-void simulation_display_status(Simulation* sim, int is_paused) {
+void simulation_display_status(Simulation* sim, bool is_paused) {
     const ScenarioManager* scenario = sim->scenario_manager;
     const int display_steps = (sim->total_executed_steps > 0) ? sim->total_executed_steps : scenario->time_step;
     const double avg_cpu_ms = (display_steps > 0) ? (sim->total_cpu_time_ms / (double)display_steps) : 0.0;
@@ -537,7 +488,7 @@ void simulation_display_status(Simulation* sim, int is_paused) {
         sim->map,
         sim->logger,
         avg_cpu_ms,
-        is_paused != 0
+        is_paused
     };
 
     simulation_build_display_buffer(sim, frame);
@@ -546,14 +497,14 @@ void simulation_display_status(Simulation* sim, int is_paused) {
 
 namespace {
 
-using DrawFrameFnLocal = void (*)(Simulation_* sim, int is_paused);
+using DrawFrameFnLocal = void (*)(Simulation_* sim, bool is_paused);
 
 class FunctionRendererStrategy final : public RendererStrategy {
 public:
     explicit FunctionRendererStrategy(DrawFrameFnLocal draw_frame)
         : draw_frame_(draw_frame) {}
 
-    void drawFrame(Simulation_* sim, int is_paused) const override {
+    void drawFrame(Simulation_* sim, bool is_paused) const override {
         draw_frame_(sim, is_paused);
     }
 

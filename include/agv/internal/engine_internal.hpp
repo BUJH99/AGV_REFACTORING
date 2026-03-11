@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <optional>
 
 inline constexpr int DISPLAY_BUFFER_SIZE = 512000;
 inline constexpr int GRID_WIDTH = 82;
@@ -16,27 +17,79 @@ inline constexpr int MAX_WHCA_HORIZON = 11;
 inline constexpr int MIN_WHCA_HORIZON = 5;
 inline constexpr int MAX_CBS_CONS = 128;
 inline constexpr int TEMP_MARK_MAX = 128;
+inline constexpr int INPUT_BUFFER_SIZE = 500;
+inline constexpr int NUM_DIRECTIONS = 4;
+inline constexpr int DIR4_COUNT = 4;
+inline constexpr int DIR5_COUNT = 5;
+inline constexpr double DISTANCE_BEFORE_CHARGE = 300.0;
+inline constexpr int CHARGE_TIME = 20;
+inline constexpr int REALTIME_MODE_TIMELIMIT = 1000000;
+inline constexpr int DASHBOARD_INTERVAL_STEPS = 2500;
+inline constexpr int MAX_TASKS = 50;
+inline constexpr float MAX_SPEED_MULTIPLIER = 10000.0f;
+inline constexpr int EVENT_GENERATION_INTERVAL = 10;
+inline constexpr int CLEANUP_FORCE_IDLE_AFTER_STEPS = 11;
+inline constexpr int TURN_90_WAIT = 2;
+inline constexpr int STATUS_STRING_WIDTH = 25;
+inline constexpr int PAUSE_POLL_INTERVAL_MS = 50;
+inline constexpr int RENDER_STRIDE_MAX = 8;
+inline constexpr int RENDER_STRIDE_MIN = 1;
+inline constexpr int TASK_ACTION_TICKS = 10;
+inline constexpr int PRIORITY_RETURNING_WITH_CAR = 3;
+inline constexpr int PRIORITY_GOING_TO_CHARGE = 2;
+inline constexpr int PRIORITY_MOVING_TASK = 1;
+inline constexpr int STUCK_BOOST_MULT = 10;
+inline constexpr int STUCK_BOOST_HARD = 1000;
+inline constexpr int DEADLOCK_THRESHOLD = 5;
+inline constexpr int MAX_WAIT_EDGES = 128;
+inline constexpr int MAX_CBS_GROUP = 8;
+inline constexpr int MAX_CBS_NODES = 256;
+inline constexpr int CBS_MAX_EXPANSIONS = 128;
+inline constexpr int MAX_TOT = (MAX_WHCA_HORIZON + 1) * GRID_WIDTH * GRID_HEIGHT;
+inline constexpr double INF = 1e18;
 
-enum AgentDir {
-    DIR_NONE = -1,
-    DIR_UP = 0,
-    DIR_RIGHT = 1,
-    DIR_DOWN = 2,
-    DIR_LEFT = 3
+inline constexpr const char* C_NRM = "\x1b[0m";
+inline constexpr const char* C_RED = "\x1b[31m";
+inline constexpr const char* C_GRN = "\x1b[32m";
+inline constexpr const char* C_YEL = "\x1b[33m";
+inline constexpr const char* C_BLU = "\x1b[34m";
+inline constexpr const char* C_MAG = "\x1b[35m";
+inline constexpr const char* C_CYN = "\x1b[36m";
+inline constexpr const char* C_WHT = "\x1b[37m";
+inline constexpr const char* C_GRY = "\x1b[90m";
+inline constexpr const char* C_B_RED = "\x1b[1;31m";
+inline constexpr const char* C_B_GRN = "\x1b[1;32m";
+inline constexpr const char* C_B_YEL = "\x1b[1;33m";
+inline constexpr const char* C_B_MAG = "\x1b[1;35m";
+inline constexpr const char* C_B_CYN = "\x1b[1;36m";
+inline constexpr const char* C_B_WHT = "\x1b[1;37m";
+
+enum class AgentDir {
+    None = -1,
+    Up = 0,
+    Right = 1,
+    Down = 2,
+    Left = 3
 };
 
 #include "agv/internal/engine_model.hpp"
 
+inline bool grid_is_valid_coord(int x, int y) {
+    return x >= 0 && x < GRID_WIDTH && y >= 0 && y < GRID_HEIGHT;
+}
+
+bool grid_is_node_blocked(const GridMap* map, const AgentManager* am, const Node* node, const Agent* agent);
+
 struct ConfigPhase {
-    PhaseType type{PARK_PHASE};
+    PhaseType type{PhaseType::Park};
     int task_count{1};
 };
 
 struct SimulationConfig {
     unsigned int seed{0};
     int map_id{1};
-    PathAlgo path_algo{PATHALGO_DEFAULT};
-    SimulationMode mode{MODE_CUSTOM};
+    PathAlgo path_algo{PathAlgo::Default};
+    SimulationMode mode{SimulationMode::Custom};
     float speed_multiplier{0.0f};
     int realtime_park_chance{0};
     int realtime_exit_chance{0};
@@ -48,8 +101,8 @@ struct SimulationConfig {
 struct RunSummary {
     unsigned int seed{0};
     int map_id{0};
-    PathAlgo path_algo{PATHALGO_DEFAULT};
-    SimulationMode mode{MODE_CUSTOM};
+    PathAlgo path_algo{PathAlgo::Default};
+    SimulationMode mode{SimulationMode::Custom};
     int active_agents{0};
     int recorded_steps{0};
     unsigned long long tasks_completed_total{0};
@@ -84,20 +137,23 @@ void agent_manager_update_state_after_move(
     Logger* logger,
     Simulation* sim);
 void agent_manager_update_charge_state(AgentManager* manager, GridMap* map, Logger* logger);
-int agv_apply_moves_and_update_stuck(Simulation* sim, Node* next_pos[MAX_AGENTS], Node* prev_pos[MAX_AGENTS]);
-void agv_update_deadlock_counter(Simulation* sim, int moved_this_step, int is_custom_mode);
+bool agv_apply_moves_and_update_stuck(Simulation* sim, AgentNodeSlots& next_positions, AgentNodeSlots& previous_positions);
+void agv_update_deadlock_counter(Simulation* sim, bool moved_this_step, bool is_custom_mode);
 void agv_accumulate_wait_ticks_if_realtime(Simulation* sim);
-void agv_execute_step_service(Simulation* sim, int is_paused);
+void agv_execute_step_service(Simulation* sim, bool is_paused);
 
 SimulationConfig default_simulation_config();
 bool apply_simulation_config(Simulation* sim, const SimulationConfig& config);
 bool execute_headless_step(Simulation* sim);
 bool run_simulation_to_completion(Simulation* sim);
 RunSummary collect_run_summary(const Simulation* sim);
-int copy_render_frame(Simulation* sim, bool is_paused, char* buffer, std::size_t buffer_size);
+std::string build_render_frame_text(Simulation* sim, bool is_paused);
 
 void agv_prepare_console();
 void ui_enter_alt_screen();
 void ui_leave_alt_screen();
+void platform_sleep_for_ms(int ms);
+int console_read_key_blocking();
+std::optional<int> console_read_key_nonblocking();
 int simulation_setup(Simulation* sim);
 void grid_map_load_scenario(GridMap* map, AgentManager* am, int scenario_id);

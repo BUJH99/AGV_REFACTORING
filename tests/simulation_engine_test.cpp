@@ -105,12 +105,35 @@ TEST(SimulationEngineTest, RealtimeScenarioCanBeSteppedThroughPublicApi) {
     EXPECT_FALSE(engine.snapshotFrame().text.empty());
 }
 
+TEST(SimulationEngineTest, RealtimeScenarioRemainsDeterministicForSameSeed) {
+    agv::core::SimulationEngine first;
+    configure_engine(first, agv::core::PathAlgo::Default, make_realtime_scenario());
+    for (int i = 0; i < 5; ++i) {
+        first.step();
+    }
+    const auto first_metrics = first.snapshotMetrics();
+
+    agv::core::SimulationEngine second;
+    configure_engine(second, agv::core::PathAlgo::Default, make_realtime_scenario());
+    for (int i = 0; i < 5; ++i) {
+        second.step();
+    }
+    const auto second_metrics = second.snapshotMetrics();
+
+    EXPECT_EQ(first_metrics.seed, second_metrics.seed);
+    EXPECT_EQ(first_metrics.recordedSteps, second_metrics.recordedSteps);
+    EXPECT_EQ(first_metrics.requestsCreatedTotal, second_metrics.requestsCreatedTotal);
+    EXPECT_EQ(first_metrics.tasksCompletedTotal, second_metrics.tasksCompletedTotal);
+    EXPECT_EQ(first_metrics.deadlockCount, second_metrics.deadlockCount);
+    EXPECT_DOUBLE_EQ(first_metrics.totalMovementCost, second_metrics.totalMovementCost);
+}
+
 ::SimulationConfig make_internal_custom_config(std::initializer_list<ConfigPhase> phases) {
     ::SimulationConfig config = default_simulation_config();
     config.seed = 7;
     config.map_id = 1;
-    config.path_algo = PATHALGO_DEFAULT;
-    config.mode = MODE_CUSTOM;
+    config.path_algo = PathAlgo::Default;
+    config.mode = SimulationMode::Custom;
     config.suppress_stdout = true;
     config.num_phases = 0;
     for (const ConfigPhase& phase : phases) {
@@ -178,24 +201,24 @@ TEST(SimulationEngineTest, SequentialEnginesStayIndependentAcrossAlgorithmsAndMo
 
 TEST(SimulationEngineTest, InternalTaskDispatchAndPhaseAdvancementRemainStable) {
     Simulation park_sim;
-    ASSERT_TRUE(apply_simulation_config(&park_sim, make_internal_custom_config({ConfigPhase{PARK_PHASE, 1}})));
+    ASSERT_TRUE(apply_simulation_config(&park_sim, make_internal_custom_config({ConfigPhase{PhaseType::Park, 1}})));
     park_sim.workload_snapshot = agv_collect_agent_workload(park_sim.agent_manager);
     agv_update_task_dispatch(&park_sim);
-    EXPECT_TRUE(has_agent_in_state(park_sim, GOING_TO_PARK));
+    EXPECT_TRUE(has_agent_in_state(park_sim, AgentState::GoingToPark));
 
     Simulation exit_sim;
-    ASSERT_TRUE(apply_simulation_config(&exit_sim, make_internal_custom_config({ConfigPhase{EXIT_PHASE, 1}})));
+    ASSERT_TRUE(apply_simulation_config(&exit_sim, make_internal_custom_config({ConfigPhase{PhaseType::Exit, 1}})));
     ASSERT_GT(exit_sim.map->num_goals, 0);
     exit_sim.map->goals[0]->is_parked = true;
     exit_sim.agent_manager->total_cars_parked = 1;
     exit_sim.workload_snapshot = agv_collect_agent_workload(exit_sim.agent_manager);
     agv_update_task_dispatch(&exit_sim);
-    EXPECT_TRUE(has_agent_in_state(exit_sim, GOING_TO_COLLECT));
+    EXPECT_TRUE(has_agent_in_state(exit_sim, AgentState::GoingToCollect));
 
     Simulation phase_sim;
     ASSERT_TRUE(apply_simulation_config(
         &phase_sim,
-        make_internal_custom_config({ConfigPhase{PARK_PHASE, 1}, ConfigPhase{EXIT_PHASE, 1}})));
+        make_internal_custom_config({ConfigPhase{PhaseType::Park, 1}, ConfigPhase{PhaseType::Exit, 1}})));
     ASSERT_GT(phase_sim.map->num_goals, 0);
     phase_sim.map->goals[0]->is_parked = true;
     phase_sim.agent_manager->total_cars_parked = 1;
@@ -203,15 +226,15 @@ TEST(SimulationEngineTest, InternalTaskDispatchAndPhaseAdvancementRemainStable) 
     phase_sim.workload_snapshot = agv_collect_agent_workload(phase_sim.agent_manager);
     agv_update_task_dispatch(&phase_sim);
     EXPECT_EQ(phase_sim.scenario_manager->current_phase_index, 1);
-    EXPECT_EQ(phase_sim.scenario_manager->phases[1].type, EXIT_PHASE);
+    EXPECT_EQ(phase_sim.scenario_manager->phases[1].type, PhaseType::Exit);
     phase_sim.workload_snapshot = agv_collect_agent_workload(phase_sim.agent_manager);
     agv_update_task_dispatch(&phase_sim);
-    EXPECT_TRUE(has_agent_in_state(phase_sim, GOING_TO_COLLECT));
+    EXPECT_TRUE(has_agent_in_state(phase_sim, AgentState::GoingToCollect));
 }
 
 TEST(SimulationEngineTest, InternalGoalCompletionTransitionsRemainStable) {
     Simulation park_sim;
-    ASSERT_TRUE(apply_simulation_config(&park_sim, make_internal_custom_config({ConfigPhase{PARK_PHASE, 1}})));
+    ASSERT_TRUE(apply_simulation_config(&park_sim, make_internal_custom_config({ConfigPhase{PhaseType::Park, 1}})));
     Agent* park_agent = find_first_agent_with_home(park_sim);
     ASSERT_NE(park_agent, nullptr);
     ASSERT_GT(park_sim.map->num_goals, 0);
@@ -220,7 +243,7 @@ TEST(SimulationEngineTest, InternalGoalCompletionTransitionsRemainStable) {
     park_agent->goal = park_goal;
     park_goal->reserved_by_agent = park_agent->id;
     park_agent->pos = park_goal;
-    park_agent->state = GOING_TO_PARK;
+    park_agent->state = AgentState::GoingToPark;
     park_agent->action_timer = 1;
 
     agent_manager_update_state_after_move(
@@ -231,7 +254,7 @@ TEST(SimulationEngineTest, InternalGoalCompletionTransitionsRemainStable) {
         &park_sim);
     EXPECT_TRUE(park_goal->is_parked);
     EXPECT_EQ(park_sim.agent_manager->total_cars_parked, 1);
-    EXPECT_EQ(park_agent->state, RETURNING_HOME_EMPTY);
+    EXPECT_EQ(park_agent->state, AgentState::ReturningHomeEmpty);
     EXPECT_EQ(park_sim.tasks_completed_total, 1u);
 
     park_agent->goal = park_agent->home_base;
@@ -242,10 +265,10 @@ TEST(SimulationEngineTest, InternalGoalCompletionTransitionsRemainStable) {
         park_sim.map,
         park_sim.logger,
         &park_sim);
-    EXPECT_EQ(park_agent->state, IDLE);
+    EXPECT_EQ(park_agent->state, AgentState::Idle);
 
     Simulation exit_sim;
-    ASSERT_TRUE(apply_simulation_config(&exit_sim, make_internal_custom_config({ConfigPhase{EXIT_PHASE, 1}})));
+    ASSERT_TRUE(apply_simulation_config(&exit_sim, make_internal_custom_config({ConfigPhase{PhaseType::Exit, 1}})));
     Agent* exit_agent = find_first_agent_with_home(exit_sim);
     ASSERT_NE(exit_agent, nullptr);
     ASSERT_GT(exit_sim.map->num_goals, 0);
@@ -256,7 +279,7 @@ TEST(SimulationEngineTest, InternalGoalCompletionTransitionsRemainStable) {
     exit_agent->goal = exit_goal;
     exit_goal->reserved_by_agent = exit_agent->id;
     exit_agent->pos = exit_goal;
-    exit_agent->state = GOING_TO_COLLECT;
+    exit_agent->state = AgentState::GoingToCollect;
     exit_agent->action_timer = 1;
 
     agent_manager_update_state_after_move(
@@ -267,7 +290,7 @@ TEST(SimulationEngineTest, InternalGoalCompletionTransitionsRemainStable) {
         &exit_sim);
     EXPECT_FALSE(exit_goal->is_parked);
     EXPECT_EQ(exit_sim.agent_manager->total_cars_parked, 0);
-    EXPECT_EQ(exit_agent->state, RETURNING_WITH_CAR);
+    EXPECT_EQ(exit_agent->state, AgentState::ReturningWithCar);
 
     exit_agent->goal = exit_agent->home_base;
     exit_agent->pos = exit_agent->home_base;
@@ -277,18 +300,18 @@ TEST(SimulationEngineTest, InternalGoalCompletionTransitionsRemainStable) {
         exit_sim.map,
         exit_sim.logger,
         &exit_sim);
-    EXPECT_EQ(exit_agent->state, IDLE);
+    EXPECT_EQ(exit_agent->state, AgentState::Idle);
     EXPECT_EQ(exit_sim.tasks_completed_total, 1u);
 }
 
 TEST(SimulationEngineTest, InternalChargeLifecycleRemainsStable) {
     Simulation sim;
-    ASSERT_TRUE(apply_simulation_config(&sim, make_internal_custom_config({ConfigPhase{PARK_PHASE, 1}})));
+    ASSERT_TRUE(apply_simulation_config(&sim, make_internal_custom_config({ConfigPhase{PhaseType::Park, 1}})));
     Agent* agent = find_first_agent_with_home(sim);
     ASSERT_NE(agent, nullptr);
     ASSERT_GT(sim.map->num_charge_stations, 0);
 
-    agent->state = RETURNING_HOME_EMPTY;
+    agent->state = AgentState::ReturningHomeEmpty;
     agent->goal = agent->home_base;
     agent->total_distance_traveled = 1'000.0;
     if (agent->goal) {
@@ -296,7 +319,7 @@ TEST(SimulationEngineTest, InternalChargeLifecycleRemainsStable) {
     }
 
     agv_set_goal_if_needed(agent, sim.map, sim.agent_manager, sim.logger);
-    EXPECT_EQ(agent->state, GOING_TO_CHARGE);
+    EXPECT_EQ(agent->state, AgentState::GoingToCharge);
     ASSERT_TRUE(is_charge_station_goal(sim, agent->goal));
 
     agent->pos = agent->goal;
@@ -306,12 +329,12 @@ TEST(SimulationEngineTest, InternalChargeLifecycleRemainsStable) {
         sim.map,
         sim.logger,
         &sim);
-    EXPECT_EQ(agent->state, CHARGING);
+    EXPECT_EQ(agent->state, AgentState::Charging);
     EXPECT_GT(agent->charge_timer, 0);
 
     agent->charge_timer = 1;
     agent_manager_update_charge_state(sim.agent_manager, sim.map, sim.logger);
-    EXPECT_EQ(agent->state, RETURNING_HOME_MAINTENANCE);
+    EXPECT_EQ(agent->state, AgentState::ReturningHomeMaintenance);
     EXPECT_EQ(agent->goal, nullptr);
     EXPECT_DOUBLE_EQ(agent->total_distance_traveled, 0.0);
 
@@ -323,7 +346,7 @@ TEST(SimulationEngineTest, InternalChargeLifecycleRemainsStable) {
         sim.map,
         sim.logger,
         &sim);
-    EXPECT_EQ(agent->state, IDLE);
+    EXPECT_EQ(agent->state, AgentState::Idle);
 }
 
 }  // namespace

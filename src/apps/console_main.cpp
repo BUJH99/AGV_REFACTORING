@@ -1,6 +1,5 @@
 #include "agv/simulation_engine.hpp"
-
-#include <conio.h>
+#include "agv/internal/engine_internal.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -179,7 +178,7 @@ int runInteractive() {
     engine.runInteractiveConsole();
     engine.printPerformanceSummary();
     std::cout << "\nPress any key to exit...\n";
-    (void)_getch();
+    (void)console_read_key_blocking();
     return 0;
 }
 
