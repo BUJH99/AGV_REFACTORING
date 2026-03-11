@@ -63,7 +63,7 @@ struct DisplayFrameContext final {
     const GridMap* map{nullptr};
     const Logger* logger{nullptr};
     double avg_cpu_ms{0.0};
-    int is_paused{FALSE};
+    bool is_paused{false};
 };
 
 class DisplayBufferWriter final {
@@ -175,7 +175,7 @@ void ui_handle_control_key(Simulation* sim, int ch, int* is_paused, int* quit_fl
         logger_log(sim->logger, "[CTRL] Speed decreased to %.1fx", sim->scenario_manager->speed_multiplier);
         break;
     case 'q':
-        *quit_flag = TRUE;
+        *quit_flag = true;
         logger_log(sim->logger, "[CTRL] Quit simulation.");
         break;
     case ']':
@@ -260,10 +260,10 @@ static void grid_map_render_charge_stations(
         Node* cs = map->charge_stations[i];
         view[cs->y][cs->x] = 'e';
         if (!simple_colors) {
-            int charging = FALSE;
+            bool charging = false;
             for (int j = 0; j < MAX_AGENTS; j++) {
                 if (am->agents[j].state == CHARGING && am->agents[j].pos == cs) {
-                    charging = TRUE;
+                    charging = true;
                     break;
                 }
             }
@@ -358,7 +358,7 @@ static void simulation_append_custom_status_header(
         if (is_paused) writer.appendf(" %s[ PAUSED ]%s", C_B_YEL, C_B_WHT);
         writer.appendf("\n");
         writer.appendf("Time: %d, Current Task: %s (%d/%d)\n",
-            sc->time_step, ph->type_name, sc->tasks_completed_in_phase, ph->task_count);
+            sc->time_step, ph->type_name.c_str(), sc->tasks_completed_in_phase, ph->task_count);
         return;
     }
 
@@ -544,7 +544,7 @@ void simulation_display_status(Simulation* sim, int is_paused) {
         sim->map,
         sim->logger,
         avg_cpu_ms,
-        is_paused
+        is_paused != 0
     };
 
     simulation_build_display_buffer(sim, frame);

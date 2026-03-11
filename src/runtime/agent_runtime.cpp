@@ -42,7 +42,7 @@ AgentManager::AgentManager() {
         agents[i].action_timer = 0;
         agents[i].pf.reset();
         agents[i].stuck_steps = 0;
-        agents[i].metrics_task_active = 0;
+        agents[i].metrics_task_active = false;
         agents[i].metrics_task_start_step = 0;
         agents[i].metrics_distance_at_start = 0.0;
         agents[i].metrics_turns_current = 0;
@@ -72,7 +72,7 @@ void metrics_finalize_task_if_active_local(Simulation* sim, Agent* agent) {
     sim->metrics_sum_dmove += d_move;
     sim->metrics_sum_turns += turns;
     sim->metrics_sum_ttask += t_task;
-    agent->metrics_task_active = 0;
+    agent->metrics_task_active = false;
     agent->metrics_turns_current = 0;
 }
 
@@ -80,7 +80,7 @@ void broadcast_cell_change_local(AgentManager* agents, GridMap* map, Node* chang
     if (!map || !changed) return;
     for (int i = 0; i < MAX_AGENTS; i++) {
         if (agents->agents[i].pf) {
-            pathfinder_notify_cell_change(agents->agents[i].pf, map, agents, changed);
+            pathfinder_notify_cell_change(agents->agents[i].pf.get(), map, agents, changed);
         }
     }
 }
@@ -149,7 +149,7 @@ void clear_goal_reservation_local(Agent* agent, Node* reached) {
     if (agent->state != GOING_TO_CHARGE) {
         reached->reserved_by_agent = -1;
     }
-    agent->goal = NULL;
+    agent->goal = nullptr;
 }
 
 void finish_parking_goal_local(
@@ -160,7 +160,7 @@ void finish_parking_goal_local(
     Simulation* sim,
     Agent* agent,
     Node* reached) {
-    reached->is_parked = TRUE;
+    reached->is_parked = true;
     agents->total_cars_parked++;
     broadcast_cell_change_local(agents, map, reached);
     logger_log(logger, "[%sPark%s] Agent %c parked a vehicle at (%d,%d).", C_GRN, C_NRM, agent->symbol, reached->x, reached->y);
@@ -187,7 +187,7 @@ void finish_return_home_empty_local(Logger* logger, Simulation* sim, Agent* agen
 
 void finish_collect_goal_local(AgentManager* agents, GridMap* map, Logger* logger, Agent* agent, Node* reached) {
     logger_log(logger, "[%sExit%s] Agent %c picked up a parked vehicle at (%d,%d).", C_YEL, C_NRM, agent->symbol, reached->x, reached->y);
-    reached->is_parked = FALSE;
+    reached->is_parked = false;
     agents->total_cars_parked--;
     broadcast_cell_change_local(agents, map, reached);
     agent->state = RETURNING_WITH_CAR;
@@ -263,7 +263,7 @@ void clear_position_reservation_local(Agent* agent) {
 
 void reset_goal_and_path_local(Agent* agent) {
     if (!agent) return;
-    agent->goal = NULL;
+    agent->goal = nullptr;
     agent->pf.reset();
 }
 

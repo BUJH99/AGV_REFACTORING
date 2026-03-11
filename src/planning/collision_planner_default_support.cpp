@@ -242,12 +242,12 @@ void default_planner_plan_whca_path_for_agent(
 
     const int goal_was_parked = (agent->state == GOING_TO_COLLECT && agent->goal->is_parked);
     if (goal_was_parked) {
-        agent->goal->is_parked = FALSE;
+        agent->goal->is_parked = false;
     }
 
     if (agent->pf) {
-        pathfinder_update_start(agent->pf, agent->pos);
-        pathfinder_compute_shortest_path(agent->pf, map, manager);
+        pathfinder_update_start(agent->pf.get(), agent->pos);
+        pathfinder_compute_shortest_path(agent->pf.get(), map, manager);
         agv_accumulate_whca_dstar_step_metrics(
             agent->pf->nodes_expanded_this_call,
             agent->pf->heap_moves_this_call,
@@ -262,7 +262,7 @@ void default_planner_plan_whca_path_for_agent(
     for (int step = 1; step <= agv_current_whca_horizon(); ++step) {
         Node* candidates[5];
         int candidate_count = 0;
-        best_candidate_order(agent->pf, map, manager, current, agent->pf->goal_node, candidates, &candidate_count);
+        best_candidate_order(agent->pf.get(), map, manager, current, agent->pf->goal_node, candidates, &candidate_count);
 
         Node* chosen = current;
         for (int candidate_index = 0; candidate_index < candidate_count; ++candidate_index) {
@@ -299,7 +299,7 @@ void default_planner_plan_whca_path_for_agent(
 
     next_pos[agent->id] = plan[1];
     if (goal_was_parked) {
-        agent->goal->is_parked = TRUE;
+        agent->goal->is_parked = true;
     }
 }
 

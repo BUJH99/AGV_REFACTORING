@@ -1,15 +1,13 @@
 ﻿// Legacy engine translation unit preserved during C++ migration.
 
 #define _CRT_SECURE_NO_WARNINGS
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <math.h>
-#include <float.h>
-#include <time.h>
-#include <stdarg.h>
-#include <ctype.h>
-#include <locale.h>
+#include <cctype>
+#include <cmath>
+#include <cstdarg>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <ctime>
 
 #include <windows.h>
 #include <psapi.h>
@@ -31,10 +29,7 @@
     } while (0)
 #endif
 
-#define TRUE 1
-#define FALSE 0
 #define INPUT_BUFFER_SIZE 500
-#define DISPLAY_BUFFER_SIZE 512000
 
 #define C_NRM "\x1b[0m"
 #define C_RED "\x1b[31m"
@@ -52,28 +47,13 @@
 #define C_B_CYN "\x1b[1;36m"
 #define C_B_WHT "\x1b[1;37m"
 
-#define GRID_WIDTH  82
-#define GRID_HEIGHT 42
-#define MAX_AGENTS  16
-#define MAX_GOALS   (GRID_WIDTH * GRID_HEIGHT)
-#define INF 1e18
 #define NUM_DIRECTIONS 4
 #ifndef DIR4_COUNT
 #define DIR4_COUNT 4
 #endif
 
-typedef enum {
-    DIR_NONE = -1,
-    DIR_UP = 0,
-    DIR_RIGHT = 1,
-    DIR_DOWN = 2,
-    DIR_LEFT = 3
-} AgentDir;
-
 #define DISTANCE_BEFORE_CHARGE 300.0
 #define CHARGE_TIME 20
-#define MAX_CHARGE_STATIONS 10
-#define MAX_PHASES 20
 #define REALTIME_MODE_TIMELIMIT 1000000
 #define DASHBOARD_INTERVAL_STEPS 2500
 #define MAX_TASKS 50
@@ -83,8 +63,6 @@ typedef enum {
 #define CLEANUP_FORCE_IDLE_AFTER_STEPS 11
 #endif
 
-#define LOG_BUFFER_LINES 5
-#define LOG_BUFFER_WIDTH 256
 #define STATUS_STRING_WIDTH 25
 
 #ifndef PAUSE_POLL_INTERVAL_MS
@@ -117,20 +95,13 @@ typedef enum {
 #endif
 
 #define DEADLOCK_THRESHOLD 5
-#define MIN_WHCA_HORIZON 5
-#define MAX_WHCA_HORIZON 11
 #define MAX_WAIT_EDGES 128
 #define MAX_CBS_GROUP  8
-#define MAX_CBS_CONS   128
 #define MAX_CBS_NODES  256
 #define CBS_MAX_EXPANSIONS 128
 #define MAX_TOT (((MAX_WHCA_HORIZON)+1) * GRID_WIDTH * GRID_HEIGHT)
 
-#ifndef TEMP_MARK_MAX
-#define TEMP_MARK_MAX 128
-#endif
-
-#include "agv/internal/engine_model.hpp"
+#include "agv/internal/engine_internal.hpp"
 
 static thread_local Simulation* g_active_simulation = nullptr;
 
@@ -162,17 +133,6 @@ void agv_set_whca_runtime_state(int conflict_score, int horizon) {
     conflict_score_state() = conflict_score;
     whca_horizon_state() = horizon;
     planner_metrics_state().whca_h = whca_horizon_state();
-}
-void agv_begin_apply_config(Simulation* sim, int suppress_stdout) {
-    if (!sim) return;
-    simulation_set_active(sim);
-    sim->suppress_stdout = suppress_stdout ? TRUE : FALSE;
-    renderer_state().suppress_flush = suppress_stdout ? TRUE : FALSE;
-}
-int agv_finalize_apply_config(Simulation* sim) {
-    if (!sim) return FALSE;
-    sim->resetRuntimeStats();
-    return TRUE;
 }
 void agv_accumulate_cbs_step_metrics(
     unsigned long long nodes_expanded,
@@ -297,6 +257,21 @@ public:
         observers_[observer_count_++] = MetricsObserver{ fn, ctx };
     }
 
+    void unsubscribe(void* ctx) {
+        if (!ctx) return;
+        int write_index = 0;
+        for (int read_index = 0; read_index < observer_count_; ++read_index) {
+            if (observers_[read_index].ctx == ctx) {
+                continue;
+            }
+            observers_[write_index++] = observers_[read_index];
+        }
+        for (int i = write_index; i < observer_count_; ++i) {
+            observers_[i] = MetricsObserver{};
+        }
+        observer_count_ = write_index;
+    }
+
     void notifyAll() const {
         MetricsSnapshot snap = metrics_build_snapshot();
         for (int i = 0; i < observer_count_; i++) {
@@ -312,6 +287,10 @@ static MetricsObserverRegistry g_metrics_registry;
 
 static void metrics_subscribe(MetricsObserverFn fn, void* ctx) {
     g_metrics_registry.subscribe(fn, ctx);
+}
+
+static void metrics_unsubscribe(void* ctx) {
+    g_metrics_registry.unsubscribe(ctx);
 }
 
 static void metrics_notify_all(void) {
@@ -333,111 +312,19 @@ static void simulation_metrics_observer(void* ctx, const MetricsSnapshot* s) {
     sim->algo_rt_metrics_shadow.cbs_fail_sum = s->cbs_fail_sum;
 }
 
-typedef enum {
-    AGV_PHASECFG_PARK = 0,
-    AGV_PHASECFG_EXIT = 1
-} AgvPhaseType;
-
-typedef enum {
-    AGV_MODECFG_CUSTOM = 0,
-    AGV_MODECFG_REALTIME = 1
-} AgvSimulationMode;
-
-struct AgvPhaseConfig {
-    int type;
-    int task_count;
-};
-
-struct AgvSimulationConfig {
-    unsigned int seed;
-    int map_id;
-    int path_algo;
-    int mode;
-    float speed_multiplier;
-    int realtime_park_chance;
-    int realtime_exit_chance;
-    int num_phases;
-    AgvPhaseConfig phases[MAX_PHASES];
-    int suppress_stdout;
-};
-
-struct AgvRunSummary {
-    unsigned int seed;
-    int map_id;
-    int path_algo;
-    int mode;
-    int active_agents;
-    int recorded_steps;
-    unsigned long long tasks_completed_total;
-    double throughput;
-    double total_movement_cost;
-    unsigned long long deadlock_count;
-    double total_cpu_time_ms;
-    double avg_cpu_time_ms;
-    double total_planning_time_ms;
-    double avg_planning_time_ms;
-    double memory_usage_sum_kb;
-    double avg_memory_usage_kb;
-    double memory_usage_peak_kb;
-    unsigned long long algo_nodes_expanded_total;
-    unsigned long long algo_heap_moves_total;
-    unsigned long long algo_generated_nodes_total;
-    unsigned long long algo_valid_expansions_total;
-    double valid_expansion_ratio;
-    unsigned long long requests_created_total;
-    unsigned long long request_wait_ticks_sum;
-    int remaining_parked_vehicles;
-};
-
-#define grid_map_create Grid_create
-#define grid_map_destroy Grid_destroy
 #define grid_is_valid_coord Grid_isValidCoord
 #define grid_is_node_blocked Grid_isNodeBlocked
 
-Simulation* simulation_create();
-void simulation_destroy(Simulation* sim);
 void simulation_run(Simulation* sim);
-void simulation_print_performance_summary(const Simulation* sim);
 void ui_handle_control_key(Simulation* sim, int ch, int* is_paused, int* quit_flag);
 void simulation_display_status(Simulation* sim, int is_paused);
 static void maybe_report_realtime_dashboard(Simulation* sim);
 Planner planner_from_pathalgo(PathAlgo algo);
 RendererFacade renderer_create_facade(void);
-void agv_default_config(AgvSimulationConfig* cfg);
-void agv_prepare_console(void);
-int agv_apply_config(Simulation* sim, const AgvSimulationConfig* cfg);
-int agv_execute_headless_step(Simulation* sim);
-int agv_run_to_completion(Simulation* sim);
-int agv_is_complete(const Simulation* sim);
-void agv_collect_run_summary(const Simulation* sim, AgvRunSummary* out);
-int agv_copy_render_frame(Simulation* sim, int is_paused, char* buffer, size_t buffer_size);
-void agv_update_task_dispatch(Simulation* sim);
-int agv_apply_moves_and_update_stuck(Simulation* sim, Node* next_pos[MAX_AGENTS], Node* prev_pos[MAX_AGENTS]);
-void agv_update_deadlock_counter(Simulation* sim, int moved_this_step, int is_custom_mode);
-void agv_accumulate_wait_ticks_if_realtime(Simulation* sim);
-void agv_execute_step_service(Simulation* sim, int is_paused);
-void agv_set_goal_if_needed(Agent* ag, GridMap* map, AgentManager* am, Logger* lg);
-
-void ui_enter_alt_screen(void);
-void ui_leave_alt_screen(void);
-
-int simulation_setup(Simulation* sim);
-void grid_map_load_scenario(GridMap* map, AgentManager* am, int scenario_id);
 
 void logger_log(Logger* logger, const char* format, ...);
-Logger* logger_create();
-void logger_destroy(Logger*);
-
-GridMap* grid_map_create(AgentManager*);
-void grid_map_destroy(GridMap*);
 int grid_is_valid_coord(int x, int y);
 int grid_is_node_blocked(const GridMap*, const AgentManager*, const Node*, const struct Agent_*);
-
-ScenarioManager* scenario_manager_create();
-void scenario_manager_destroy(ScenarioManager*);
-
-AgentManager* agent_manager_create();
-void agent_manager_destroy(AgentManager*);
 void agent_manager_plan_and_resolve_collisions(AgentManager*, GridMap*, Logger*, Node* next_pos[MAX_AGENTS]);
 void agent_manager_plan_and_resolve_collisions_core(AgentManager*, GridMap*, Logger*, Node* next_pos[MAX_AGENTS]);
 void agent_manager_update_state_after_move(AgentManager*, ScenarioManager*, GridMap*, Logger*, Simulation*);
@@ -448,12 +335,11 @@ void agent_manager_plan_and_resolve_collisions_astar_core(AgentManager*, GridMap
 void agent_manager_plan_and_resolve_collisions_dstar_basic_core(AgentManager*, GridMap*, Logger*, Node* next_pos[MAX_AGENTS]);
 
 Pathfinder* pathfinder_create(Node* start, Node* goal, const struct Agent_* agent);
-void pathfinder_destroy(Pathfinder* pf);
 void pathfinder_reset_goal(Pathfinder* pf, Node* new_goal);
 void pathfinder_update_start(Pathfinder* pf, Node* new_start);
 void pathfinder_notify_cell_change(Pathfinder* pf, GridMap* map, const AgentManager* am, Node* changed);
 void pathfinder_compute_shortest_path(Pathfinder* pf, GridMap* map, const AgentManager* am);
-Node* pathfinder_get_next_step(Pathfinder* pf, const GridMap* map, const AgentManager* am, Node* current_node);
+Node* pathfinder_get_next_step(Pathfinder* pf, GridMap* map, const AgentManager* am, Node* current_node);
 
 void ReservationTable_clear(ReservationTable* r);
 void ReservationTable_seedCurrent(ReservationTable* r, AgentManager* m);
@@ -465,10 +351,10 @@ int build_scc_mask_from_edges(const WaitEdge* edges, int cnt);
 int run_partial_CBS(AgentManager* m, GridMap* map, Logger* lg,
     int group_ids[], int group_n, const ReservationTable* base_rt,
     Node* out_plans[MAX_AGENTS][MAX_WHCA_HORIZON + 1]);
-Node* try_pull_over(const GridMap* map, const ReservationTable* rt, Agent* ag);
+Node* try_pull_over(GridMap* map, const ReservationTable* rt, Agent* ag);
 int priority_score(const Agent* ag);
 void sort_agents_by_priority(AgentManager* m, int order[MAX_AGENTS]);
-int best_candidate_order(Pathfinder* pf, const GridMap* map, const AgentManager* am,
+int best_candidate_order(Pathfinder* pf, GridMap* map, const AgentManager* am,
     Node* cur, Node* goal, Node* out[5], int* outN);
 void ensure_pathfinder_for_agent(Agent* ag);
 int st_astar_plan_single(int agent_id, GridMap* map, Node* start, Node* goal, int horizon,
@@ -480,13 +366,6 @@ int st_astar_plan_single(int agent_id, GridMap* map, Node* start, Node* goal, in
     unsigned long long* out_heap_moves,
     unsigned long long* out_generated_nodes,
     unsigned long long* out_valid_expansions);
-
-class PathfinderFactory final {
-public:
-    Pathfinder* create(Node* start, Node* goal) const { return pathfinder_create(start, goal, NULL); }
-    void destroy(Pathfinder* pf) const { pathfinder_destroy(pf); }
-};
-static const PathfinderFactory g_pf_factory{};
 
 Planner::Planner(std::unique_ptr<PlannerStrategy> strategy)
     : strategy_(std::move(strategy)) {}
@@ -558,15 +437,23 @@ void Logger::log(const char* fmt, ...) {
     va_end(args);
 }
 
-void Simulation_::destroyOwnedResources() {
-    map.reset();
-    agent_manager.reset();
-    scenario_manager.reset();
-    logger.reset();
+Simulation_::Simulation_() {
+    simulation_set_active(this);
+    map_id = 1;
+    path_algo = PATHALGO_DEFAULT;
+    planner = planner_from_pathalgo(path_algo);
+    renderer = renderer_create_facade();
+    render_state.configureForAlgorithm(path_algo);
+    planner_metrics.whca_h = runtime_tuning.whca_horizon;
+    grid_map_load_scenario(map, agent_manager, map_id);
+    metrics_subscribe(simulation_metrics_observer, this);
 }
 
 Simulation_::~Simulation_() {
-    destroyOwnedResources();
+    metrics_unsubscribe(this);
+    if (simulation_active() == this) {
+        simulation_set_active(nullptr);
+    }
 }
 
 
@@ -805,11 +692,11 @@ static void maybe_report_realtime_dashboard(Simulation* sim) {
 }
 
 static int are_all_agents_idle(const AgentManager* agent_manager) {
-    if (!agent_manager) return TRUE;
+    if (!agent_manager) return true;
     for (int i = 0; i < MAX_AGENTS; i++) {
-        if (agent_manager->agents[i].state != IDLE) return FALSE;
+        if (agent_manager->agents[i].state != IDLE) return false;
     }
-    return TRUE;
+    return true;
 }
 
 static void print_completion_message_if_needed(const Simulation* sim, const char* message) {
@@ -819,8 +706,8 @@ static void print_completion_message_if_needed(const Simulation* sim, const char
 
 static int is_custom_scenario_complete(const Simulation* sim) {
     const ScenarioManager* scenario = sim->scenario_manager;
-    if (!scenario || scenario->mode != MODE_CUSTOM) return FALSE;
-    if (scenario->current_phase_index < scenario->num_phases) return FALSE;
+    if (!scenario || scenario->mode != MODE_CUSTOM) return false;
+    if (scenario->current_phase_index < scenario->num_phases) return false;
     return are_all_agents_idle(sim->agent_manager);
 }
 
@@ -854,8 +741,6 @@ static void maybe_sleep_for_simulation_speed(const ScenarioManager* scenario) {
 // 4.5) Renderer Facade Implementation (delegates to simulation_display_status)
 // =============================================================================
 // Logger
-Logger* logger_create() { return new Logger(); }
-void logger_destroy(Logger* l) { delete l; }
 void logger_log(Logger* l, const char* fmt, ...) {
     if (!l) return;
     va_list a;
@@ -863,11 +748,6 @@ void logger_log(Logger* l, const char* fmt, ...) {
     l->logV(fmt, a);
     va_end(a);
 }
-
-// OO-style aliases (kept as inline wrappers for readability; behavior unchanged)
-#define Logger_log logger_log
-#define Logger_create logger_create
-#define Logger_destroy logger_destroy
 
 // =============================================================================
 
@@ -883,22 +763,22 @@ void logger_log(Logger* l, const char* fmt, ...) {
 
 int grid_is_node_blocked(const GridMap* map, const AgentManager* am, const Node* n, const struct Agent_* agent) {
     constexpr int kReturnHomeBayEscapeStuckSteps = 6;
-    if (n->is_obstacle || n->is_parked || n->is_temp) return TRUE;
+    if (n->is_obstacle || n->is_parked || n->is_temp) return true;
 
 
     if (agent && agent->state == RETURNING_HOME_EMPTY && n->is_goal && !n->is_parked) {
-        const int allow_temporary_bay_escape =
+        const bool allow_temporary_bay_escape =
             agent->stuck_steps >= kReturnHomeBayEscapeStuckSteps &&
             (n->reserved_by_agent == -1 || n->reserved_by_agent == agent->id);
         if (!allow_temporary_bay_escape) {
-            return TRUE;
+            return true;
         }
     }
 
     for (int i = 0; i < MAX_AGENTS; i++) {
-        if (am->agents[i].pos == n && am->agents[i].state == CHARGING) return TRUE;
+        if (am->agents[i].pos == n && am->agents[i].state == CHARGING) return true;
     }
-    return FALSE;
+    return false;
 }
 
 // =============================================================================
@@ -918,20 +798,20 @@ bool Simulation_::isComplete() const {
     const Simulation* sim = this;
     if (is_custom_scenario_complete(sim)) {
         print_completion_message_if_needed(sim, "Custom scenario completed.");
-        return TRUE;
+        return true;
     }
     if (is_realtime_scenario_complete(sim)) {
         print_completion_message_if_needed(sim, "Real-time simulation completed.");
-        return TRUE;
+        return true;
     }
-    return FALSE;
+    return false;
 }
 
 void Simulation_::run() {
     SimulationContextGuard guard(this);
     Simulation* sim = this;
-    int is_paused = FALSE;
-    int quit_flag = FALSE;
+    int is_paused = false;
+    int quit_flag = false;
 
     sim->resetRuntimeStats();
 
@@ -954,62 +834,29 @@ void Simulation_::run() {
     }
 }
 
-void simulation_run(Simulation* sim) {
-    if (sim) sim->run();
-}
-
-// =============================================================================
-
-// =============================================================================
-Simulation* simulation_create() {
-    Simulation* s = new Simulation();
-    simulation_set_active(s);
-    s->agent_manager = agent_manager_create();
-    s->map = grid_map_create(s->agent_manager); // default map #1
-    s->scenario_manager = scenario_manager_create();
-    s->logger = logger_create();
-    s->map_id = 1; // current default map
-    s->path_algo = PATHALGO_DEFAULT;
-    s->planner = planner_from_pathalgo(s->path_algo);
-    s->renderer = renderer_create_facade();
-    s->render_state.configureForAlgorithm(s->path_algo);
-    planner_metrics_state().whca_h = whca_horizon_state();
-    
-    metrics_subscribe(simulation_metrics_observer, s);
-    return s;
-}
-void simulation_destroy(Simulation* s) {
-    if (simulation_active() == s) simulation_set_active(nullptr);
-    delete s;
-}
-int agv_execute_headless_step(Simulation* sim) {
-    if (!sim) return TRUE;
-    if (sim->isComplete()) return TRUE;
-    sim->executeOneStep(FALSE);
-    if (sim->isComplete()) return TRUE;
+bool execute_headless_step(Simulation* sim) {
+    if (!sim) return true;
+    if (sim->isComplete()) return true;
+    sim->executeOneStep(false);
+    if (sim->isComplete()) return true;
     maybe_report_realtime_dashboard(sim);
     if (sim->scenario_manager->simulation_speed > 0) sleep_ms(sim->scenario_manager->simulation_speed);
-    return FALSE;
+    return false;
 }
 
-int agv_run_to_completion(Simulation* sim) {
-    if (!sim) return FALSE;
-    while (!agv_execute_headless_step(sim)) {
+bool run_simulation_to_completion(Simulation* sim) {
+    if (!sim) return false;
+    while (!execute_headless_step(sim)) {
     }
-    return TRUE;
+    return true;
 }
 
-int agv_is_complete(const Simulation* sim) {
-    if (!sim) return TRUE;
-    return sim->isComplete();
-}
-
-int agv_copy_render_frame(Simulation* sim, int is_paused, char* buffer, size_t buffer_size) {
+int copy_render_frame(Simulation* sim, bool is_paused, char* buffer, size_t buffer_size) {
     if (!sim || !buffer || buffer_size == 0) return 0;
     SimulationContextGuard guard(sim);
     {
-        int prev_suppress = renderer_state().suppress_flush;
-        renderer_state().suppress_flush = TRUE;
+        const bool prev_suppress = renderer_state().suppress_flush;
+        renderer_state().suppress_flush = true;
         simulation_display_status(sim, is_paused);
         renderer_state().suppress_flush = prev_suppress;
     }
@@ -1019,16 +866,15 @@ int agv_copy_render_frame(Simulation* sim, int is_paused, char* buffer, size_t b
 
 #ifndef AGV_NO_MAIN
 int main() {
-    srand((unsigned int)time(NULL));
+    srand((unsigned int)time(nullptr));
     agv_prepare_console();
-    Simulation* sim = simulation_create();
-    if (!sim) return 1;
+    Simulation sim;
 
-    if (simulation_setup(sim)) {
+    if (simulation_setup(&sim)) {
         ui_enter_alt_screen();
-        simulation_run(sim);
+        sim.run();
         ui_leave_alt_screen();
-        simulation_print_performance_summary(sim);
+        sim.printPerformanceSummary();
         printf("\nPress any key to exit...\n");
         (void)_getch();
     }
@@ -1037,7 +883,6 @@ int main() {
     }
 
 
-    simulation_destroy(sim);
     return 0;
 }
 #endif

@@ -33,13 +33,13 @@ static const char* simulation_path_algo_report_label(PathAlgo path_algo) {
     return "Default (WHCA* + D* Lite + WFG + CBS)";
 }
 
-static int agv_summary_mode_value(const ScenarioManager* sc) {
-    if (!sc) return AGV_MODECFG_CUSTOM;
-    return (sc->mode == MODE_REALTIME) ? AGV_MODECFG_REALTIME : AGV_MODECFG_CUSTOM;
+static SimulationMode summary_mode_value(const ScenarioManager* sc) {
+    if (!sc) return MODE_CUSTOM;
+    return (sc->mode == MODE_REALTIME) ? MODE_REALTIME : MODE_CUSTOM;
 }
 
-static AgvRunSummary build_run_summary(const Simulation* sim) {
-    AgvRunSummary summary{};
+RunSummary collect_run_summary(const Simulation* sim) {
+    RunSummary summary{};
     if (!sim) return summary;
 
     const ScenarioManager* sc = sim->scenario_manager;
@@ -49,7 +49,7 @@ static AgvRunSummary build_run_summary(const Simulation* sim) {
     summary.seed = sim->configured_seed;
     summary.map_id = sim->map_id;
     summary.path_algo = sim->path_algo;
-    summary.mode = agv_summary_mode_value(sc);
+    summary.mode = summary_mode_value(sc);
     summary.active_agents = simulation_active_agent_count(am);
     summary.recorded_steps = recorded_steps;
     summary.tasks_completed_total = sim->tasks_completed_total;
@@ -130,7 +130,7 @@ void Simulation_::printPerformanceSummary() const {
             const int planned = ph->task_count;
             const int completed = sim->phase_completed_tasks[i];
             const int step_count = sim->phase_step_counts[i];
-            printf(" Phase %d (%s)\n", i + 1, ph->type_name);
+            printf(" Phase %d (%s)\n", i + 1, ph->type_name.c_str());
             printf("   Planned Tasks           : %d\n", planned);
             printf("   Completed Tasks         : %d\n", completed);
             if (step_count > 0) {
@@ -171,9 +171,4 @@ void Simulation_::printPerformanceSummary() const {
 
 void simulation_print_performance_summary(const Simulation* sim) {
     if (sim) sim->printPerformanceSummary();
-}
-
-void agv_collect_run_summary(const Simulation* sim, AgvRunSummary* out) {
-    if (!out) return;
-    *out = build_run_summary(sim);
 }

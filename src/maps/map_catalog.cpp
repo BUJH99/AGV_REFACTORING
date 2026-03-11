@@ -5,8 +5,6 @@
 
 #include "agv/internal/engine_internal.hpp"
 
-#define grid_map_create Grid_create
-#define grid_map_destroy Grid_destroy
 #define grid_is_valid_coord Grid_isValidCoord
 
 int grid_is_valid_coord(int x, int y) { return (x >= 0 && x < GRID_WIDTH&& y >= 0 && y < GRID_HEIGHT); }
@@ -17,10 +15,10 @@ static void grid_map_clear(GridMap* map) {
         for (int x = 0; x < GRID_WIDTH; ++x) {
             map->grid[y][x].x = x;
             map->grid[y][x].y = y;
-            map->grid[y][x].is_obstacle = FALSE;
-            map->grid[y][x].is_goal = FALSE;
-            map->grid[y][x].is_temp = FALSE;
-            map->grid[y][x].is_parked = FALSE;
+            map->grid[y][x].is_obstacle = false;
+            map->grid[y][x].is_goal = false;
+            map->grid[y][x].is_temp = false;
+            map->grid[y][x].is_parked = false;
             map->grid[y][x].reserved_by_agent = -1;
         }
     map->num_goals = 0;
@@ -37,7 +35,7 @@ static void map_fill_interior(GridMap* map, int is_obstacle) {
         for (int x = 1; x < GRID_WIDTH - 1; ++x) {
             map->grid[y][x].is_obstacle = is_obstacle;
             if (is_obstacle) {
-                map->grid[y][x].is_goal = FALSE;
+                map->grid[y][x].is_goal = false;
             }
         }
     }
@@ -45,18 +43,18 @@ static void map_fill_interior(GridMap* map, int is_obstacle) {
 
 static void map_add_border_walls(GridMap* m) {
     for (int x = 0; x < GRID_WIDTH; ++x) {
-        m->grid[0][x].is_obstacle = TRUE;
-        m->grid[GRID_HEIGHT - 1][x].is_obstacle = TRUE;
+        m->grid[0][x].is_obstacle = true;
+        m->grid[GRID_HEIGHT - 1][x].is_obstacle = true;
     }
     for (int y = 0; y < GRID_HEIGHT; ++y) {
-        m->grid[y][0].is_obstacle = TRUE;
-        m->grid[y][GRID_WIDTH - 1].is_obstacle = TRUE;
+        m->grid[y][0].is_obstacle = true;
+        m->grid[y][GRID_WIDTH - 1].is_obstacle = true;
     }
 }
 
 static void map_open_cell(GridMap* map, int x, int y) {
     if (!map || !grid_is_valid_coord(x, y)) return;
-    map->grid[y][x].is_obstacle = FALSE;
+    map->grid[y][x].is_obstacle = false;
 }
 
 static void map_open_row(GridMap* map, int y, int x_begin = 1, int x_end = GRID_WIDTH - 2) {
@@ -85,7 +83,7 @@ static void map_clear_goal_rect(GridMap* map, int x_begin, int y_begin, int x_en
     const int clamped_y_end = std::min(GRID_HEIGHT - 1, y_end);
     for (int y = clamped_y_begin; y <= clamped_y_end; ++y) {
         for (int x = clamped_x_begin; x <= clamped_x_end; ++x) {
-            map->grid[y][x].is_goal = FALSE;
+            map->grid[y][x].is_goal = false;
         }
     }
 }
@@ -94,7 +92,7 @@ static void map_place_goal(GridMap* m, int x, int y) {
     if (!grid_is_valid_coord(x, y)) return;
     Node* n = &m->grid[y][x];
     if (!n->is_obstacle && !n->is_goal) {
-        n->is_goal = TRUE;
+        n->is_goal = true;
         if (m->num_goals < MAX_GOALS) m->goals[m->num_goals++] = n;
     }
 }
@@ -132,9 +130,9 @@ static void map_reserve_area_as_start(GridMap* m, int x0, int y0, int w, int h) 
     for (int y = y0; y < y0 + h && y < GRID_HEIGHT; ++y)
         for (int x = x0; x < x0 + w && x < GRID_WIDTH; ++x) {
             Node* n = &m->grid[y][x];
-            n->is_obstacle = FALSE;
-            n->is_goal = FALSE;
-            n->is_temp = FALSE;
+            n->is_obstacle = false;
+            n->is_goal = false;
+            n->is_temp = false;
         }
 }
 
@@ -144,9 +142,9 @@ static void agent_manager_reset_for_new_map(AgentManager* am) {
         am->agents[i].pf.reset();
         am->agents[i].id = i;
         am->agents[i].symbol = 'A' + i;
-        am->agents[i].pos = NULL;
-        am->agents[i].home_base = NULL;
-        am->agents[i].goal = NULL;
+        am->agents[i].pos = nullptr;
+        am->agents[i].home_base = nullptr;
+        am->agents[i].goal = nullptr;
         am->agents[i].state = IDLE;
         am->agents[i].total_distance_traveled = 0.0;
         am->agents[i].charge_timer = 0;
@@ -154,7 +152,7 @@ static void agent_manager_reset_for_new_map(AgentManager* am) {
         am->agents[i].heading = DIR_NONE;
         am->agents[i].rotation_wait = 0;
         am->agents[i].stuck_steps = 0;
-        am->agents[i].metrics_task_active = 0;
+        am->agents[i].metrics_task_active = false;
         am->agents[i].metrics_task_start_step = 0;
         am->agents[i].metrics_distance_at_start = 0.0;
         am->agents[i].metrics_turns_current = 0;
@@ -204,15 +202,15 @@ static void grid_map_fill_from_string(GridMap* map, AgentManager* am, const char
         if (y >= GRID_HEIGHT) break;
 
         Node* n = &map->grid[y][x];
-        n->is_obstacle = FALSE;
-        n->is_goal = FALSE;
-        n->is_temp = FALSE;
-        n->is_parked = FALSE;
+        n->is_obstacle = false;
+        n->is_goal = false;
+        n->is_temp = false;
+        n->is_parked = false;
         n->reserved_by_agent = -1;
 
         switch (ch) {
         case '1':
-            n->is_obstacle = TRUE;
+            n->is_obstacle = true;
             break;
         case 'A':
             am->agents[0].pos = n;
@@ -231,7 +229,7 @@ static void grid_map_fill_from_string(GridMap* map, AgentManager* am, const char
             am->agents[3].home_base = n;
             break;
         case 'G':
-            n->is_goal = TRUE;
+            n->is_goal = true;
             if (map->num_goals < MAX_GOALS) map->goals[map->num_goals++] = n;
             break;
         case 'e':
@@ -252,7 +250,7 @@ static void map_build_hypermart(GridMap* m, AgentManager* am) {
 
     map_all_free(m);
     map_add_border_walls(m);
-    map_fill_interior(m, TRUE);
+    map_fill_interior(m, true);
 
     map_reserve_area_as_start(m, 2, 2, 8, 5);
     map_place_agent_at(am, m, 0, 2, 2);
@@ -273,15 +271,15 @@ static void map_build_hypermart(GridMap* m, AgentManager* am) {
     map_open_row(m, 30);
     for (y = 19; y <= 21; ++y)
         for (x = 1; x < GRID_WIDTH - 1; ++x)
-            m->grid[y][x].is_obstacle = TRUE;
+            m->grid[y][x].is_obstacle = true;
 
     for (int i = 0; i < nV; ++i) {
         int cx = vCols[i];
-        for (y = 19; y <= 21; ++y) m->grid[y][cx].is_obstacle = FALSE;
+        for (y = 19; y <= 21; ++y) m->grid[y][cx].is_obstacle = false;
     }
 
-    m->grid[20][34].is_obstacle = FALSE;
-    m->grid[20][50].is_obstacle = FALSE;
+    m->grid[20][34].is_obstacle = false;
+    m->grid[20][50].is_obstacle = false;
 
     map_open_column(m, 4);
     map_open_row(m, 6, 4, 10);
@@ -359,7 +357,7 @@ static void map_build_hypermart(GridMap* m, AgentManager* am) {
                     break;
                 }
             }
-            if (!ok) n->is_goal = FALSE;
+            if (!ok) n->is_goal = false;
         }
     }
     map_rebuild_goal_index(m);
@@ -370,7 +368,7 @@ static void map_build_10agents_200slots(GridMap* m, AgentManager* am) {
 
     map_all_free(m);
     map_add_border_walls(m);
-    map_fill_interior(m, TRUE);
+    map_fill_interior(m, true);
 
     const int sx0 = 2, sy0 = 2;
     const int sW = 16, sH = 6;
@@ -450,7 +448,7 @@ static void map_build_10agents_200slots(GridMap* m, AgentManager* am) {
             int row = y;
             for (x = 2; x < GRID_WIDTH - 2 && placed < target; ++x) {
                 if (markCol[x]) continue;
-                if (m->grid[row][x].is_obstacle != FALSE) continue;
+                if (m->grid[row][x].is_obstacle) continue;
 
                 if (grid_is_valid_coord(x, row - 1) &&
                     !m->grid[row - 1][x].is_goal && placed < target) {
@@ -467,8 +465,8 @@ static void map_build_10agents_200slots(GridMap* m, AgentManager* am) {
     }
 
     for (y = 1; y < GRID_HEIGHT - 1; ++y) {
-        m->grid[y][2].is_goal = FALSE;
-        m->grid[y][3].is_goal = FALSE;
+        m->grid[y][2].is_goal = false;
+        m->grid[y][3].is_goal = false;
     }
 }
 
@@ -486,7 +484,7 @@ static void carve_block_1lane(GridMap* m,
     for (y = gy0; y <= gy1; ++y)
         for (x = gx0; x <= gx1; ++x) {
             if (!grid_is_valid_coord(x, y)) continue;
-            m->grid[y][x].is_obstacle = FALSE;
+            m->grid[y][x].is_obstacle = false;
             map_place_goal(m, x, y);
         }
 
@@ -494,12 +492,12 @@ static void carve_block_1lane(GridMap* m,
     int ryT = gy0 - 1, ryB = gy1 + 1;
 
     for (x = gx0 - 1; x <= gx1 + 1; ++x) {
-        if (grid_is_valid_coord(x, ryT)) m->grid[ryT][x].is_obstacle = FALSE;
-        if (grid_is_valid_coord(x, ryB)) m->grid[ryB][x].is_obstacle = FALSE;
+        if (grid_is_valid_coord(x, ryT)) m->grid[ryT][x].is_obstacle = false;
+        if (grid_is_valid_coord(x, ryB)) m->grid[ryB][x].is_obstacle = false;
     }
     for (y = gy0 - 1; y <= gy1 + 1; ++y) {
-        if (grid_is_valid_coord(rxL, y)) m->grid[y][rxL].is_obstacle = FALSE;
-        if (grid_is_valid_coord(rxR, y)) m->grid[y][rxR].is_obstacle = FALSE;
+        if (grid_is_valid_coord(rxL, y)) m->grid[y][rxL].is_obstacle = false;
+        if (grid_is_valid_coord(rxR, y)) m->grid[y][rxR].is_obstacle = false;
     }
 
     int kx = (cx - vx0 + vstep / 2) / vstep;
@@ -515,22 +513,22 @@ static void carve_block_1lane(GridMap* m,
     {
         int linkY = (abs(ryT - CY) <= abs(ryB - CY)) ? ryT : ryB;
         if (vx <= rxL) {
-            for (x = vx; x <= rxL; ++x) m->grid[linkY][x].is_obstacle = FALSE;
+            for (x = vx; x <= rxL; ++x) m->grid[linkY][x].is_obstacle = false;
         } else if (vx >= rxR) {
-            for (x = rxR; x <= vx; ++x) m->grid[linkY][x].is_obstacle = FALSE;
+            for (x = rxR; x <= vx; ++x) m->grid[linkY][x].is_obstacle = false;
         } else {
-            m->grid[linkY][vx].is_obstacle = FALSE;
+            m->grid[linkY][vx].is_obstacle = false;
         }
     }
 
     {
         int linkX = (abs(rxL - CX) <= abs(rxR - CX)) ? rxL : rxR;
         if (hy <= ryT) {
-            for (y = hy; y <= ryT; ++y) m->grid[y][linkX].is_obstacle = FALSE;
+            for (y = hy; y <= ryT; ++y) m->grid[y][linkX].is_obstacle = false;
         } else if (hy >= ryB) {
-            for (y = ryB; y <= hy; ++y) m->grid[y][linkX].is_obstacle = FALSE;
+            for (y = ryB; y <= hy; ++y) m->grid[y][linkX].is_obstacle = false;
         } else {
-            m->grid[hy][linkX].is_obstacle = FALSE;
+            m->grid[hy][linkX].is_obstacle = false;
         }
     }
 }
@@ -541,7 +539,7 @@ static void map_build_biggrid_onegoal(GridMap* m, AgentManager* am) {
 
     int x, y;
 
-    map_fill_interior(m, TRUE);
+    map_fill_interior(m, true);
 
     const int CX = GRID_WIDTH / 2;
     const int CY = GRID_HEIGHT / 2;
@@ -591,7 +589,7 @@ static void map_build_cross_4agents(GridMap* m, AgentManager* am) {
     map_all_free(m);
     map_add_border_walls(m);
 
-    map_fill_interior(m, TRUE);
+    map_fill_interior(m, true);
 
     const int CX = GRID_WIDTH / 2;
     const int CY = GRID_HEIGHT / 2;
@@ -650,14 +648,4 @@ void grid_map_load_scenario(GridMap* map, AgentManager* am, int scenario_id) {
         map_build_hypermart(map, am);
         break;
     }
-}
-
-GridMap* grid_map_create(AgentManager* am) {
-    GridMap* m = new GridMap();
-    grid_map_load_scenario(m, am, 1);
-    return m;
-}
-
-void grid_map_destroy(GridMap* m) {
-    delete m;
 }

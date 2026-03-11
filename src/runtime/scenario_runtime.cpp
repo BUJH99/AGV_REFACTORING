@@ -48,26 +48,10 @@ Planner planner_from_pathalgo(PathAlgo algo);
 void agent_begin_task_park(Agent* ag, ScenarioManager* sc, Logger* lg);
 void agent_begin_task_exit(Agent* ag, ScenarioManager* sc, Logger* lg);
 
-ScenarioManager* scenario_manager_create() {
-    return new ScenarioManager();
-}
-
-void scenario_manager_destroy(ScenarioManager* scenario) {
-    delete scenario;
-}
-
-AgentManager* agent_manager_create() {
-    return new AgentManager();
-}
-
-void agent_manager_destroy(AgentManager* manager) {
-    delete manager;
-}
-
 void agent_begin_task_park(Agent* agent, ScenarioManager* scenario, Logger* logger) {
     if (!agent || !scenario) return;
     agent->state = GOING_TO_PARK;
-    agent->metrics_task_active = 1;
+    agent->metrics_task_active = true;
     agent->metrics_task_start_step = scenario->time_step;
     agent->metrics_distance_at_start = agent->total_distance_traveled;
     agent->metrics_turns_current = 0;
@@ -77,7 +61,7 @@ void agent_begin_task_park(Agent* agent, ScenarioManager* scenario, Logger* logg
 void agent_begin_task_exit(Agent* agent, ScenarioManager* scenario, Logger* logger) {
     if (!agent || !scenario) return;
     agent->state = GOING_TO_COLLECT;
-    agent->metrics_task_active = 1;
+    agent->metrics_task_active = true;
     agent->metrics_task_start_step = scenario->time_step;
     agent->metrics_distance_at_start = agent->total_distance_traveled;
     agent->metrics_turns_current = 0;
@@ -99,20 +83,20 @@ void ScenarioManager::enqueueTask(TaskType type) {
 
 bool ScenarioManager::tryDequeueAssignableTask(int lot_full, int parked_count, TaskType* out_type) {
     for (auto it = task_queue.begin(); it != task_queue.end(); ++it) {
-        int can = FALSE;
+        bool can = false;
         if (lot_full) {
-            if (it->type == TASK_EXIT && parked_count > 0) can = TRUE;
+            if (it->type == TASK_EXIT && parked_count > 0) can = true;
         } else {
-            if (it->type == TASK_PARK) can = TRUE;
-            else if (it->type == TASK_EXIT && parked_count > 0) can = TRUE;
+            if (it->type == TASK_PARK) can = true;
+            else if (it->type == TASK_EXIT && parked_count > 0) can = true;
         }
         if (!can) continue;
         if (out_type) *out_type = it->type;
         task_queue.erase(it);
         task_count = static_cast<int>(task_queue.size());
-        return TRUE;
+        return true;
     }
-    return FALSE;
+    return false;
 }
 
 void ScenarioManager::applySpeedMultiplier(float speedMultiplier) {
@@ -149,7 +133,7 @@ const char* phase_type_name(PhaseType type) {
 void assign_dynamic_phase(DynamicPhase& phase, PhaseType type, int task_count) {
     phase.type = type;
     phase.task_count = std::max(1, task_count);
-    std::snprintf(phase.type_name, sizeof(phase.type_name), "%s", phase_type_name(type));
+    phase.type_name = phase_type_name(type);
 }
 
 void reset_scenario_runtime_state(ScenarioManager& scenario) {
@@ -162,15 +146,15 @@ void reset_scenario_runtime_state(ScenarioManager& scenario) {
     scenario.exit_chance = 0;
 }
 
-void apply_custom_config(ScenarioManager& scenario, const AgvSimulationConfig& cfg) {
+void apply_custom_config(ScenarioManager& scenario, const SimulationConfig& cfg) {
     scenario.num_phases = std::clamp(cfg.num_phases, 0, MAX_PHASES);
     for (int i = 0; i < scenario.num_phases; ++i) {
-        const auto type = (cfg.phases[i].type == AGV_PHASECFG_EXIT) ? EXIT_PHASE : PARK_PHASE;
+        const auto type = cfg.phases[i].type;
         assign_dynamic_phase(scenario.phases[i], type, cfg.phases[i].task_count);
     }
 }
 
-void apply_realtime_config(ScenarioManager& scenario, const AgvSimulationConfig& cfg) {
+void apply_realtime_config(ScenarioManager& scenario, const SimulationConfig& cfg) {
     scenario.park_chance = cfg.realtime_park_chance;
     scenario.exit_chance = cfg.realtime_exit_chance;
 }
@@ -207,7 +191,7 @@ char get_single_char_local() {
 
 char get_char_input_local(const char* prompt, const char* valid) {
     char value;
-    while (TRUE) {
+    while (true) {
         std::printf("%s", prompt);
         value = (char)std::tolower(get_single_char_local());
         std::printf("%c\n", value);
@@ -219,7 +203,7 @@ char get_char_input_local(const char* prompt, const char* valid) {
 int get_integer_input_local(const char* prompt, int min, int max) {
     char buffer[INPUT_BUFFER_SIZE];
     int value;
-    while (TRUE) {
+    while (true) {
         std::printf("%s", prompt);
         if (std::fgets(buffer, sizeof(buffer), stdin) &&
             std::sscanf(buffer, "%d", &value) == 1 &&
@@ -233,7 +217,7 @@ int get_integer_input_local(const char* prompt, int min, int max) {
 float get_float_input_local(const char* prompt, float min, float max) {
     char buffer[INPUT_BUFFER_SIZE];
     float value;
-    while (TRUE) {
+    while (true) {
         std::printf("%s", prompt);
         if (std::fgets(buffer, sizeof(buffer), stdin) &&
             std::sscanf(buffer, "%f", &value) == 1 &&
@@ -268,7 +252,7 @@ int simulation_setup_custom_scenario_local(Simulation* sim) {
             task_count);
 
         std::printf(C_GRN "Phase %d configured: %s x %d.\n" C_NRM,
-            i + 1, scenario->phases[i].type_name, scenario->phases[i].task_count);
+            i + 1, scenario->phases[i].type_name.c_str(), scenario->phases[i].task_count);
     }
 
     std::printf(C_B_GRN "\n--- Custom scenario configuration complete. ---\n" C_NRM);
@@ -278,7 +262,7 @@ int simulation_setup_custom_scenario_local(Simulation* sim) {
 
 int simulation_setup_realtime_local(ScenarioManager* scenario) {
     std::printf(C_B_WHT "--- Real-Time Scenario Setup ---\n" C_NRM);
-    while (TRUE) {
+    while (true) {
         scenario->park_chance = get_integer_input_local("\nParking request probability (0~100): ", 0, 100);
         scenario->exit_chance = get_integer_input_local("Retrieval request probability (0~100): ", 0, 100);
         if (scenario->park_chance + scenario->exit_chance <= 100) break;
@@ -322,16 +306,6 @@ int agv_clamp_map_id_local(int map_id) {
     return std::clamp(map_id, kMinMapId, kMaxMapId);
 }
 
-PathAlgo agv_path_algo_from_config_local(int path_algo) {
-    if (path_algo == PATHALGO_ASTAR_SIMPLE || path_algo == 1) {
-        return PATHALGO_ASTAR_SIMPLE;
-    }
-    if (path_algo == PATHALGO_DSTAR_BASIC || path_algo == 2 || path_algo == 3) {
-        return PATHALGO_DSTAR_BASIC;
-    }
-    return PATHALGO_DEFAULT;
-}
-
 class TaskDispatchService final {
 public:
     void update(Simulation* sim) const {
@@ -356,13 +330,13 @@ private:
         if (scenario->tasks_completed_in_phase < phase->task_count) return true;
 
         logger_log(logger, "[%sPhase%s] %d completed (%s %d).", C_B_YEL, C_NRM,
-            scenario->current_phase_index + 1, phase->type_name, phase->task_count);
+            scenario->current_phase_index + 1, phase->type_name.c_str(), phase->task_count);
         scenario->current_phase_index++;
         scenario->tasks_completed_in_phase = 0;
         if (scenario->current_phase_index < scenario->num_phases) {
             DynamicPhase* next_phase = &scenario->phases[scenario->current_phase_index];
             logger_log(logger, "[%sPhase%s] %d start: %s %d.",
-                C_B_YEL, C_NRM, scenario->current_phase_index + 1, next_phase->type_name, next_phase->task_count);
+                C_B_YEL, C_NRM, scenario->current_phase_index + 1, next_phase->type_name.c_str(), next_phase->task_count);
             do_ms_pause(1500);
         }
         return false;
@@ -470,46 +444,48 @@ int simulation_setup(Simulation* sim) {
     return ok;
 }
 
-void agv_default_config(AgvSimulationConfig* cfg) {
-    if (!cfg) return;
-    std::memset(cfg, 0, sizeof(*cfg));
-    cfg->seed = (unsigned int)std::time(NULL);
-    cfg->map_id = 1;
-    cfg->path_algo = PATHALGO_DEFAULT;
-    cfg->mode = AGV_MODECFG_CUSTOM;
-    cfg->speed_multiplier = 0.0f;
-    cfg->num_phases = 1;
-    cfg->phases[0].type = AGV_PHASECFG_PARK;
-    cfg->phases[0].task_count = 1;
-    cfg->suppress_stdout = FALSE;
+SimulationConfig default_simulation_config() {
+    SimulationConfig cfg{};
+    cfg.seed = static_cast<unsigned int>(std::time(nullptr));
+    cfg.map_id = 1;
+    cfg.path_algo = PATHALGO_DEFAULT;
+    cfg.mode = MODE_CUSTOM;
+    cfg.speed_multiplier = 0.0f;
+    cfg.num_phases = 1;
+    cfg.phases[0].type = PARK_PHASE;
+    cfg.phases[0].task_count = 1;
+    cfg.suppress_stdout = false;
+    return cfg;
 }
 
-int agv_apply_config(Simulation* sim, const AgvSimulationConfig* cfg) {
-    if (!sim || !cfg) return FALSE;
+bool apply_simulation_config(Simulation* sim, const SimulationConfig& cfg) {
+    if (!sim) return false;
 
-    agv_begin_apply_config(sim, cfg->suppress_stdout);
-    sim->configured_seed = cfg->seed;
-    std::srand(cfg->seed);
+    sim->suppress_stdout = cfg.suppress_stdout;
+    sim->render_state.suppress_flush = cfg.suppress_stdout;
+    sim->configured_seed = cfg.seed;
+    std::srand(cfg.seed);
 
-    sim->map_id = agv_clamp_map_id_local(cfg->map_id);
+    sim->map_id = agv_clamp_map_id_local(cfg.map_id);
     grid_map_load_scenario(sim->map, sim->agent_manager, sim->map_id);
 
-    sim->path_algo = agv_path_algo_from_config_local(cfg->path_algo);
+    sim->path_algo = cfg.path_algo;
     sim->planner = planner_from_pathalgo(sim->path_algo);
     sim->render_state.configureForAlgorithm(sim->path_algo);
 
     ScenarioManager& scenario = *sim->scenario_manager;
     reset_scenario_runtime_state(scenario);
-    scenario.mode = (cfg->mode == AGV_MODECFG_REALTIME) ? MODE_REALTIME : MODE_CUSTOM;
+    scenario.mode = cfg.mode;
 
     if (scenario.mode == MODE_REALTIME) {
-        apply_realtime_config(scenario, *cfg);
+        apply_realtime_config(scenario, cfg);
     } else {
-        apply_custom_config(scenario, *cfg);
+        apply_custom_config(scenario, cfg);
     }
 
-    scenario.applySpeedMultiplier(cfg->speed_multiplier);
-    return agv_finalize_apply_config(sim);
+    scenario.applySpeedMultiplier(cfg.speed_multiplier);
+    sim->resetRuntimeStats();
+    return true;
 }
 
 void agv_update_task_dispatch(Simulation* sim) {

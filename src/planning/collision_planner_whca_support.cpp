@@ -122,7 +122,7 @@ int pull_over_can_enter(
 }
 
 Node* reconstruct_pull_over_first_step(
-    const GridMap* map,
+    GridMap* map,
     int start_idx,
     int target_idx,
     const int* prev) {
@@ -136,10 +136,10 @@ Node* reconstruct_pull_over_first_step(
     const int remainder = cursor % (GRID_WIDTH * GRID_HEIGHT);
     const int y = remainder / GRID_WIDTH;
     const int x = remainder % GRID_WIDTH;
-    return &const_cast<GridMap*>(map)->grid[y][x];
+    return &map->grid[y][x];
 }
 
-Node* try_pull_over_via_search(const GridMap* map, const ReservationTable* table, Agent* agent) {
+Node* try_pull_over_via_search(GridMap* map, const ReservationTable* table, Agent* agent) {
     if (!map || !table || !agent || !agent->pos) return nullptr;
 
     const int t_limit = agv_current_whca_horizon();
@@ -201,7 +201,7 @@ Node* try_pull_over_via_search(const GridMap* map, const ReservationTable* table
             if (priority <= 0) continue;
 
             const PullOverCandidate candidate{
-                &const_cast<GridMap*>(map)->grid[next_y][next_x],
+                &map->grid[next_y][next_x],
                 next->is_goal ? 1 : 0,
                 pull_over_neighbor_degree(map, next),
                 (next_t * GRID_WIDTH * GRID_HEIGHT) + (next_y * GRID_WIDTH) + next_x,
@@ -682,7 +682,7 @@ void ReservationTable_seedCurrent(ReservationTable* table, AgentManager* manager
 }
 
 int ReservationTable_isOccupied(const ReservationTable* table, int t, const Node* node) {
-    if (t < 0 || t > agv_current_whca_horizon()) return TRUE;
+    if (t < 0 || t > agv_current_whca_horizon()) return true;
     return table->occ[t][node->y][node->x] != -1;
 }
 
@@ -764,7 +764,7 @@ int build_scc_mask_from_edges(const WaitEdge* edges, int count) {
     return mask;
 }
 
-Node* try_pull_over(const GridMap* map, const ReservationTable* table, Agent* agent) {
+Node* try_pull_over(GridMap* map, const ReservationTable* table, Agent* agent) {
     if (Node* searched = try_pull_over_via_search(map, table, agent)) {
         return searched;
     }
@@ -774,7 +774,7 @@ Node* try_pull_over(const GridMap* map, const ReservationTable* table, Agent* ag
         const int next_x = agent->pos->x + kDir5X[i];
         const int next_y = agent->pos->y + kDir5Y[i];
         if (!grid_is_valid_coord(next_x, next_y)) continue;
-        Node* candidate = &const_cast<GridMap*>(map)->grid[next_y][next_x];
+        Node* candidate = &map->grid[next_y][next_x];
         if (candidate->is_obstacle || candidate->is_parked) continue;
         if (candidate->reserved_by_agent != -1 && candidate->reserved_by_agent != agent->id) continue;
         if (ReservationTable_isOccupied(table, 1, candidate)) continue;

@@ -14,7 +14,7 @@ void ReservationTable_setOccupant(ReservationTable* table, int t, const Node* no
 void WHCA_adjustHorizon(int wf_edges, int scc, Logger* logger);
 void add_wait_edge(WaitEdge* edges, int* count, int from, int to, int t, CauseType cause, int x1, int y1, int x2, int y2);
 int build_scc_mask_from_edges(const WaitEdge* edges, int count);
-Node* try_pull_over(const GridMap* map, const ReservationTable* table, Agent* agent);
+Node* try_pull_over(GridMap* map, const ReservationTable* table, Agent* agent);
 int run_partial_CBS(
     AgentManager* manager,
     GridMap* map,

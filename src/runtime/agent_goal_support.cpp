@@ -48,13 +48,13 @@ public:
     explicit TemporaryParkStateScopeLocal(Node* node)
         : node_(node), restore_(node && node->is_parked) {
         if (restore_) {
-            node_->is_parked = FALSE;
+            node_->is_parked = false;
         }
     }
 
     ~TemporaryParkStateScopeLocal() {
         if (restore_) {
-            node_->is_parked = TRUE;
+            node_->is_parked = true;
         }
     }
 
@@ -73,7 +73,7 @@ public:
         if (context_.agent->pos == goal) return 0.0;
         if (goal->is_obstacle) return INF;
 
-        OwnedPtr<Pathfinder> pathfinder(pathfinder_create(context_.agent->pos, goal, context_.agent));
+        std::unique_ptr<Pathfinder> pathfinder(pathfinder_create(context_.agent->pos, goal, context_.agent));
         if (!pathfinder) return INF;
 
         pathfinder_compute_shortest_path(pathfinder.get(), context_.map, context_.agents);
@@ -93,21 +93,21 @@ struct GoalCandidateSetLocal final {
 };
 
 GoalCandidateSetLocal make_goal_candidate_set_local(
-    const GridMap* map,
+    GridMap* map,
     GoalTypeLocal type) {
     GoalCandidateSetLocal policy{};
     switch (type) {
     case GoalTypeLocal::Parking:
-        policy.nodes = std::span<Node*>(const_cast<GridMap*>(map)->goals, map->num_goals);
+        policy.nodes = std::span<Node*>(map->goals, map->num_goals);
         policy.require_parked = 0;
         break;
     case GoalTypeLocal::ParkedCar:
-        policy.nodes = std::span<Node*>(const_cast<GridMap*>(map)->goals, map->num_goals);
+        policy.nodes = std::span<Node*>(map->goals, map->num_goals);
         policy.require_parked = 1;
         policy.temporarily_unpark = true;
         break;
     case GoalTypeLocal::Charge:
-        policy.nodes = std::span<Node*>(const_cast<GridMap*>(map)->charge_stations, map->num_charge_stations);
+        policy.nodes = std::span<Node*>(map->charge_stations, map->num_charge_stations);
         break;
     case GoalTypeLocal::HomeBase:
         break;
@@ -281,7 +281,7 @@ private:
 void release_current_goal_reservation_local(Agent* agent) {
     if (!agent || !agent->goal) return;
     agent->goal->reserved_by_agent = -1;
-    agent->goal = NULL;
+    agent->goal = nullptr;
 }
 
 void maybe_request_temporary_holding_goal_local(Agent* agent, Logger* logger) {

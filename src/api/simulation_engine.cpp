@@ -1,77 +1,58 @@
 #include "agv/simulation_engine.hpp"
 
-#include "agv/sim_bridge.hpp"
+#include "agv/internal/engine_internal.hpp"
 
 #include <algorithm>
 #include <stdexcept>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 namespace agv::core {
 
 namespace {
 
-constexpr int kPathAlgoDefault = 0;
-constexpr int kPathAlgoAStar = 1;
-constexpr int kPathAlgoDStar = 2;
-constexpr int kConfigModeCustom = 0;
-constexpr int kConfigModeRealtime = 1;
-constexpr int kSummaryModeCustom = 1;
-constexpr int kSummaryModeRealtime = 2;
-constexpr int kPhasePark = 0;
-constexpr int kPhaseExit = 1;
-
-struct SimulationDeleter {
-    void operator()(Simulation* sim) const noexcept {
-        if (sim != nullptr) {
-            simulation_destroy(sim);
-        }
-    }
-};
-
-int toLegacyAlgo(PathAlgo algorithm) {
+::PathAlgo toInternalAlgo(PathAlgo algorithm) {
     switch (algorithm) {
         case PathAlgo::AStarSimple:
-            return kPathAlgoAStar;
+            return PATHALGO_ASTAR_SIMPLE;
         case PathAlgo::DStarBasic:
-            return kPathAlgoDStar;
+            return PATHALGO_DSTAR_BASIC;
         case PathAlgo::Default:
         default:
-            return kPathAlgoDefault;
+            return PATHALGO_DEFAULT;
     }
 }
 
-PathAlgo fromLegacyAlgo(int algorithm) {
+PathAlgo fromInternalAlgo(::PathAlgo algorithm) {
     switch (algorithm) {
-        case kPathAlgoAStar:
+        case PATHALGO_ASTAR_SIMPLE:
             return PathAlgo::AStarSimple;
-        case kPathAlgoDStar:
+        case PATHALGO_DSTAR_BASIC:
             return PathAlgo::DStarBasic;
-        case kPathAlgoDefault:
+        case PATHALGO_DEFAULT:
         default:
             return PathAlgo::Default;
     }
 }
 
-int toLegacyMode(SimulationMode mode) {
-    return mode == SimulationMode::Realtime ? kConfigModeRealtime : kConfigModeCustom;
+::SimulationMode toInternalMode(SimulationMode mode) {
+    return mode == SimulationMode::Realtime ? MODE_REALTIME : MODE_CUSTOM;
 }
 
-SimulationMode fromLegacyMode(int mode) {
-    return mode == kSummaryModeRealtime ? SimulationMode::Realtime : SimulationMode::Custom;
+SimulationMode fromInternalMode(::SimulationMode mode) {
+    return mode == MODE_REALTIME ? SimulationMode::Realtime : SimulationMode::Custom;
 }
 
-int toLegacyPhase(PhaseType phase) {
-    return phase == PhaseType::Exit ? kPhaseExit : kPhasePark;
+::PhaseType toInternalPhase(PhaseType phase) {
+    return phase == PhaseType::Exit ? EXIT_PHASE : PARK_PHASE;
 }
 
-MetricsSnapshot toMetricsSnapshot(const AgvRunSummary& legacy) {
+MetricsSnapshot toMetricsSnapshot(const RunSummary& legacy) {
     MetricsSnapshot snapshot;
     snapshot.seed = legacy.seed;
     snapshot.mapId = legacy.map_id;
-    snapshot.algorithm = fromLegacyAlgo(legacy.path_algo);
-    snapshot.mode = fromLegacyMode(legacy.mode);
+    snapshot.algorithm = fromInternalAlgo(legacy.path_algo);
+    snapshot.mode = fromInternalMode(legacy.mode);
     snapshot.activeAgents = legacy.active_agents;
     snapshot.recordedSteps = legacy.recorded_steps;
     snapshot.tasksCompletedTotal = legacy.tasks_completed_total;
@@ -99,21 +80,18 @@ MetricsSnapshot toMetricsSnapshot(const AgvRunSummary& legacy) {
 }  // namespace
 
 struct SimulationEngine::Impl {
-    std::unique_ptr<Simulation, SimulationDeleter> simulation;
-    AgvSimulationConfig config{};
+    std::unique_ptr<Simulation> simulation;
+    SimulationConfig config{};
     bool dirty{true};
     std::vector<char> renderBuffer;
 
     Impl()
-        : renderBuffer(static_cast<std::size_t>(kAgvRenderBufferSize), '\0') {
-        agv_default_config(&config);
+        : config(default_simulation_config()),
+          renderBuffer(static_cast<std::size_t>(DISPLAY_BUFFER_SIZE), '\0') {
     }
 
     Simulation& createFreshSimulation() {
-        simulation.reset(simulation_create());
-        if (simulation == nullptr) {
-            throw std::runtime_error("simulation_create failed");
-        }
+        simulation = std::make_unique<Simulation>();
         return *simulation;
     }
 
@@ -130,8 +108,8 @@ struct SimulationEngine::Impl {
         }
 
         createFreshSimulation();
-        if (!agv_apply_config(simulation.get(), &config)) {
-            throw std::runtime_error("agv_apply_config failed");
+        if (!apply_simulation_config(simulation.get(), config)) {
+            throw std::runtime_error("apply_simulation_config failed");
         }
 
         dirty = false;
@@ -159,21 +137,21 @@ void SimulationEngine::loadMap(int mapId) {
 }
 
 void SimulationEngine::setAlgorithm(PathAlgo algorithm) {
-    impl_->config.path_algo = toLegacyAlgo(algorithm);
+    impl_->config.path_algo = toInternalAlgo(algorithm);
     impl_->dirty = true;
 }
 
 void SimulationEngine::configureScenario(const ScenarioConfig& config) {
-    impl_->config.mode = toLegacyMode(config.mode);
+    impl_->config.mode = toInternalMode(config.mode);
     impl_->config.speed_multiplier = static_cast<float>(config.speedMultiplier);
     impl_->config.realtime_park_chance = config.realtimeParkChance;
     impl_->config.realtime_exit_chance = config.realtimeExitChance;
-    impl_->config.num_phases = std::min<int>(static_cast<int>(config.phases.size()), kAgvMaxPhases);
+    impl_->config.num_phases = std::min<int>(static_cast<int>(config.phases.size()), MAX_PHASES);
 
-    std::fill_n(impl_->config.phases, kAgvMaxPhases, AgvPhaseConfig{kPhasePark, 1});
+    std::fill(impl_->config.phases.begin(), impl_->config.phases.end(), ConfigPhase{PARK_PHASE, 1});
     for (int i = 0; i < impl_->config.num_phases; ++i) {
         const auto& phase = config.phases[static_cast<std::size_t>(i)];
-        impl_->config.phases[i].type = toLegacyPhase(phase.type);
+        impl_->config.phases[i].type = toInternalPhase(phase.type);
         impl_->config.phases[i].task_count = phase.taskCount;
     }
 
@@ -181,7 +159,7 @@ void SimulationEngine::configureScenario(const ScenarioConfig& config) {
 }
 
 void SimulationEngine::setSuppressOutput(bool suppress) {
-    impl_->config.suppress_stdout = suppress ? 1 : 0;
+    impl_->config.suppress_stdout = suppress;
     impl_->dirty = true;
 }
 
@@ -200,7 +178,7 @@ void SimulationEngine::runInteractiveConsole() {
 
     ui_enter_alt_screen();
     try {
-        simulation_run(&simulation);
+        simulation.run();
     } catch (...) {
         ui_leave_alt_screen();
         throw;
@@ -209,34 +187,32 @@ void SimulationEngine::runInteractiveConsole() {
 }
 
 void SimulationEngine::printPerformanceSummary() const {
-    simulation_print_performance_summary(&impl_->requireInitialized("simulation is not initialized"));
+    impl_->requireInitialized("simulation is not initialized").printPerformanceSummary();
 }
 
 void SimulationEngine::step() {
-    agv_execute_headless_step(&impl_->rebuildSimulationIfNeeded());
+    execute_headless_step(&impl_->rebuildSimulationIfNeeded());
 }
 
 void SimulationEngine::runUntilComplete() {
     Simulation& simulation = impl_->rebuildSimulationIfNeeded();
-    if (!agv_run_to_completion(&simulation)) {
-        throw std::runtime_error("agv_run_to_completion failed");
+    if (!run_simulation_to_completion(&simulation)) {
+        throw std::runtime_error("run_simulation_to_completion failed");
     }
 }
 
 bool SimulationEngine::isComplete() {
-    return agv_is_complete(&impl_->rebuildSimulationIfNeeded()) != 0;
+    return impl_->rebuildSimulationIfNeeded().isComplete();
 }
 
 MetricsSnapshot SimulationEngine::snapshotMetrics() {
-    AgvRunSummary legacy{};
-    agv_collect_run_summary(&impl_->rebuildSimulationIfNeeded(), &legacy);
-    return toMetricsSnapshot(legacy);
+    return toMetricsSnapshot(collect_run_summary(&impl_->rebuildSimulationIfNeeded()));
 }
 
 RenderFrame SimulationEngine::snapshotFrame(bool paused) {
-    const int written = agv_copy_render_frame(
+    const int written = copy_render_frame(
         &impl_->rebuildSimulationIfNeeded(),
-        paused ? 1 : 0,
+        paused,
         impl_->renderBuffer.data(),
         impl_->renderBuffer.size());
 

@@ -5,50 +5,11 @@
 #include <cstdio>
 #include <deque>
 #include <memory>
+#include <string>
 
 // Private engine type model.
 // This header is intentionally included from src/core/engine_orchestrator.cpp
 // after the engine-wide compile-time constants/macros are defined.
-
-template <typename T>
-class OwnedPtr final {
-public:
-    OwnedPtr() = default;
-    OwnedPtr(std::nullptr_t) {}
-    explicit OwnedPtr(std::unique_ptr<T> value) : value_(std::move(value)) {}
-    explicit OwnedPtr(T* value) : value_(value) {}
-
-    OwnedPtr(const OwnedPtr&) = delete;
-    OwnedPtr& operator=(const OwnedPtr&) = delete;
-    OwnedPtr(OwnedPtr&&) noexcept = default;
-    OwnedPtr& operator=(OwnedPtr&&) noexcept = default;
-
-    OwnedPtr& operator=(std::unique_ptr<T> value) {
-        value_ = std::move(value);
-        return *this;
-    }
-
-    OwnedPtr& operator=(T* value) {
-        value_.reset(value);
-        return *this;
-    }
-
-    OwnedPtr& operator=(std::nullptr_t) {
-        value_.reset();
-        return *this;
-    }
-
-    T* get() const { return value_.get(); }
-    T* release() { return value_.release(); }
-    void reset(T* value = nullptr) { value_.reset(value); }
-    explicit operator bool() const { return static_cast<bool>(value_); }
-    operator T* () const { return value_.get(); }
-    T* operator->() const { return value_.get(); }
-    T& operator*() const { return *value_; }
-
-private:
-    std::unique_ptr<T> value_{};
-};
 
 struct Key {
     double k1{0.0};
@@ -62,10 +23,10 @@ static inline Key make_key(double a, double b) {
 struct Node {
     int x{0};
     int y{0};
-    int is_obstacle{FALSE};
-    int is_goal{FALSE};
-    int is_temp{FALSE};
-    int is_parked{FALSE};
+    bool is_obstacle{false};
+    bool is_goal{false};
+    bool is_temp{false};
+    bool is_parked{false};
     int reserved_by_agent{-1};
 };
 
@@ -85,7 +46,7 @@ enum PhaseType { PARK_PHASE, EXIT_PHASE };
 struct DynamicPhase {
     PhaseType type{PARK_PHASE};
     int task_count{0};
-    char type_name[10]{};
+    std::string type_name{};
 };
 
 enum TaskType { TASK_NONE, TASK_PARK, TASK_EXIT };
@@ -118,7 +79,7 @@ struct SearchCell {
     double g{0.0};
     double rhs{0.0};
     Key key{};
-    int in_pq{FALSE};
+    bool in_pq{false};
     int pq_index{-1};
 };
 
@@ -204,9 +165,9 @@ struct Agent_ {
     int action_timer{0};
     AgentDir heading{DIR_NONE};
     int rotation_wait{0};
-    OwnedPtr<Pathfinder> pf{};
+    std::unique_ptr<Pathfinder> pf{};
     int stuck_steps{0};
-    int metrics_task_active{0};
+    bool metrics_task_active{false};
     int metrics_task_start_step{0};
     double metrics_distance_at_start{0.0};
     int metrics_turns_current{0};
@@ -282,9 +243,9 @@ struct RuntimeTuningState {
 
 struct RendererState {
     int render_stride{1};
-    int fast_render{0};
-    int simple_colors{0};
-    int suppress_flush{0};
+    bool fast_render{false};
+    bool simple_colors{false};
+    bool suppress_flush{false};
 
     void configureForAlgorithm(PathAlgo algo) {
         render_stride = (algo == PATHALGO_DEFAULT) ? 1 : 2;
@@ -403,10 +364,9 @@ private:
 
 class Simulation_ final {
 public:
-    Simulation_() = default;
+    Simulation_();
     ~Simulation_();
 
-    void destroyOwnedResources();
     void collectMemorySample();
     void collectMemorySampleAlgo();
     void resetRuntimeStats();
@@ -418,10 +378,14 @@ public:
     void run();
     void printPerformanceSummary() const;
 
-    OwnedPtr<GridMap> map{};
-    OwnedPtr<AgentManager> agent_manager{};
-    OwnedPtr<ScenarioManager> scenario_manager{};
-    OwnedPtr<Logger> logger{};
+    GridMap map_storage{};
+    AgentManager agent_manager_storage{};
+    ScenarioManager scenario_manager_storage{};
+    Logger logger_storage{};
+    GridMap* map{&map_storage};
+    AgentManager* agent_manager{&agent_manager_storage};
+    ScenarioManager* scenario_manager{&scenario_manager_storage};
+    Logger* logger{&logger_storage};
     int map_id{0};
     PathAlgo path_algo{PATHALGO_DEFAULT};
     Planner planner{};
@@ -477,7 +441,7 @@ public:
     unsigned long long algo_valid_expansions_total{0};
     unsigned long long algo_generated_nodes_last_step{0};
     unsigned long long algo_valid_expansions_last_step{0};
-    int suppress_stdout{FALSE};
+    bool suppress_stdout{false};
     unsigned int configured_seed{0};
 };
 

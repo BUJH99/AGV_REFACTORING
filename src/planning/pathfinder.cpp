@@ -89,7 +89,7 @@ void pq_push(Pathfinder* pf, NodePQ* pq, Node* node) {
     if (pq->size >= pq->capacity()) return;
     if (pf) pf->nodes_generated_this_call++;
     SearchCell* cell = pathfinder_cell(pf, node);
-    cell->in_pq = TRUE;
+    cell->in_pq = true;
     cell->pq_index = pq->size;
     pq->nodes[pq->size++] = node;
     heapify_up(pf, pq, pq->size - 1);
@@ -99,7 +99,7 @@ Node* pq_pop(Pathfinder* pf, NodePQ* pq) {
     if (pq->size == 0) return nullptr;
     Node* top = pq->nodes[0];
     SearchCell* top_cell = pathfinder_cell(pf, top);
-    top_cell->in_pq = FALSE;
+    top_cell->in_pq = false;
     top_cell->pq_index = -1;
     pq->size--;
     if (pq->size > 0) {
@@ -125,7 +125,7 @@ void pq_remove(Pathfinder* pf, NodePQ* pq, Node* node) {
             heapify_down(pf, pq, index);
         }
     }
-    cell->in_pq = FALSE;
+    cell->in_pq = false;
     cell->pq_index = -1;
 }
 
@@ -172,7 +172,7 @@ void reset_pathfinder_cells(Pathfinder* pf) {
         for (int x = 0; x < GRID_WIDTH; x++) {
             pf->cells[y][x].g = kPathfinderInf;
             pf->cells[y][x].rhs = kPathfinderInf;
-            pf->cells[y][x].in_pq = FALSE;
+            pf->cells[y][x].in_pq = false;
             pf->cells[y][x].pq_index = -1;
             pf->cells[y][x].key = make_key(kPathfinderInf, kPathfinderInf);
         }
@@ -202,12 +202,6 @@ Pathfinder* pathfinder_create(Node* start, Node* goal, const Agent* agent) {
         pq_push(pf, &pf->pq, goal);
     }
     return pf;
-}
-
-void pathfinder_destroy(Pathfinder* pf) {
-    if (!pf) return;
-    pq_free(&pf->pq);
-    delete pf;
 }
 
 void pathfinder_reset_goal(Pathfinder* pf, Node* new_goal) {
@@ -286,7 +280,7 @@ void pathfinder_compute_shortest_path(Pathfinder* pf, GridMap* map, const AgentM
     }
 }
 
-Node* pathfinder_get_next_step(Pathfinder* pf, const GridMap* map, const AgentManager* am, Node* current) {
+Node* pathfinder_get_next_step(Pathfinder* pf, GridMap* map, const AgentManager* am, Node* current) {
     if (!pf->goal_node || !current) return current;
     SearchCell* current_cell = pathfinder_cell(pf, current);
     if (current_cell->g >= kPathfinderInf || current == pf->goal_node) return current;
@@ -300,7 +294,7 @@ Node* pathfinder_get_next_step(Pathfinder* pf, const GridMap* map, const AgentMa
         int next_x = current->x + kDir4X[i];
         int next_y = current->y + kDir4Y[i];
         if (!grid_is_valid_coord(next_x, next_y)) continue;
-        Node* neighbor = &const_cast<GridMap*>(map)->grid[next_y][next_x];
+        Node* neighbor = &map->grid[next_y][next_x];
         if (grid_is_node_blocked(map, am, neighbor, pf->agent)) continue;
         double successor_g = pathfinder_cell(pf, neighbor)->g;
         double cost = 1.0 + successor_g;

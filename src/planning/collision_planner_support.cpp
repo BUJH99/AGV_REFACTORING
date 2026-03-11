@@ -17,7 +17,7 @@ void pathfinder_reset_goal(Pathfinder* pf, Node* new_goal);
 void pathfinder_update_start(Pathfinder* pf, Node* new_start);
 void pathfinder_notify_cell_change(Pathfinder* pf, GridMap* map, const AgentManager* am, Node* changed);
 void pathfinder_compute_shortest_path(Pathfinder* pf, GridMap* map, const AgentManager* am);
-Node* pathfinder_get_next_step(Pathfinder* pf, const GridMap* map, const AgentManager* am, Node* current_node);
+Node* pathfinder_get_next_step(Pathfinder* pf, GridMap* map, const AgentManager* am, Node* current_node);
 
 namespace {
 
@@ -58,7 +58,7 @@ struct CandidateMove final {
 
 void mark_temp_node(TempMarkList& marks, Node* node) {
     if (!node || node->is_temp) return;
-    node->is_temp = TRUE;
+    node->is_temp = true;
     if (marks.count < TEMP_MARK_MAX) {
         marks.nodes[marks.count++] = node;
     }
@@ -67,7 +67,7 @@ void mark_temp_node(TempMarkList& marks, Node* node) {
 void clear_temp_marks(TempMarkList& marks) {
     for (int i = 0; i < marks.count; ++i) {
         if (marks.nodes[i]) {
-            marks.nodes[i]->is_temp = FALSE;
+            marks.nodes[i]->is_temp = false;
         }
     }
     marks.count = 0;
@@ -77,7 +77,7 @@ void clear_temp_marks_and_notify(TempMarkList& marks, Pathfinder* pf, GridMap* m
     for (int i = 0; i < marks.count; ++i) {
         Node* node = marks.nodes[i];
         if (!node) continue;
-        node->is_temp = FALSE;
+        node->is_temp = false;
         if (pf) {
             pathfinder_notify_cell_change(pf, map, manager, node);
         }
@@ -91,7 +91,7 @@ int node_flat_index(const Node* node) {
 
 }  // namespace
 
-int best_candidate_order(Pathfinder* pf, const GridMap* map, const AgentManager* manager,
+int best_candidate_order(Pathfinder* pf, GridMap* map, const AgentManager* manager,
     Node* current, Node* goal, Node* out[5], int* out_count) {
     constexpr std::array<int, 4> kStepX = {0, 0, 1, -1};
     constexpr std::array<int, 4> kStepY = {1, -1, 0, 0};
@@ -106,7 +106,7 @@ int best_candidate_order(Pathfinder* pf, const GridMap* map, const AgentManager*
         const int next_y = current->y + kStepY[i];
         if (!grid_is_valid_coord(next_x, next_y)) continue;
 
-        Node* next = &const_cast<GridMap*>(map)->grid[next_y][next_x];
+        Node* next = &map->grid[next_y][next_x];
         if (grid_is_node_blocked(map, manager, next, pf->agent)) continue;
 
         const double successor_g = pf->cells[next->y][next->x].g;
@@ -172,10 +172,10 @@ void apply_rotation_and_step(Agent* agent, Node* current, Node* desired, Node** 
 void ensure_pathfinder_for_agent(Agent* agent) {
     if (!agent->goal) return;
     if (agent->pf == nullptr) {
-        agent->pf = pathfinder_create(agent->pos, agent->goal, agent);
+        agent->pf.reset(pathfinder_create(agent->pos, agent->goal, agent));
     } else if (agent->pf->goal_node != agent->goal) {
         agent->pf->start_node = agent->pos;
-        pathfinder_reset_goal(agent->pf, agent->goal);
+        pathfinder_reset_goal(agent->pf.get(), agent->goal);
     }
 }
 
@@ -242,7 +242,7 @@ void TempObstacleScope::markOrderBlockers(const AgentManager* manager, const int
 int temporarily_unpark_goal(Agent* agent, Pathfinder* pf, GridMap* map, const AgentManager* manager) {
     const int goal_was_parked = (agent->state == GOING_TO_COLLECT && agent->goal->is_parked);
     if (goal_was_parked) {
-        agent->goal->is_parked = FALSE;
+        agent->goal->is_parked = false;
         if (pf) {
             pathfinder_notify_cell_change(pf, map, manager, agent->goal);
         }
@@ -252,7 +252,7 @@ int temporarily_unpark_goal(Agent* agent, Pathfinder* pf, GridMap* map, const Ag
 
 void restore_temporarily_unparked_goal(Agent* agent, Pathfinder* pf, GridMap* map, const AgentManager* manager, int goal_was_parked) {
     if (!goal_was_parked) return;
-    agent->goal->is_parked = TRUE;
+    agent->goal->is_parked = true;
     if (pf) {
         pathfinder_notify_cell_change(pf, map, manager, agent->goal);
     }
@@ -261,8 +261,8 @@ void restore_temporarily_unparked_goal(Agent* agent, Pathfinder* pf, GridMap* ma
 Node* compute_ordered_pathfinder_move(Agent* agent, GridMap* map, AgentManager* manager, OrderedPlanningMetric metric_kind) {
     if (!agent || !agent->pf) return agent ? agent->pos : nullptr;
 
-    pathfinder_update_start(agent->pf, agent->pos);
-    pathfinder_compute_shortest_path(agent->pf, map, manager);
+    pathfinder_update_start(agent->pf.get(), agent->pos);
+    pathfinder_compute_shortest_path(agent->pf.get(), map, manager);
 
     if (metric_kind == ORDERED_PLANNING_ASTAR) {
         agv_accumulate_astar_step_metrics(
@@ -278,10 +278,10 @@ Node* compute_ordered_pathfinder_move(Agent* agent, GridMap* map, AgentManager* 
             agent->pf->valid_expansions_this_call);
     }
 
-    return pathfinder_get_next_step(agent->pf, map, manager, agent->pos);
+    return pathfinder_get_next_step(agent->pf.get(), map, manager, agent->pos);
 }
 
-void resolve_conflicts_by_order(const AgentManager* manager, const int order[MAX_AGENTS], Node* next_pos[MAX_AGENTS]) {
+void resolve_conflicts_by_order(AgentManager* manager, const int order[MAX_AGENTS], Node* next_pos[MAX_AGENTS]) {
     int cell_owner[GRID_WIDTH * GRID_HEIGHT];
     for (int i = 0; i < GRID_WIDTH * GRID_HEIGHT; ++i) cell_owner[i] = -1;
 
@@ -291,7 +291,7 @@ void resolve_conflicts_by_order(const AgentManager* manager, const int order[MAX
         const int next_idx = node_flat_index(next_pos[agent_id]);
         if (next_idx < 0) continue;
         if (cell_owner[next_idx] != -1) {
-            next_pos[agent_id] = const_cast<AgentManager*>(manager)->agents[agent_id].pos;
+            next_pos[agent_id] = manager->agents[agent_id].pos;
             continue;
         }
         cell_owner[next_idx] = agent_id;
@@ -313,10 +313,10 @@ void resolve_conflicts_by_order(const AgentManager* manager, const int order[MAX
         const int other = (destination_idx >= 0) ? cell_owner[destination_idx] : -1;
         if (other == -1 || other == agent_id || !next_pos[other]) continue;
         if (next_pos[other] == manager->agents[agent_id].pos) {
-            next_pos[other] = const_cast<AgentManager*>(manager)->agents[other].pos;
+            next_pos[other] = manager->agents[other].pos;
         } else if (next_pos[other] == manager->agents[other].pos &&
             next_pos[agent_id] == manager->agents[other].pos) {
-            next_pos[agent_id] = const_cast<AgentManager*>(manager)->agents[agent_id].pos;
+            next_pos[agent_id] = manager->agents[agent_id].pos;
         }
     }
 }

@@ -98,6 +98,10 @@ if (-not $compiler) {
     exit 1
 }
 $compilerDirectory = Split-Path -Path $compiler -Parent
+$outputDirectory = Join-Path $PSScriptRoot "build-run"
+$outputExePath = Join-Path $outputDirectory "agv_console.exe"
+
+New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
 
 $sources = Get-ChildItem -Path src -Filter *.cpp -Recurse | Select-Object -ExpandProperty FullName
 
@@ -111,7 +115,7 @@ $compileArgs = @(
     "-static-libstdc++",
     "-static-libgcc",
     "-o",
-    "agv_console.exe"
+    $outputExePath
 ) + $sources + @(
     "-lpsapi"
 )
@@ -124,27 +128,27 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-Copy-CompilerRuntimeDlls -CompilerPath $compiler -OutputDirectory $PWD.Path
+Copy-CompilerRuntimeDlls -CompilerPath $compiler -OutputDirectory $outputDirectory
 
 if ($Interactive) {
     if ($ExeArgs.Count -gt 0) {
-        Write-Host "Launching agv_console.exe with preset arguments in the current terminal ..." -ForegroundColor Green
+        Write-Host "Launching $outputExePath with preset arguments in the current terminal ..." -ForegroundColor Green
         Write-Host ("Args: " + ($ExeArgs -join " ")) -ForegroundColor DarkGray
     } else {
-        Write-Host "Launching agv_console.exe in the current terminal ..." -ForegroundColor Green
+        Write-Host "Launching $outputExePath in the current terminal ..." -ForegroundColor Green
     }
 
     $env:Path = "$compilerDirectory;$env:Path"
-    & ".\agv_console.exe" @ExeArgs
+    & $outputExePath @ExeArgs
     exit $LASTEXITCODE
 }
 
 if ($ExeArgs.Count -gt 0) {
-    Write-Host "Launching agv_console.exe with preset arguments in a new terminal window ..." -ForegroundColor Green
+    Write-Host "Launching $outputExePath with preset arguments in a new terminal window ..." -ForegroundColor Green
     Write-Host ("Args: " + ($ExeArgs -join " ")) -ForegroundColor DarkGray
 } else {
-    Write-Host "Launching agv_console.exe in interactive mode in a new terminal window ..." -ForegroundColor Green
+    Write-Host "Launching $outputExePath in interactive mode in a new terminal window ..." -ForegroundColor Green
 }
 
-Start-ExeInNewTerminal -ExePath ".\agv_console.exe" -WorkingDirectory $PWD.Path -ExeArguments $ExeArgs -CompilerDirectory $compilerDirectory
+Start-ExeInNewTerminal -ExePath $outputExePath -WorkingDirectory $outputDirectory -ExeArguments $ExeArgs -CompilerDirectory $compilerDirectory
 exit 0

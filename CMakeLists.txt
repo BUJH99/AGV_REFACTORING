@@ -38,6 +38,15 @@ add_executable(agv_console src/apps/console_main.cpp)
 target_link_libraries(agv_console PRIVATE agv_core)
 
 if(BUILD_TESTING)
+    add_test(
+        NAME agv_no_c_smells
+        COMMAND ${CMAKE_COMMAND}
+            -DAGV_ROOT=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/no_c_smells.cmake
+    )
+endif()
+
+if(BUILD_TESTING)
     include(FetchContent)
     FetchContent_Declare(
         googletest

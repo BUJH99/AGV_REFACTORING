@@ -70,7 +70,7 @@ inline void agent_apply_rotation_and_step_local(Agent* agent, Node* current, Nod
 }
 
 void resolve_conflicts_by_order_local(
-    const AgentManager* manager,
+    AgentManager* manager,
     const int order[MAX_AGENTS],
     Node* next_pos[MAX_AGENTS],
     StepScratch& scratch) {
@@ -82,7 +82,7 @@ void resolve_conflicts_by_order_local(
         int next_idx = node_flat_index_local(next_pos[index]);
         if (next_idx < 0) continue;
         if (scratch.cell_owner[next_idx] != -1) {
-            next_pos[index] = ((AgentManager*)manager)->agents[index].pos;
+            next_pos[index] = manager->agents[index].pos;
             continue;
         }
         scratch.cell_owner[next_idx] = index;
@@ -102,10 +102,10 @@ void resolve_conflicts_by_order_local(
         int other = (dest_idx >= 0) ? scratch.cell_owner[dest_idx] : -1;
         if (other == -1 || other == index || !next_pos[other]) continue;
         if (next_pos[other] == manager->agents[index].pos) {
-            next_pos[other] = ((AgentManager*)manager)->agents[other].pos;
+            next_pos[other] = manager->agents[other].pos;
         } else if (next_pos[other] == manager->agents[other].pos &&
             next_pos[index] == manager->agents[other].pos) {
-            next_pos[index] = ((AgentManager*)manager)->agents[index].pos;
+            next_pos[index] = manager->agents[index].pos;
         }
     }
 }
@@ -119,7 +119,7 @@ void force_idle_cleanup_local(AgentManager* manager, Simulation* sim, Logger* lo
         if (agent->state == IDLE) continue;
         if (agent->goal) {
             agent->goal->reserved_by_agent = -1;
-            agent->goal = NULL;
+            agent->goal = nullptr;
         }
         agent->pf.reset();
         agent->rotation_wait = 0;
@@ -136,9 +136,9 @@ void force_idle_cleanup_local(AgentManager* manager, Simulation* sim, Logger* lo
 struct StepExecutionFrame final {
     int phase_idx_for_step{0};
     int step_label{0};
-    int is_custom_mode{FALSE};
-    int phase_active{FALSE};
-    int cleanup_region{FALSE};
+    bool is_custom_mode{false};
+    bool phase_active{false};
+    bool cleanup_region{false};
     clock_t step_start_cpu{0};
 };
 

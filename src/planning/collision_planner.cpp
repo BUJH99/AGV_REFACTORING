@@ -26,7 +26,7 @@ void pathfinder_reset_goal(Pathfinder* pf, Node* new_goal);
 void pathfinder_update_start(Pathfinder* pf, Node* new_start);
 void pathfinder_notify_cell_change(Pathfinder* pf, GridMap* map, const AgentManager* am, Node* changed);
 void pathfinder_compute_shortest_path(Pathfinder* pf, GridMap* map, const AgentManager* am);
-Node* pathfinder_get_next_step(Pathfinder* pf, const GridMap* map, const AgentManager* am, Node* current_node);
+Node* pathfinder_get_next_step(Pathfinder* pf, GridMap* map, const AgentManager* am, Node* current_node);
 void logger_log(Logger* logger, const char* format, ...);
 
 namespace {
@@ -101,14 +101,14 @@ void run_ordered_planning_core_local(
 
         Node* desired_move = current_pos;
         ensure_pathfinder_for_agent(agent);
-        TempObstacleScope temp_scope(agent->pf, map, manager, true);
+        TempObstacleScope temp_scope(agent->pf.get(), map, manager, true);
         temp_scope.markOrderBlockers(manager, order, oi, next_pos);
-        int goal_was_parked = temporarily_unpark_goal(agent, agent->pf, map, manager);
+        int goal_was_parked = temporarily_unpark_goal(agent, agent->pf.get(), map, manager);
 
         if (agent->pf) {
             desired_move = compute_ordered_pathfinder_move(agent, map, manager, metric_kind);
         }
-        restore_temporarily_unparked_goal(agent, agent->pf, map, manager, goal_was_parked);
+        restore_temporarily_unparked_goal(agent, agent->pf.get(), map, manager, goal_was_parked);
         apply_rotation_and_step(agent, current_pos, desired_move, &next_pos[agent_id]);
     }
 
@@ -155,15 +155,15 @@ void run_planner_entry_local(
 }
 
 void agent_manager_plan_and_resolve_collisions(AgentManager* manager, GridMap* map, Logger* logger, Node* next_pos[MAX_AGENTS]) {
-    run_planner_entry_local(manager, map, logger, next_pos, agent_manager_plan_and_resolve_collisions_core, FALSE);
+    run_planner_entry_local(manager, map, logger, next_pos, agent_manager_plan_and_resolve_collisions_core, false);
 }
 
 void agent_manager_plan_and_resolve_collisions_astar(AgentManager* manager, GridMap* map, Logger* logger, Node* next_pos[MAX_AGENTS]) {
-    run_planner_entry_local(manager, map, logger, next_pos, agent_manager_plan_and_resolve_collisions_astar_core, TRUE);
+    run_planner_entry_local(manager, map, logger, next_pos, agent_manager_plan_and_resolve_collisions_astar_core, true);
 }
 
 void agent_manager_plan_and_resolve_collisions_dstar_basic(AgentManager* manager, GridMap* map, Logger* logger, Node* next_pos[MAX_AGENTS]) {
-    run_planner_entry_local(manager, map, logger, next_pos, agent_manager_plan_and_resolve_collisions_dstar_basic_core, TRUE);
+    run_planner_entry_local(manager, map, logger, next_pos, agent_manager_plan_and_resolve_collisions_dstar_basic_core, true);
 }
 
 namespace {
