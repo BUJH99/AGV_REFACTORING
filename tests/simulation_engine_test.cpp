@@ -268,6 +268,38 @@ TEST(SimulationEngineTest, InternalPathfinderReinitializeAndUpdateStartRemainSta
     EXPECT_LT(pathfinder.gCost(first_step), INF * 0.5);
 }
 
+TEST(SimulationEngineTest, InternalGoalAssignmentKeepsExactBestCandidateSelection) {
+    GridMap map;
+    initialize_empty_map(&map);
+
+    AgentManager manager;
+    Logger logger;
+    Agent* agent = initialize_pathfinder_agent(&manager, &map.grid[1][1]);
+    ASSERT_NE(agent, nullptr);
+
+    agent->goal = nullptr;
+    agent->home_base = agent->pos;
+    agent->state = AgentState::GoingToPark;
+
+    Node* direct_goal = &map.grid[5][1];
+    direct_goal->is_goal = true;
+    Node* detour_goal = &map.grid[1][5];
+    detour_goal->is_goal = true;
+
+    map.goals[0] = direct_goal;
+    map.goals[1] = detour_goal;
+    map.num_goals = 2;
+
+    map.grid[1][2].is_obstacle = true;
+    map.grid[1][3].is_obstacle = true;
+    map.grid[1][4].is_obstacle = true;
+
+    agv_set_goal_if_needed(agent, &map, &manager, &logger);
+    EXPECT_EQ(agent->goal, direct_goal);
+    ASSERT_NE(agent->goal, nullptr);
+    EXPECT_EQ(agent->goal->reserved_by_agent, agent->id);
+}
+
 TEST(SimulationEngineTest, InterleavedDefaultEnginesRemainIndependent) {
     agv::core::SimulationEngine first;
     agv::core::SimulationEngine second;

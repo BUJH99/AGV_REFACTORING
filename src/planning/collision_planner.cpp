@@ -138,7 +138,11 @@ public:
     void planStep(const PlanningContext& context, AgentNodeSlots& next_positions) const override {
         assign_goals_for_active_agents(context.agents, context.map, context.logger);
 
-        DefaultPlannerSession session(context, next_positions, scratch_);
+        if (!scratch_) {
+            scratch_ = std::make_unique<DefaultPlannerScratch>();
+        }
+
+        DefaultPlannerSession session(context, next_positions, *scratch_);
         session.execute();
         record_wf_scc_metrics(context, session.waitEdgeCount(), session.hasConflictCycle() ? 1 : 0);
     }
@@ -148,7 +152,7 @@ public:
     }
 
 private:
-    mutable DefaultPlannerScratch scratch_{};
+    mutable std::unique_ptr<DefaultPlannerScratch> scratch_{};
 };
 
 }  // namespace

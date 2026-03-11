@@ -2,6 +2,7 @@
 
 #include "agent_goal_support.hpp"
 
+#include <cmath>
 #include <optional>
 #include <span>
 
@@ -53,16 +54,21 @@ public:
         if (context_.agent->pos == goal) return 0.0;
         if (goal->is_obstacle) return INF;
 
-        std::unique_ptr<Pathfinder> pathfinder = std::make_unique<Pathfinder>(context_.agent->pos, goal, context_.agent);
-        if (!pathfinder) return INF;
+        if (!pathfinder_) {
+            pathfinder_ = std::make_unique<Pathfinder>(context_.agent->pos, goal, context_.agent);
+        } else {
+            pathfinder_->updateStart(context_.agent->pos);
+            pathfinder_->reinitializeForGoal(goal);
+        }
 
-        pathfinder->computeShortestPath(context_.map, context_.agents);
-        const double cost = pathfinder->gCost(context_.agent->pos);
+        pathfinder_->computeShortestPath(context_.map, context_.agents);
+        const double cost = pathfinder_->gCost(context_.agent->pos);
         return (cost >= INF * 0.5) ? INF : cost;
     }
 
 private:
     GoalAssignmentContextLocal context_{};
+    mutable std::unique_ptr<Pathfinder> pathfinder_{};
 };
 
 struct GoalCandidateSetLocal final {
@@ -110,6 +116,12 @@ bool goal_candidate_matches_local(
     return true;
 }
 
+double goal_candidate_lower_bound_local(const Agent* agent, const Node* node) {
+    if (!agent || !agent->pos || !node) return INF;
+    return std::fabs(static_cast<double>(agent->pos->x - node->x)) +
+        std::fabs(static_cast<double>(agent->pos->y - node->y));
+}
+
 Node* select_best_candidate_local(
     const GoalCandidateSetLocal& candidates,
     Agent* agent,
@@ -120,6 +132,7 @@ Node* select_best_candidate_local(
 
     for (Node* node : candidates.nodes) {
         if (!goal_candidate_matches_local(candidates, agent, node)) continue;
+        if (goal_candidate_lower_bound_local(agent, node) >= best_cost) continue;
 
         TemporaryParkStateScopeLocal parked_scope(candidates.temporarily_unpark ? node : nullptr);
         const double cost = evaluator.compute(node);
