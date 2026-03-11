@@ -77,23 +77,6 @@ public:
     int num_charge_stations{0};
 };
 
-struct SearchCell {
-    double g{0.0};
-    double rhs{0.0};
-    Key key{};
-    bool in_pq{false};
-    int pq_index{-1};
-};
-
-struct NodePQ {
-    std::array<Node*, GRID_WIDTH * GRID_HEIGHT> nodes{};
-    int size{0};
-
-    void clear() { size = 0; }
-    int capacity() const { return static_cast<int>(nodes.size()); }
-};
-
-struct Pathfinder_;
 struct Agent_;
 class AgentManager;
 class Logger;
@@ -101,33 +84,98 @@ class ScenarioManager;
 class Simulation_;
 
 using Agent = Agent_;
-using Pathfinder = Pathfinder_;
 
-struct Pathfinder_ {
-    Pathfinder_() = default;
-    Pathfinder_(Node* start, Node* goal, const Agent_* agent);
+struct PathfinderRunMetrics final {
+    unsigned long long nodes_expanded{0};
+    unsigned long long heap_moves{0};
+    unsigned long long generated_nodes{0};
+    unsigned long long valid_expansions{0};
+};
 
-    void resetGoal(Node* new_goal);
+class Pathfinder final {
+public:
+    Pathfinder() = default;
+    Pathfinder(Node* start, Node* goal, const Agent_* agent);
+
+    void reinitializeForGoal(Node* new_goal);
     void updateStart(Node* new_start);
     void notifyCellChange(GridMap* map, const AgentManager* am, Node* changed);
     void computeShortestPath(GridMap* map, const AgentManager* am);
     Node* getNextStep(GridMap* map, const AgentManager* am, Node* current);
 
-    NodePQ pq{};
-    SearchCell cells[GRID_HEIGHT][GRID_WIDTH]{};
-    Node* start_node{nullptr};
-    Node* goal_node{nullptr};
-    Node* last_start{nullptr};
-    double km{0.0};
-    const Agent_* agent{nullptr};
-    unsigned long long nodes_expanded_this_call{0};
-    unsigned long long heap_moves_this_call{0};
-    unsigned long long nodes_generated_this_call{0};
-    unsigned long long valid_expansions_this_call{0};
+    Node* goalNode() const { return goal_node_; }
+    const Agent_* ownerAgent() const { return agent_; }
+    double gCost(const Node* node) const;
+    const PathfinderRunMetrics& lastRunMetrics() const { return last_run_metrics_; }
+    void resetLastRunMetrics();
+
+private:
+    struct SearchCell final {
+        double g{0.0};
+        double rhs{0.0};
+        Key key{};
+        bool in_pq{false};
+        int pq_index{-1};
+    };
+
+    class NodeHeap final {
+    public:
+        void clear() { size_ = 0; }
+        int size() const { return size_; }
+        int capacity() const { return static_cast<int>(nodes_.size()); }
+        Node*& at(int index) { return nodes_[index]; }
+        Node* at(int index) const { return nodes_[index]; }
+
+    private:
+        std::array<Node*, GRID_WIDTH * GRID_HEIGHT> nodes_{};
+        int size_{0};
+
+        friend class Pathfinder;
+    };
+
+    static int compareKeys(Key lhs, Key rhs);
+    static double heuristic(const Node* lhs, const Node* rhs);
+
+    SearchCell* cell(const Node* node);
+    const SearchCell* cell(const Node* node) const;
+    Key keyFor(const Node* node) const;
+    bool heapContains(const Node* node) const;
+    Key topKey() const;
+    void pushNode(Node* node);
+    Node* popNode();
+    void removeNode(Node* node);
+    void swapHeapNodes(int lhs_index, int rhs_index);
+    void heapifyUp(int index);
+    void heapifyDown(int index);
+    Key calculateKey(const Node* node) const;
+    void updateVertex(GridMap* map, const AgentManager* am, Node* node);
+    void resetAllCells();
+    void resetCoreState(Node* start, Node* goal);
+
+    NodeHeap heap_{};
+    SearchCell cells_[GRID_HEIGHT][GRID_WIDTH]{};
+    Node* start_node_{nullptr};
+    Node* goal_node_{nullptr};
+    Node* last_start_{nullptr};
+    double km_{0.0};
+    const Agent_* agent_{nullptr};
+    PathfinderRunMetrics last_run_metrics_{};
 };
 
-struct ReservationTable {
-    int occ[MAX_WHCA_HORIZON + 1][GRID_HEIGHT][GRID_WIDTH]{};
+class ReservationTable final {
+public:
+    ReservationTable() { clear(); }
+
+    void clear();
+    void clearAgent(int agent_id, int horizon);
+    void seedCurrent(AgentManager* manager);
+    bool isOccupied(int t, const Node* node, int horizon) const;
+    int occupantAt(int t, const Node* node, int horizon) const;
+    int occupantAt(int t, int y, int x, int horizon) const;
+    void setOccupant(int t, const Node* node, int agent_id, int horizon);
+
+private:
+    int occ_[MAX_WHCA_HORIZON + 1][GRID_HEIGHT][GRID_WIDTH]{};
 };
 
 enum class CauseType { Vertex = 0, Swap = 1 };
@@ -313,6 +361,141 @@ struct AgentWorkloadSnapshot {
 
 using AgentNodeSlots = std::array<Node*, MAX_AGENTS>;
 using AgentOrder = std::array<int, MAX_AGENTS>;
+using TimedNodePlan = std::array<Node*, MAX_WHCA_HORIZON + 1>;
+
+class AgentMask final {
+public:
+    AgentMask() = default;
+    explicit AgentMask(int raw_bits)
+        : bits_(raw_bits) {}
+
+    static AgentMask all() {
+        if (MAX_AGENTS >= static_cast<int>(sizeof(int) * 8)) {
+            return AgentMask(-1);
+        }
+        return AgentMask((1 << MAX_AGENTS) - 1);
+    }
+
+    bool contains(int agent_id) const {
+        return agent_id >= 0 && agent_id < MAX_AGENTS && (bits_ & (1 << agent_id)) != 0;
+    }
+
+    void set(int agent_id) {
+        if (agent_id >= 0 && agent_id < MAX_AGENTS) {
+            bits_ |= (1 << agent_id);
+        }
+    }
+
+    void clear(int agent_id) {
+        if (agent_id >= 0 && agent_id < MAX_AGENTS) {
+            bits_ &= ~(1 << agent_id);
+        }
+    }
+
+    bool empty() const { return bits_ == 0; }
+    int raw() const { return bits_; }
+
+private:
+    int bits_{0};
+};
+
+struct OrderedMoveCandidates final {
+    std::array<Node*, 5> nodes{};
+    int count{0};
+
+    void add(Node* node) {
+        if (count < static_cast<int>(nodes.size())) {
+            nodes[count++] = node;
+        }
+    }
+
+    void clear() {
+        nodes.fill(nullptr);
+        count = 0;
+    }
+};
+
+struct WaitEdgeBuffer final {
+    std::array<WaitEdge, MAX_WAIT_EDGES> edges{};
+    int count{0};
+
+    void clear() { count = 0; }
+
+    void add(int from, int to, int t, CauseType cause, int x1, int y1, int x2, int y2) {
+        if (count >= static_cast<int>(edges.size())) return;
+        WaitEdge& edge = edges[count++];
+        edge.from_id = from;
+        edge.to_id = to;
+        edge.t = t;
+        edge.cause = cause;
+        edge.x1 = x1;
+        edge.y1 = y1;
+        edge.x2 = x2;
+        edge.y2 = y2;
+    }
+};
+
+struct ConflictGraphSummary final {
+    AgentMask scc_agents{};
+    int wait_edge_count{0};
+
+    bool hasCycle() const { return !scc_agents.empty(); }
+};
+
+struct CbsPlanBuffer final {
+    std::array<TimedNodePlan, MAX_AGENTS> plans{};
+
+    void clear() {
+        for (TimedNodePlan& plan : plans) {
+            plan.fill(nullptr);
+        }
+    }
+
+    TimedNodePlan& operator[](int agent_id) { return plans[agent_id]; }
+    const TimedNodePlan& operator[](int agent_id) const { return plans[agent_id]; }
+};
+
+struct SpaceTimeSearchBuffers final {
+    std::array<double, MAX_TOT> g{};
+    std::array<double, MAX_TOT> f{};
+    std::array<unsigned char, MAX_TOT> open{};
+    std::array<unsigned char, MAX_TOT> closed{};
+    std::array<int, MAX_TOT> prev{};
+    std::array<int, MAX_TOT> heap_nodes{};
+    std::array<int, MAX_TOT> heap_pos{};
+};
+
+struct CbsSolveResult final {
+    bool solved{false};
+    int expansions{0};
+    CbsPlanBuffer plans{};
+};
+
+struct FallbackDecision final {
+    int leader{-1};
+    AgentMask pull_over_agents{};
+    bool used_cbs{false};
+};
+
+struct DefaultPlannerScratch final {
+    WaitEdgeBuffer wait_edges{};
+    CbsPlanBuffer cbs_plans{};
+    std::array<int, MAX_CBS_GROUP> group_ids{};
+    std::array<int, MAX_CBS_GROUP> masked_group_ids{};
+    std::array<int, MAX_CBS_GROUP> fallback_group_ids{};
+    SpaceTimeSearchBuffers pull_over_search{};
+    SpaceTimeSearchBuffers cbs_search{};
+    int ext_occ[MAX_WHCA_HORIZON + 1][GRID_HEIGHT][GRID_WIDTH]{};
+    std::array<CBSNode, MAX_CBS_NODES> cbs_heap{};
+
+    void clear() {
+        wait_edges.clear();
+        cbs_plans.clear();
+        group_ids.fill(-1);
+        masked_group_ids.fill(-1);
+        fallback_group_ids.fill(-1);
+    }
+};
 
 struct StepScratch {
     AgentNodeSlots next_positions{};

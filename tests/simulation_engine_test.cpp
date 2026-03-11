@@ -176,6 +176,39 @@ bool is_charge_station_goal(const Simulation& sim, const Node* node) {
     return false;
 }
 
+void initialize_empty_map(GridMap* map) {
+    ASSERT_NE(map, nullptr);
+    map->num_goals = 0;
+    map->num_charge_stations = 0;
+    for (int y = 0; y < GRID_HEIGHT; ++y) {
+        for (int x = 0; x < GRID_WIDTH; ++x) {
+            Node& node = map->grid[y][x];
+            node.x = x;
+            node.y = y;
+            node.is_obstacle = false;
+            node.is_goal = false;
+            node.is_temp = false;
+            node.is_parked = false;
+            node.reserved_by_agent = -1;
+        }
+    }
+}
+
+Agent* initialize_pathfinder_agent(AgentManager* manager, Node* start) {
+    if (!manager || !start) {
+        return nullptr;
+    }
+    Agent* agent = &manager->agents[0];
+    agent->id = 0;
+    agent->symbol = 'A';
+    agent->pos = start;
+    agent->state = AgentState::GoingToPark;
+    agent->goal = nullptr;
+    agent->heading = AgentDir::None;
+    agent->rotation_wait = 0;
+    return agent;
+}
+
 TEST(SimulationEngineTest, SequentialEnginesStayIndependentAcrossAlgorithmsAndModes) {
     agv::core::SimulationEngine first;
     const auto first_metrics = run_headless_custom_once(first, agv::core::PathAlgo::Default);
@@ -197,6 +230,64 @@ TEST(SimulationEngineTest, SequentialEnginesStayIndependentAcrossAlgorithmsAndMo
     const auto third_metrics = third.snapshotMetrics();
     EXPECT_GE(third_metrics.tasksCompletedTotal, 1u);
     EXPECT_FALSE(third.snapshotFrame().text.empty());
+}
+
+TEST(SimulationEngineTest, InternalPathfinderReinitializeAndUpdateStartRemainStable) {
+    GridMap map;
+    initialize_empty_map(&map);
+
+    AgentManager manager;
+    Agent* agent = initialize_pathfinder_agent(&manager, &map.grid[1][1]);
+    ASSERT_NE(agent, nullptr);
+    Node* first_goal = &map.grid[1][4];
+    Node* second_goal = &map.grid[4][4];
+    first_goal->is_goal = true;
+    second_goal->is_goal = true;
+
+    Pathfinder pathfinder(agent->pos, first_goal, agent);
+    pathfinder.computeShortestPath(&map, &manager);
+    const PathfinderRunMetrics initial_metrics = pathfinder.lastRunMetrics();
+    EXPECT_EQ(pathfinder.goalNode(), first_goal);
+    EXPECT_LT(pathfinder.gCost(agent->pos), INF * 0.5);
+    EXPECT_GT(initial_metrics.nodes_expanded, 0u);
+
+    Node* first_step = pathfinder.getNextStep(&map, &manager, agent->pos);
+    ASSERT_NE(first_step, nullptr);
+    ASSERT_NE(first_step, agent->pos);
+
+    pathfinder.updateStart(first_step);
+    pathfinder.computeShortestPath(&map, &manager);
+    Node* second_step = pathfinder.getNextStep(&map, &manager, first_step);
+    EXPECT_NE(second_step, nullptr);
+    EXPECT_LT(pathfinder.gCost(first_step), INF * 0.5);
+
+    agent->pos = first_step;
+    pathfinder.reinitializeForGoal(second_goal);
+    pathfinder.computeShortestPath(&map, &manager);
+    EXPECT_EQ(pathfinder.goalNode(), second_goal);
+    EXPECT_LT(pathfinder.gCost(first_step), INF * 0.5);
+}
+
+TEST(SimulationEngineTest, InterleavedDefaultEnginesRemainIndependent) {
+    agv::core::SimulationEngine first;
+    agv::core::SimulationEngine second;
+    const auto scenario = make_realtime_scenario();
+
+    configure_engine(first, agv::core::PathAlgo::Default, scenario);
+    configure_engine(second, agv::core::PathAlgo::Default, scenario);
+
+    for (int step = 0; step < 4; ++step) {
+        first.step();
+        second.step();
+    }
+
+    const auto first_metrics = first.snapshotMetrics();
+    const auto second_metrics = second.snapshotMetrics();
+    EXPECT_EQ(first_metrics.recordedSteps, second_metrics.recordedSteps);
+    EXPECT_EQ(first_metrics.requestsCreatedTotal, second_metrics.requestsCreatedTotal);
+    EXPECT_EQ(first_metrics.tasksCompletedTotal, second_metrics.tasksCompletedTotal);
+    EXPECT_EQ(first_metrics.deadlockCount, second_metrics.deadlockCount);
+    EXPECT_DOUBLE_EQ(first_metrics.totalMovementCost, second_metrics.totalMovementCost);
 }
 
 TEST(SimulationEngineTest, InternalTaskDispatchAndPhaseAdvancementRemainStable) {

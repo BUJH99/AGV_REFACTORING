@@ -2,36 +2,18 @@
 
 #include "agv/internal/engine_internal.hpp"
 
-int default_planner_agent_is_active(const Agent* agent);
-int default_planner_agent_is_busy_at_goal(const Agent* agent);
-void default_planner_reserve_waiting_agent_path(
-    const PlanningContext& context,
-    ReservationTable* table,
-    const Agent* agent,
-    AgentNodeSlots& next_positions);
-void default_planner_plan_whca_path_for_agent(
-    const PlanningContext& context,
-    ReservationTable* table,
-    WaitEdge* wait_edges,
-    int* wait_edge_count,
-    Agent* agent,
-    AgentNodeSlots& next_positions);
-void default_planner_record_first_step_conflicts(
-    const AgentManager* manager,
-    const AgentNodeSlots& next_positions,
-    WaitEdge* wait_edges,
-    int* wait_edge_count);
-void default_planner_apply_fallbacks(
-    const PlanningContext& context,
-    AgentManager* manager,
-    ReservationTable* table,
-    int scc_mask,
-    AgentNodeSlots& next_positions,
-    int* out_fallback_leader,
-    int* out_pull_over_mask);
-void default_planner_resolve_pairwise_first_step_conflicts(
-    AgentManager* manager,
-    Logger* logger,
-    AgentNodeSlots& next_positions,
-    int fallback_leader,
-    int pull_over_mask);
+class DefaultPlannerSession final {
+public:
+    DefaultPlannerSession(const PlanningContext& context, AgentNodeSlots& next_positions, DefaultPlannerScratch& scratch);
+
+    void execute();
+    int waitEdgeCount() const;
+    bool hasConflictCycle() const;
+
+private:
+    const PlanningContext& context_;
+    AgentNodeSlots& next_positions_;
+    DefaultPlannerScratch& scratch_;
+    ReservationTable table_{};
+    ConflictGraphSummary summary_{};
+};

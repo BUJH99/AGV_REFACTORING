@@ -50,10 +50,7 @@ void reset_planner_step_metrics(Simulation* sim) {
     for (int i = 0; i < MAX_AGENTS; i++) {
         Agent* agent = &agent_manager->agents[i];
         if (!agent->pf) continue;
-        agent->pf->nodes_expanded_this_call = 0;
-        agent->pf->heap_moves_this_call = 0;
-        agent->pf->nodes_generated_this_call = 0;
-        agent->pf->valid_expansions_this_call = 0;
+        agent->pf->resetLastRunMetrics();
     }
 }
 

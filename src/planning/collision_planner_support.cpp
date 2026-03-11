@@ -79,14 +79,14 @@ int node_flat_index(const Node* node) {
 
 }  // namespace
 
-int best_candidate_order(Pathfinder* pf, GridMap* map, const AgentManager* manager,
-    Node* current, Node* goal, Node* out[5], int* out_count) {
+OrderedMoveCandidates OrderedMoveRankingPolicy::rank(Pathfinder* pf, GridMap* map, const AgentManager* manager,
+    Node* current, Node* goal) const {
     constexpr std::array<int, 4> kStepX = {0, 0, 1, -1};
     constexpr std::array<int, 4> kStepY = {1, -1, 0, 0};
 
     std::array<CandidateMove, 5> candidates{};
     int candidate_count = 0;
-    const double current_g = pf->cells[current->y][current->x].g;
+    const double current_g = pf->gCost(current);
     candidates[candidate_count++] = CandidateMove{current, current_g + 1e-6, 1e18};
 
     for (int i = 0; i < 4; ++i) {
@@ -95,9 +95,9 @@ int best_candidate_order(Pathfinder* pf, GridMap* map, const AgentManager* manag
         if (!grid_is_valid_coord(next_x, next_y)) continue;
 
         Node* next = &map->grid[next_y][next_x];
-        if (grid_is_node_blocked(map, manager, next, pf->agent)) continue;
+        if (grid_is_node_blocked(map, manager, next, pf->ownerAgent())) continue;
 
-        const double successor_g = pf->cells[next->y][next->x].g;
+        const double successor_g = pf->gCost(next);
         candidates[candidate_count++] = CandidateMove{
             next,
             1.0 + successor_g,
@@ -113,11 +113,11 @@ int best_candidate_order(Pathfinder* pf, GridMap* map, const AgentManager* manag
             return lhs.distance < rhs.distance;
         });
 
+    OrderedMoveCandidates ordered_candidates{};
     for (int i = 0; i < candidate_count; ++i) {
-        out[i] = candidates[i].node;
+        ordered_candidates.add(candidates[i].node);
     }
-    *out_count = candidate_count;
-    return candidate_count;
+    return ordered_candidates;
 }
 
 int priority_score(const Agent* agent) {
@@ -130,7 +130,7 @@ int priority_score(const Agent* agent) {
     return importance * 100 + stuck_boost - agent->id;
 }
 
-void apply_rotation_and_step(Agent* agent, Node* current, Node* desired, Node** out_next) {
+void OrderedRotationPolicy::apply(Agent* agent, Node* current, Node* desired, Node** out_next) const {
     if (!agent || !current || !out_next) return;
     *out_next = current;
     if (!desired || desired == current) return;
@@ -157,13 +157,13 @@ void apply_rotation_and_step(Agent* agent, Node* current, Node* desired, Node** 
     *out_next = desired;
 }
 
-void ensure_pathfinder_for_agent(Agent* agent) {
+void OrderedPlannerToolkit::preparePathfinder(Agent* agent) const {
     if (!agent->goal) return;
     if (agent->pf == nullptr) {
         agent->pf = std::make_unique<Pathfinder>(agent->pos, agent->goal, agent);
-    } else if (agent->pf->goal_node != agent->goal) {
-        agent->pf->start_node = agent->pos;
-        agent->pf->resetGoal(agent->goal);
+    } else if (agent->pf->goalNode() != agent->goal) {
+        agent->pf->updateStart(agent->pos);
+        agent->pf->reinitializeForGoal(agent->goal);
     }
 }
 
@@ -227,28 +227,40 @@ void TempObstacleScope::markOrderBlockers(const AgentManager* manager, const Age
     }
 }
 
-int temporarily_unpark_goal(Agent* agent, Pathfinder* pf, GridMap* map, const AgentManager* manager) {
-    const int goal_was_parked = (agent->state == AgentState::GoingToCollect && agent->goal->is_parked);
-    if (goal_was_parked) {
-        agent->goal->is_parked = false;
-        if (pf) {
-            pf->notifyCellChange(map, manager, agent->goal);
+TemporaryGoalStateScope::TemporaryGoalStateScope(Agent* agent, Pathfinder* pf, GridMap* map, const AgentManager* manager)
+    : agent_(agent),
+      pf_(pf),
+      map_(map),
+      manager_(manager),
+      restore_(agent && agent->state == AgentState::GoingToCollect && agent->goal && agent->goal->is_parked) {
+    if (restore_) {
+        agent_->goal->is_parked = false;
+        if (pf_) {
+            pf_->notifyCellChange(map_, manager_, agent_->goal);
         }
     }
-    return goal_was_parked;
 }
 
-void restore_temporarily_unparked_goal(Agent* agent, Pathfinder* pf, GridMap* map, const AgentManager* manager, int goal_was_parked) {
-    if (!goal_was_parked) return;
-    agent->goal->is_parked = true;
-    if (pf) {
-        pf->notifyCellChange(map, manager, agent->goal);
+TemporaryGoalStateScope::~TemporaryGoalStateScope() {
+    if (!restore_ || !agent_ || !agent_->goal) return;
+    agent_->goal->is_parked = true;
+    if (pf_) {
+        pf_->notifyCellChange(map_, manager_, agent_->goal);
     }
 }
 
-Node* compute_ordered_pathfinder_move(Agent* agent, GridMap* map, AgentManager* manager, OrderedPlanningMetric metric_kind) {
+OrderedMoveCandidates OrderedPlannerToolkit::rankCandidates(
+    Pathfinder* pf,
+    GridMap* map,
+    const AgentManager* manager,
+    Node* current,
+    Node* goal) const {
+    return move_ranking_.rank(pf, map, manager, current, goal);
+}
+
+Node* OrderedPlannerToolkit::computeDesiredMove(Agent* agent, GridMap* map, AgentManager* manager) const {
     if (!agent || !agent->pf) return agent ? agent->pos : nullptr;
-    (void)metric_kind;
+    (void)metric_kind_;
 
     agent->pf->updateStart(agent->pos);
     agent->pf->computeShortestPath(map, manager);
@@ -256,28 +268,31 @@ Node* compute_ordered_pathfinder_move(Agent* agent, GridMap* map, AgentManager* 
     return agent->pf->getNextStep(map, manager, agent->pos);
 }
 
-void resolve_conflicts_by_order(AgentManager* manager, const AgentOrder& order, AgentNodeSlots& next_positions) {
-    int cell_owner[GRID_WIDTH * GRID_HEIGHT];
-    for (int i = 0; i < GRID_WIDTH * GRID_HEIGHT; ++i) cell_owner[i] = -1;
+void OrderedPlannerToolkit::applyRotation(Agent* agent, Node* current, Node* desired, Node** out_next) const {
+    rotation_policy_.apply(agent, current, desired, out_next);
+}
+
+void ConflictResolutionPolicy::resolve(AgentManager* manager, const AgentOrder& order, AgentNodeSlots& next_positions) {
+    cell_owner_.fill(-1);
 
     for (int oi = 0; oi < MAX_AGENTS; ++oi) {
         const int agent_id = order[oi];
         if (!next_positions[agent_id]) continue;
         const int next_idx = node_flat_index(next_positions[agent_id]);
         if (next_idx < 0) continue;
-        if (cell_owner[next_idx] != -1) {
+        if (cell_owner_[next_idx] != -1) {
             next_positions[agent_id] = manager->agents[agent_id].pos;
             continue;
         }
-        cell_owner[next_idx] = agent_id;
+        cell_owner_[next_idx] = agent_id;
     }
 
-    for (int i = 0; i < GRID_WIDTH * GRID_HEIGHT; ++i) cell_owner[i] = -1;
+    cell_owner_.fill(-1);
     for (int i = 0; i < MAX_AGENTS; ++i) {
         if (!manager->agents[i].pos) continue;
         const int current_idx = node_flat_index(manager->agents[i].pos);
         if (current_idx >= 0) {
-            cell_owner[current_idx] = i;
+            cell_owner_[current_idx] = i;
         }
     }
 
@@ -285,7 +300,7 @@ void resolve_conflicts_by_order(AgentManager* manager, const AgentOrder& order, 
         const int agent_id = order[oi];
         if (!next_positions[agent_id]) continue;
         const int destination_idx = node_flat_index(next_positions[agent_id]);
-        const int other = (destination_idx >= 0) ? cell_owner[destination_idx] : -1;
+        const int other = (destination_idx >= 0) ? cell_owner_[destination_idx] : -1;
         if (other == -1 || other == agent_id || !next_positions[other]) continue;
         if (next_positions[other] == manager->agents[agent_id].pos) {
             next_positions[other] = manager->agents[other].pos;

@@ -57,7 +57,7 @@ public:
         if (!pathfinder) return INF;
 
         pathfinder->computeShortestPath(context_.map, context_.agents);
-        const double cost = pathfinder->cells[context_.agent->pos->y][context_.agent->pos->x].g;
+        const double cost = pathfinder->gCost(context_.agent->pos);
         return (cost >= INF * 0.5) ? INF : cost;
     }
 

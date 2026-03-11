@@ -8,16 +8,42 @@ enum class OrderedPlanningMetric {
 };
 
 int priority_score(const Agent* agent);
-void apply_rotation_and_step(Agent* agent, Node* current, Node* desired, Node** out_next);
-void ensure_pathfinder_for_agent(Agent* agent);
 void sort_agents_by_priority(AgentManager* manager, AgentOrder& order);
-int best_candidate_order(Pathfinder* pf, GridMap* map, const AgentManager* manager,
-    Node* current, Node* goal, Node* out[5], int* out_count);
 int best_in_mask(const AgentManager* manager, int mask);
-int temporarily_unpark_goal(Agent* agent, Pathfinder* pf, GridMap* map, const AgentManager* manager);
-void restore_temporarily_unparked_goal(Agent* agent, Pathfinder* pf, GridMap* map, const AgentManager* manager, int goal_was_parked);
-Node* compute_ordered_pathfinder_move(Agent* agent, GridMap* map, AgentManager* manager, OrderedPlanningMetric metric_kind);
-void resolve_conflicts_by_order(AgentManager* manager, const AgentOrder& order, AgentNodeSlots& next_positions);
+
+class ConflictResolutionPolicy final {
+public:
+    void resolve(AgentManager* manager, const AgentOrder& order, AgentNodeSlots& next_positions);
+
+private:
+    std::array<int, GRID_WIDTH * GRID_HEIGHT> cell_owner_{};
+};
+
+class TemporaryGoalStateScope final {
+public:
+    TemporaryGoalStateScope(Agent* agent, Pathfinder* pf, GridMap* map, const AgentManager* manager);
+    ~TemporaryGoalStateScope();
+
+    TemporaryGoalStateScope(const TemporaryGoalStateScope&) = delete;
+    TemporaryGoalStateScope& operator=(const TemporaryGoalStateScope&) = delete;
+
+private:
+    Agent* agent_{nullptr};
+    Pathfinder* pf_{nullptr};
+    GridMap* map_{nullptr};
+    const AgentManager* manager_{nullptr};
+    bool restore_{false};
+};
+
+class OrderedMoveRankingPolicy final {
+public:
+    OrderedMoveCandidates rank(Pathfinder* pf, GridMap* map, const AgentManager* manager, Node* current, Node* goal) const;
+};
+
+class OrderedRotationPolicy final {
+public:
+    void apply(Agent* agent, Node* current, Node* desired, Node** out_next) const;
+};
 
 class TempObstacleScope final {
 public:
@@ -36,4 +62,20 @@ private:
     GridMap* map_{nullptr};
     AgentManager* manager_{nullptr};
     bool auto_notify_{false};
+};
+
+class OrderedPlannerToolkit final {
+public:
+    explicit OrderedPlannerToolkit(OrderedPlanningMetric metric_kind)
+        : metric_kind_(metric_kind) {}
+
+    void preparePathfinder(Agent* agent) const;
+    OrderedMoveCandidates rankCandidates(Pathfinder* pf, GridMap* map, const AgentManager* manager, Node* current, Node* goal) const;
+    Node* computeDesiredMove(Agent* agent, GridMap* map, AgentManager* manager) const;
+    void applyRotation(Agent* agent, Node* current, Node* desired, Node** out_next) const;
+
+private:
+    OrderedPlanningMetric metric_kind_{OrderedPlanningMetric::DStar};
+    OrderedMoveRankingPolicy move_ranking_{};
+    OrderedRotationPolicy rotation_policy_{};
 };

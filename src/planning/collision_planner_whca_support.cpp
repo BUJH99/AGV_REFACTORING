@@ -2,18 +2,15 @@
 
 #include "collision_planner_whca_support.hpp"
 
-#include <array>
+#include <algorithm>
 #include <climits>
 #include <cmath>
-#include <cstring>
 
 namespace {
 
 constexpr double kCollisionInf = 1e18;
 constexpr int kCbsBaseExpansions = 128;
 constexpr int kCbsMaxExpansionsCap = 768;
-constexpr int kMaxCbsNodes = 1024;
-constexpr int kMaxTot = ((MAX_WHCA_HORIZON) + 1) * GRID_WIDTH * GRID_HEIGHT;
 constexpr int kTurn90Wait = 2;
 constexpr int kDir5X[5] = {0, 1, -1, 0, 0};
 constexpr int kDir5Y[5] = {0, 0, 0, 1, -1};
@@ -56,20 +53,20 @@ struct PullOverCandidate final {
     int tie_break{99};
 };
 
-struct SpaceTimeSearchBuffers final {
-    std::array<double, kMaxTot> g{};
-    std::array<double, kMaxTot> f{};
-    std::array<unsigned char, kMaxTot> open{};
-    std::array<unsigned char, kMaxTot> closed{};
-    std::array<int, kMaxTot> prev{};
-    std::array<int, kMaxTot> heap_nodes{};
-    std::array<int, kMaxTot> heap_pos{};
+struct CBSConflict final {
+    int a{0};
+    int b{0};
+    int t{0};
+    int is_edge{0};
+    int ax{0};
+    int ay{0};
+    int bx{0};
+    int by{0};
+    int apx{0};
+    int apy{0};
+    int bpx{0};
+    int bpy{0};
 };
-
-SpaceTimeSearchBuffers& search_buffers_local() {
-    static SpaceTimeSearchBuffers buffers{};
-    return buffers;
-}
 
 AgentDir dir_from_delta(int dx, int dy) {
     if (dx == 1 && dy == 0) return AgentDir::Right;
@@ -90,13 +87,13 @@ double manhattan_xy(int x1, int y1, int x2, int y2) {
         std::fabs(static_cast<double>(y1) - static_cast<double>(y2));
 }
 
-int st_index_local(int t, int y, int x) {
+int st_index(int t, int y, int x) {
     return (t * GRID_WIDTH * GRID_HEIGHT) + (y * GRID_WIDTH) + x;
 }
 
-int candidate_is_pull_over_better(const PullOverCandidate& lhs, const PullOverCandidate& rhs) {
-    if (!lhs.node) return 0;
-    if (!rhs.node) return 1;
+bool candidate_is_pull_over_better(const PullOverCandidate& lhs, const PullOverCandidate& rhs) {
+    if (!lhs.node) return false;
+    if (!rhs.node) return true;
     if (lhs.is_goal != rhs.is_goal) return lhs.is_goal > rhs.is_goal;
     if (lhs.degree != rhs.degree) return lhs.degree < rhs.degree;
     return lhs.tie_break < rhs.tie_break;
@@ -106,9 +103,9 @@ int pull_over_neighbor_degree(const GridMap* map, const Node* node) {
     if (!map || !node) return 99;
 
     int degree = 0;
-    for (int i = 1; i < 5; ++i) {
-        const int next_x = node->x + kDir5X[i];
-        const int next_y = node->y + kDir5Y[i];
+    for (int index = 1; index < 5; ++index) {
+        const int next_x = node->x + kDir5X[index];
+        const int next_y = node->y + kDir5Y[index];
         if (!grid_is_valid_coord(next_x, next_y)) continue;
         const Node* candidate = &map->grid[next_y][next_x];
         if (candidate->is_obstacle || candidate->is_parked) continue;
@@ -127,25 +124,25 @@ int pull_over_target_priority(const GridMap* map, const Node* node) {
     return 0;
 }
 
-int pull_over_can_enter(
-    const ReservationTable* table,
+bool pull_over_can_enter(
+    const ReservationTable& table,
     const Agent* agent,
     int current_t,
     const Node* current,
     const Node* next,
     int horizon) {
-    if (!table || !agent || !current || !next) return 0;
-    if (next->is_obstacle || next->is_parked) return 0;
-    if (next->reserved_by_agent != -1 && next->reserved_by_agent != agent->id) return 0;
+    if (!agent || !current || !next) return false;
+    if (next->is_obstacle || next->is_parked) return false;
+    if (next->reserved_by_agent != -1 && next->reserved_by_agent != agent->id) return false;
 
     const int next_t = current_t + 1;
-    if (ReservationTable_isOccupied(table, next_t, next, horizon)) return 0;
+    if (table.isOccupied(next_t, next, horizon)) return false;
 
-    const int previous_occupant = ReservationTable_getOccupant(table, current_t, next, horizon);
-    const int occupant_into_current = ReservationTable_getOccupant(table, next_t, current, horizon);
-    if (previous_occupant != -1 && previous_occupant == occupant_into_current) return 0;
+    const int previous_occupant = table.occupantAt(current_t, next, horizon);
+    const int occupant_into_current = table.occupantAt(next_t, current, horizon);
+    if (previous_occupant != -1 && previous_occupant == occupant_into_current) return false;
 
-    return 1;
+    return true;
 }
 
 Node* reconstruct_pull_over_first_step(
@@ -166,24 +163,28 @@ Node* reconstruct_pull_over_first_step(
     return &map->grid[y][x];
 }
 
-Node* try_pull_over_via_search(const PlanningContext& context, GridMap* map, const ReservationTable* table, Agent* agent) {
-    if (!map || !table || !agent || !agent->pos) return nullptr;
+Node* try_pull_over_via_search(
+    const PlanningContext& context,
+    GridMap* map,
+    const ReservationTable& table,
+    Agent* agent,
+    SpaceTimeSearchBuffers& buffers) {
+    if (!map || !agent || !agent->pos) return nullptr;
 
     const int t_limit = context.whcaHorizon();
     const int total = (t_limit + 1) * GRID_WIDTH * GRID_HEIGHT;
-    if (total > kMaxTot) return nullptr;
+    if (total > MAX_TOT) return nullptr;
 
-    SpaceTimeSearchBuffers& buffers = search_buffers_local();
     unsigned char* visited = buffers.open.data();
     int* prev = buffers.prev.data();
     int* queue = buffers.heap_nodes.data();
 
-    for (int i = 0; i < total; ++i) {
-        visited[i] = 0;
-        prev[i] = -1;
+    for (int index = 0; index < total; ++index) {
+        visited[index] = 0;
+        prev[index] = -1;
     }
 
-    const int start_idx = st_index_local(0, agent->pos->y, agent->pos->x);
+    const int start_idx = st_index(0, agent->pos->y, agent->pos->x);
     visited[start_idx] = 1;
 
     int queue_head = 0;
@@ -195,31 +196,31 @@ Node* try_pull_over_via_search(const PlanningContext& context, GridMap* map, con
     PullOverCandidate best_candidate{};
 
     while (queue_head < queue_tail) {
-        const int cur = queue[queue_head++];
-        const int cur_t = cur / (GRID_WIDTH * GRID_HEIGHT);
-        if (best_idx != -1 && cur_t >= best_time) break;
-        if (cur_t >= t_limit) continue;
+        const int current_idx = queue[queue_head++];
+        const int current_t = current_idx / (GRID_WIDTH * GRID_HEIGHT);
+        if (best_idx != -1 && current_t >= best_time) break;
+        if (current_t >= t_limit) continue;
 
-        const int remainder = cur % (GRID_WIDTH * GRID_HEIGHT);
-        const int cur_y = remainder / GRID_WIDTH;
-        const int cur_x = remainder % GRID_WIDTH;
-        const Node* current = &map->grid[cur_y][cur_x];
+        const int remainder = current_idx % (GRID_WIDTH * GRID_HEIGHT);
+        const int current_y = remainder / GRID_WIDTH;
+        const int current_x = remainder % GRID_WIDTH;
+        const Node* current = &map->grid[current_y][current_x];
 
         for (int dir_index = 1; dir_index <= 5; ++dir_index) {
             const int move_index = (dir_index < 5) ? dir_index : 0;
-            const int next_x = cur_x + kDir5X[move_index];
-            const int next_y = cur_y + kDir5Y[move_index];
+            const int next_x = current_x + kDir5X[move_index];
+            const int next_y = current_y + kDir5Y[move_index];
             if (!grid_is_valid_coord(next_x, next_y)) continue;
 
             const Node* next = &map->grid[next_y][next_x];
-            if (!pull_over_can_enter(table, agent, cur_t, current, next, t_limit)) continue;
+            if (!pull_over_can_enter(table, agent, current_t, current, next, t_limit)) continue;
 
-            const int next_t = cur_t + 1;
-            const int next_idx = st_index_local(next_t, next_y, next_x);
+            const int next_t = current_t + 1;
+            const int next_idx = st_index(next_t, next_y, next_x);
             if (visited[next_idx]) continue;
 
             visited[next_idx] = 1;
-            prev[next_idx] = cur;
+            prev[next_idx] = current_idx;
             queue[queue_tail++] = next_idx;
 
             if (next == agent->pos) continue;
@@ -247,44 +248,44 @@ Node* try_pull_over_via_search(const PlanningContext& context, GridMap* map, con
     return reconstruct_pull_over_first_step(map, start_idx, best_idx, prev);
 }
 
-int heap_prefer(double* fvals, int a, int b) {
-    const double fa = fvals[a];
-    const double fb = fvals[b];
-    if (fa < fb - 1e-9) return 1;
-    if (fa > fb + 1e-9) return 0;
-    return a < b;
+bool heap_prefer(double* fvals, int lhs, int rhs) {
+    const double lhs_cost = fvals[lhs];
+    const double rhs_cost = fvals[rhs];
+    if (lhs_cost < rhs_cost - 1e-9) return true;
+    if (lhs_cost > rhs_cost + 1e-9) return false;
+    return lhs < rhs;
 }
 
-void heap_swap(int* nodes, int* pos, int i, int j, unsigned long long* swap_counter) {
-    if (i == j) return;
-    const int node_i = nodes[i];
-    const int node_j = nodes[j];
-    nodes[i] = node_j;
-    nodes[j] = node_i;
-    pos[node_j] = i;
-    pos[node_i] = j;
+void heap_swap(int* nodes, int* pos, int lhs, int rhs, unsigned long long* swap_counter) {
+    if (lhs == rhs) return;
+    const int lhs_node = nodes[lhs];
+    const int rhs_node = nodes[rhs];
+    nodes[lhs] = rhs_node;
+    nodes[rhs] = lhs_node;
+    pos[rhs_node] = lhs;
+    pos[lhs_node] = rhs;
     if (swap_counter) (*swap_counter)++;
 }
 
-void heap_sift_up(int* nodes, int* pos, double* fvals, int idx, unsigned long long* swap_counter) {
-    while (idx > 0) {
-        const int parent = (idx - 1) >> 1;
-        if (!heap_prefer(fvals, nodes[idx], nodes[parent])) break;
-        heap_swap(nodes, pos, idx, parent, swap_counter);
-        idx = parent;
+void heap_sift_up(int* nodes, int* pos, double* fvals, int index, unsigned long long* swap_counter) {
+    while (index > 0) {
+        const int parent = (index - 1) >> 1;
+        if (!heap_prefer(fvals, nodes[index], nodes[parent])) break;
+        heap_swap(nodes, pos, index, parent, swap_counter);
+        index = parent;
     }
 }
 
-void heap_sift_down(int* nodes, int* pos, double* fvals, int size, int idx, unsigned long long* swap_counter) {
+void heap_sift_down(int* nodes, int* pos, double* fvals, int size, int index, unsigned long long* swap_counter) {
     while (true) {
-        const int left = (idx << 1) + 1;
+        const int left = (index << 1) + 1;
         const int right = left + 1;
-        int best = idx;
+        int best = index;
         if (left < size && heap_prefer(fvals, nodes[left], nodes[best])) best = left;
         if (right < size && heap_prefer(fvals, nodes[right], nodes[best])) best = right;
-        if (best == idx) break;
-        heap_swap(nodes, pos, idx, best, swap_counter);
-        idx = best;
+        if (best == index) break;
+        heap_swap(nodes, pos, index, best, swap_counter);
+        index = best;
     }
 }
 
@@ -310,38 +311,48 @@ int heap_pop(int* nodes, int* pos, double* fvals, int* size, unsigned long long*
 }
 
 void heap_decrease_key(int* nodes, int* pos, double* fvals, int node, unsigned long long* swap_counter) {
-    const int idx = pos[node];
-    if (idx >= 0) heap_sift_up(nodes, pos, fvals, idx, swap_counter);
+    const int index = pos[node];
+    if (index >= 0) {
+        heap_sift_up(nodes, pos, fvals, index, swap_counter);
+    }
 }
 
-int violates_constraint_for(int agent, int t_prev, int x_prev, int y_prev, int x_new, int y_new,
-    const CBSConstraint* constraints, int constraint_count) {
-    for (int i = 0; i < constraint_count; ++i) {
-        if (constraints[i].agent != agent) continue;
-        if (constraints[i].is_edge) {
-            if (constraints[i].t == t_prev &&
-                constraints[i].x == x_prev &&
-                constraints[i].y == y_prev &&
-                constraints[i].tox == x_new &&
-                constraints[i].toy == y_new) {
-                return 1;
+bool violates_constraint_for(
+    int agent,
+    int previous_t,
+    int previous_x,
+    int previous_y,
+    int next_x,
+    int next_y,
+    const CBSConstraint* constraints,
+    int constraint_count) {
+    for (int index = 0; index < constraint_count; ++index) {
+        if (constraints[index].agent != agent) continue;
+        if (constraints[index].is_edge) {
+            if (constraints[index].t == previous_t &&
+                constraints[index].x == previous_x &&
+                constraints[index].y == previous_y &&
+                constraints[index].tox == next_x &&
+                constraints[index].toy == next_y) {
+                return true;
             }
-        } else if (constraints[i].t == (t_prev + 1) &&
-            constraints[i].x == x_new &&
-            constraints[i].y == y_new) {
-            return 1;
+        } else if (constraints[index].t == (previous_t + 1) &&
+            constraints[index].x == next_x &&
+            constraints[index].y == next_y) {
+            return true;
         }
     }
-    return 0;
+    return false;
 }
 
-int st_astar_plan_single(
+bool st_astar_plan_single(
     int agent_id,
     GridMap* map,
     Node* start,
     Node* goal,
     int horizon,
     int ext_occ[MAX_WHCA_HORIZON + 1][GRID_HEIGHT][GRID_WIDTH],
+    SpaceTimeSearchBuffers& buffers,
     const CBSConstraint* constraints,
     int constraint_count,
     Node* out_plan[MAX_WHCA_HORIZON + 1],
@@ -350,7 +361,7 @@ int st_astar_plan_single(
     unsigned long long* out_heap_moves,
     unsigned long long* out_generated_nodes,
     unsigned long long* out_valid_expansions) {
-    if (!start) return 0;
+    if (!start || !map) return false;
 
     const int t_limit = horizon;
     const int width = GRID_WIDTH;
@@ -361,9 +372,8 @@ int st_astar_plan_single(
     if (out_heap_moves) *out_heap_moves = 0;
     if (out_generated_nodes) *out_generated_nodes = 0;
     if (out_valid_expansions) *out_valid_expansions = 0;
-    if (total > kMaxTot) return 0;
+    if (total > MAX_TOT) return false;
 
-    SpaceTimeSearchBuffers& buffers = search_buffers_local();
     double* g = buffers.g.data();
     double* f = buffers.f.data();
     unsigned char* open = buffers.open.data();
@@ -373,24 +383,20 @@ int st_astar_plan_single(
     int* heap_pos = buffers.heap_pos.data();
     int heap_size = 0;
 
-    for (int i = 0; i < total; ++i) {
-        g[i] = kCollisionInf;
-        f[i] = kCollisionInf;
-        open[i] = 0;
-        closed[i] = 0;
-        prev[i] = -1;
-        heap_pos[i] = -1;
+    for (int index = 0; index < total; ++index) {
+        g[index] = kCollisionInf;
+        f[index] = kCollisionInf;
+        open[index] = 0;
+        closed[index] = 0;
+        prev[index] = -1;
+        heap_pos[index] = -1;
     }
-
-#ifndef ST_INDEX
-#define ST_INDEX(t,y,x,width,height) ((t) * (width) * (height) + (y) * (width) + (x))
-#endif
 
     const int start_x = start->x;
     const int start_y = start->y;
     const int goal_x = goal ? goal->x : start_x;
     const int goal_y = goal ? goal->y : start_y;
-    const int start_idx = ST_INDEX(0, start_y, start_x, width, height);
+    const int start_idx = st_index(0, start_y, start_x);
 
     g[start_idx] = 0.0;
     f[start_idx] = goal ? manhattan_xy(start_x, start_y, goal_x, goal_y) : 0.0;
@@ -406,59 +412,61 @@ int st_astar_plan_single(
     heap_push(heap_nodes, heap_pos, f, &heap_size, start_idx, &heap_moves);
 
     while (heap_size > 0) {
-        const int cur = heap_pop(heap_nodes, heap_pos, f, &heap_size, &heap_moves);
-        open[cur] = 0;
-        closed[cur] = 1;
+        const int current = heap_pop(heap_nodes, heap_pos, f, &heap_size, &heap_moves);
+        open[current] = 0;
+        closed[current] = 1;
         nodes_expanded++;
 
-        const int cur_t = cur / (width * height);
-        const int remainder = cur % (width * height);
-        const int cur_y = remainder / width;
-        const int cur_x = remainder % width;
+        const int current_t = current / (width * height);
+        const int remainder = current % (width * height);
+        const int current_y = remainder / width;
+        const int current_x = remainder % width;
 
-        if (goal && cur_x == goal_x && cur_y == goal_y) {
-            best_idx = cur;
+        if (goal && current_x == goal_x && current_y == goal_y) {
+            best_idx = current;
             break;
         }
-        if (f[cur] < best_val) {
-            best_val = f[cur];
-            best_idx = cur;
+        if (f[current] < best_val) {
+            best_val = f[current];
+            best_idx = current;
         }
-        if (cur_t == t_limit) continue;
+        if (current_t == t_limit) continue;
 
-        for (int k = 0; k < 5; ++k) {
-            const int next_x = cur_x + kDir5X[k];
-            const int next_y = cur_y + kDir5Y[k];
-            const int next_t = cur_t + 1;
+        for (int move_index = 0; move_index < 5; ++move_index) {
+            const int next_x = current_x + kDir5X[move_index];
+            const int next_y = current_y + kDir5Y[move_index];
+            const int next_t = current_t + 1;
             if (!grid_is_valid_coord(next_x, next_y)) continue;
             if (ext_occ[next_t][next_y][next_x] != -1) continue;
-            if (ext_occ[cur_t][next_y][next_x] != -1 &&
-                ext_occ[next_t][cur_y][cur_x] == ext_occ[cur_t][next_y][next_x]) {
+            if (ext_occ[current_t][next_y][next_x] != -1 &&
+                ext_occ[next_t][current_y][current_x] == ext_occ[current_t][next_y][next_x]) {
                 continue;
             }
 
             Node* next_cell = &map->grid[next_y][next_x];
             if (next_cell->is_obstacle) continue;
-            if (violates_constraint_for(agent_id, cur_t, cur_x, cur_y, next_x, next_y, constraints, constraint_count)) continue;
+            if (violates_constraint_for(agent_id, current_t, current_x, current_y, next_x, next_y, constraints, constraint_count)) continue;
 
-            const int next_idx = ST_INDEX(next_t, next_y, next_x, width, height);
+            const int next_idx = st_index(next_t, next_y, next_x);
             if (closed[next_idx]) continue;
             generated_nodes++;
 
-            double next_g = g[cur] + 1.0;
-            if (cur_t == 0 && !(next_x == cur_x && next_y == cur_y)) {
-                const AgentDir move_heading = dir_from_delta(next_x - cur_x, next_y - cur_y);
+            double next_g = g[current] + 1.0;
+            if (current_t == 0 && !(next_x == current_x && next_y == current_y)) {
+                const AgentDir move_heading = dir_from_delta(next_x - current_x, next_y - current_y);
                 if (initial_heading != AgentDir::None) {
                     const int turn_steps = dir_turn_steps(initial_heading, move_heading);
-                    if (turn_steps == 1) next_g += static_cast<double>(kTurn90Wait);
+                    if (turn_steps == 1) {
+                        next_g += static_cast<double>(kTurn90Wait);
+                    }
                 }
             }
 
             if (next_g + 1e-9 < g[next_idx]) {
                 g[next_idx] = next_g;
-                const double heuristic = goal ? manhattan_xy(next_x, next_y, goal_x, goal_y) : 0.0;
-                f[next_idx] = next_g + heuristic;
-                prev[next_idx] = cur;
+                const double heuristic_cost = goal ? manhattan_xy(next_x, next_y, goal_x, goal_y) : 0.0;
+                f[next_idx] = next_g + heuristic_cost;
+                prev[next_idx] = current;
                 if (!open[next_idx]) {
                     open[next_idx] = 1;
                     heap_push(heap_nodes, heap_pos, f, &heap_size, next_idx, &heap_moves);
@@ -485,7 +493,7 @@ int st_astar_plan_single(
 
     if (plan_length == 0) {
         for (int t = 0; t <= t_limit; ++t) out_plan[t] = start;
-        return 1;
+        return true;
     }
 
     for (int t = 0; t < plan_length; ++t) {
@@ -499,36 +507,24 @@ int st_astar_plan_single(
 
     Node* last = out_plan[plan_length - 1 <= t_limit ? plan_length - 1 : t_limit];
     for (int t = plan_length; t <= t_limit; ++t) out_plan[t] = last;
-    return 1;
+    return true;
 }
 
-struct CBSConflict {
-    int a;
-    int b;
-    int t;
-    int is_edge;
-    int ax;
-    int ay;
-    int bx;
-    int by;
-    int apx;
-    int apy;
-    int bpx;
-    int bpy;
-};
-
-double cbs_cost_sum_adv(int ids[], int count, Node* const plans[MAX_AGENTS][MAX_WHCA_HORIZON + 1], Node* goals[MAX_AGENTS], int horizon) {
+double cbs_cost_sum_adv(const int ids[], int count, Node* const plans[MAX_AGENTS][MAX_WHCA_HORIZON + 1], Node* goals[MAX_AGENTS], int horizon) {
     constexpr double alpha = 1.0;
     constexpr double beta = 0.5;
     constexpr double gamma = 0.1;
     double sum = 0.0;
-    for (int i = 0; i < count; ++i) {
-        const int id = ids[i];
+    for (int index = 0; index < count; ++index) {
+        const int id = ids[index];
         int moves = 0;
         int waits = 0;
         for (int t = 1; t <= horizon; ++t) {
-            if (plans[id][t] != plans[id][t - 1]) moves++;
-            else waits++;
+            if (plans[id][t] != plans[id][t - 1]) {
+                moves++;
+            } else {
+                waits++;
+            }
         }
         double heuristic_residual = 0.0;
         if (goals[id]) {
@@ -540,75 +536,78 @@ double cbs_cost_sum_adv(int ids[], int count, Node* const plans[MAX_AGENTS][MAX_
     return sum;
 }
 
-int detect_first_conflict(Node* const plans[MAX_AGENTS][MAX_WHCA_HORIZON + 1], int ids[], int count, CBSConflict* out, int horizon) {
+bool detect_first_conflict(Node* const plans[MAX_AGENTS][MAX_WHCA_HORIZON + 1], const int ids[], int count, CBSConflict* out, int horizon) {
     for (int t = 1; t <= horizon; ++t) {
-        for (int i = 0; i < count; ++i) {
-            for (int j = i + 1; j < count; ++j) {
-                const int a = ids[i];
-                const int b = ids[j];
-                Node* a_t = plans[a][t];
-                Node* b_t = plans[b][t];
-                Node* a_tm1 = plans[a][t - 1];
-                Node* b_tm1 = plans[b][t - 1];
-                if (a_t == b_t) {
-                    out->a = a;
-                    out->b = b;
+        for (int lhs_index = 0; lhs_index < count; ++lhs_index) {
+            for (int rhs_index = lhs_index + 1; rhs_index < count; ++rhs_index) {
+                const int lhs = ids[lhs_index];
+                const int rhs = ids[rhs_index];
+                Node* lhs_t = plans[lhs][t];
+                Node* rhs_t = plans[rhs][t];
+                Node* lhs_prev = plans[lhs][t - 1];
+                Node* rhs_prev = plans[rhs][t - 1];
+
+                if (lhs_t == rhs_t) {
+                    out->a = lhs;
+                    out->b = rhs;
                     out->t = t;
                     out->is_edge = 0;
-                    out->ax = a_t->x;
-                    out->ay = a_t->y;
-                    out->bx = b_t->x;
-                    out->by = b_t->y;
-                    out->apx = a_tm1->x;
-                    out->apy = a_tm1->y;
-                    out->bpx = b_tm1->x;
-                    out->bpy = b_tm1->y;
-                    return 1;
+                    out->ax = lhs_t->x;
+                    out->ay = lhs_t->y;
+                    out->bx = rhs_t->x;
+                    out->by = rhs_t->y;
+                    out->apx = lhs_prev->x;
+                    out->apy = lhs_prev->y;
+                    out->bpx = rhs_prev->x;
+                    out->bpy = rhs_prev->y;
+                    return true;
                 }
-                if (a_t == b_tm1 && b_t == a_tm1) {
-                    out->a = a;
-                    out->b = b;
+
+                if (lhs_t == rhs_prev && rhs_t == lhs_prev) {
+                    out->a = lhs;
+                    out->b = rhs;
                     out->t = t;
                     out->is_edge = 1;
-                    out->ax = a_tm1->x;
-                    out->ay = a_tm1->y;
-                    out->bx = b_tm1->x;
-                    out->by = b_tm1->y;
-                    out->apx = a_tm1->x;
-                    out->apy = a_tm1->y;
-                    out->bpx = b_tm1->x;
-                    out->bpy = b_tm1->y;
-                    return 1;
+                    out->ax = lhs_prev->x;
+                    out->ay = lhs_prev->y;
+                    out->bx = rhs_prev->x;
+                    out->by = rhs_prev->y;
+                    out->apx = lhs_prev->x;
+                    out->apy = lhs_prev->y;
+                    out->bpx = rhs_prev->x;
+                    out->bpy = rhs_prev->y;
+                    return true;
                 }
             }
         }
     }
-    return 0;
+    return false;
 }
 
-void copy_ext_occ_without_group(const PlanningContext& context, const ReservationTable* base, int group_mask,
+void copy_ext_occ_without_group(
+    const PlanningContext& context,
+    const ReservationTable& base,
+    AgentMask group_mask,
     int out_occ[MAX_WHCA_HORIZON + 1][GRID_HEIGHT][GRID_WIDTH]) {
     for (int t = 0; t <= context.whcaHorizon(); ++t) {
         for (int y = 0; y < GRID_HEIGHT; ++y) {
             for (int x = 0; x < GRID_WIDTH; ++x) {
-                const int who = base->occ[t][y][x];
-                out_occ[t][y][x] = (who != -1 && (group_mask & (1 << who))) ? -1 : who;
+                const int occupant = base.occupantAt(t, y, x, context.whcaHorizon());
+                out_occ[t][y][x] = (occupant != -1 && group_mask.contains(occupant)) ? -1 : occupant;
             }
         }
     }
 }
 
 void cbs_heap_push(CBSNode* heap, int* size, const CBSNode* node) {
-    if (*size >= kMaxCbsNodes) return;
+    if (*size >= MAX_CBS_NODES) return;
     heap[*size] = *node;
     int index = *size;
     (*size)++;
     while (index > 0) {
         const int parent = (index - 1) / 2;
         if (heap[parent].cost <= heap[index].cost) break;
-        const CBSNode temp = heap[parent];
-        heap[parent] = heap[index];
-        heap[index] = temp;
+        std::swap(heap[parent], heap[index]);
         index = parent;
     }
 }
@@ -625,20 +624,19 @@ CBSNode cbs_heap_pop(CBSNode* heap, int* size) {
         if (left < *size && heap[left].cost < heap[smallest].cost) smallest = left;
         if (right < *size && heap[right].cost < heap[smallest].cost) smallest = right;
         if (smallest == index) break;
-        const CBSNode temp = heap[smallest];
-        heap[smallest] = heap[index];
-        heap[index] = temp;
+        std::swap(heap[smallest], heap[index]);
         index = smallest;
     }
     return result;
 }
 
-int cbs_plan_agent_with_metrics(
+bool cbs_plan_agent_with_metrics(
     const PlanningContext& context,
     AgentManager* manager,
     GridMap* map,
     int agent_id,
     int ext_occ[MAX_WHCA_HORIZON + 1][GRID_HEIGHT][GRID_WIDTH],
+    SpaceTimeSearchBuffers& buffers,
     const CBSConstraint* constraints,
     int constraint_count,
     Node* out_plan[MAX_WHCA_HORIZON + 1]) {
@@ -655,6 +653,7 @@ int cbs_plan_agent_with_metrics(
             agent->goal,
             context.whcaHorizon(),
             ext_occ,
+            buffers,
             constraints,
             constraint_count,
             out_plan,
@@ -663,11 +662,11 @@ int cbs_plan_agent_with_metrics(
             &heap_moves,
             &generated_nodes,
             &valid_expansions)) {
-        return 0;
+        return false;
     }
 
     accumulate_cbs_metrics(context, nodes_expanded, heap_moves, generated_nodes, valid_expansions);
-    return 1;
+    return true;
 }
 
 int cbs_expansion_budget(int group_n) {
@@ -677,51 +676,56 @@ int cbs_expansion_budget(int group_n) {
 
 }  // namespace
 
-void ReservationTable_clear(ReservationTable* table) {
+void ReservationTable::clear() {
     for (int t = 0; t <= MAX_WHCA_HORIZON; ++t) {
         for (int y = 0; y < GRID_HEIGHT; ++y) {
             for (int x = 0; x < GRID_WIDTH; ++x) {
-                table->occ[t][y][x] = -1;
+                occ_[t][y][x] = -1;
             }
         }
     }
 }
 
-void ReservationTable_clearAgent(ReservationTable* table, int agent_id, int horizon) {
-    if (!table) return;
+void ReservationTable::clearAgent(int agent_id, int horizon) {
     for (int t = 1; t <= horizon; ++t) {
         for (int y = 0; y < GRID_HEIGHT; ++y) {
             for (int x = 0; x < GRID_WIDTH; ++x) {
-                if (table->occ[t][y][x] == agent_id) {
-                    table->occ[t][y][x] = -1;
+                if (occ_[t][y][x] == agent_id) {
+                    occ_[t][y][x] = -1;
                 }
             }
         }
     }
 }
 
-void ReservationTable_seedCurrent(ReservationTable* table, AgentManager* manager) {
-    for (int i = 0; i < MAX_AGENTS; ++i) {
-        Agent* agent = &manager->agents[i];
+void ReservationTable::seedCurrent(AgentManager* manager) {
+    if (!manager) return;
+    for (int index = 0; index < MAX_AGENTS; ++index) {
+        Agent* agent = &manager->agents[index];
         if (agent->pos && agent->state != AgentState::Charging) {
-            table->occ[0][agent->pos->y][agent->pos->x] = agent->id;
+            occ_[0][agent->pos->y][agent->pos->x] = agent->id;
         }
     }
 }
 
-int ReservationTable_isOccupied(const ReservationTable* table, int t, const Node* node, int horizon) {
-    if (t < 0 || t > horizon) return true;
-    return table->occ[t][node->y][node->x] != -1;
+bool ReservationTable::isOccupied(int t, const Node* node, int horizon) const {
+    if (!node || t < 0 || t > horizon) return true;
+    return occ_[t][node->y][node->x] != -1;
 }
 
-int ReservationTable_getOccupant(const ReservationTable* table, int t, const Node* node, int horizon) {
-    if (t < 0 || t > horizon) return -1;
-    return table->occ[t][node->y][node->x];
+int ReservationTable::occupantAt(int t, const Node* node, int horizon) const {
+    if (!node) return -1;
+    return occupantAt(t, node->y, node->x, horizon);
 }
 
-void ReservationTable_setOccupant(ReservationTable* table, int t, const Node* node, int agent_id, int horizon) {
-    if (t < 0 || t > horizon) return;
-    table->occ[t][node->y][node->x] = agent_id;
+int ReservationTable::occupantAt(int t, int y, int x, int horizon) const {
+    if (t < 0 || t > horizon || !grid_is_valid_coord(x, y)) return -1;
+    return occ_[t][y][x];
+}
+
+void ReservationTable::setOccupant(int t, const Node* node, int agent_id, int horizon) {
+    if (!node || t < 0 || t > horizon) return;
+    occ_[t][node->y][node->x] = agent_id;
 }
 
 void WHCA_adjustHorizon(const PlanningContext& context, int wf_edges, int scc, Logger* logger) {
@@ -730,11 +734,11 @@ void WHCA_adjustHorizon(const PlanningContext& context, int wf_edges, int scc, L
     int conflict_score = static_cast<int>(tuning.conflict_score * 0.6) + wf_edges + (scc ? 5 : 0);
     int horizon = tuning.whca_horizon;
     const int old_horizon = horizon;
-    constexpr int high_conflict = 24;
-    constexpr int low_conflict = 10;
+    constexpr int kHighConflict = 24;
+    constexpr int kLowConflict = 10;
 
-    if (conflict_score > high_conflict && horizon < MAX_WHCA_HORIZON) horizon += 2;
-    else if (conflict_score < low_conflict && horizon > MIN_WHCA_HORIZON) horizon -= 2;
+    if (conflict_score > kHighConflict && horizon < MAX_WHCA_HORIZON) horizon += 2;
+    else if (conflict_score < kLowConflict && horizon > MIN_WHCA_HORIZON) horizon -= 2;
 
     if (horizon < MIN_WHCA_HORIZON) horizon = MIN_WHCA_HORIZON;
     if (horizon > MAX_WHCA_HORIZON) horizon = MAX_WHCA_HORIZON;
@@ -748,75 +752,69 @@ void WHCA_adjustHorizon(const PlanningContext& context, int wf_edges, int scc, L
     metrics.whca_h = horizon;
 }
 
-void add_wait_edge(WaitEdge* edges, int* count, int from, int to, int t, CauseType cause, int x1, int y1, int x2, int y2) {
-    if (*count >= kPlannerMaxWaitEdges) return;
-    edges[*count].from_id = from;
-    edges[*count].to_id = to;
-    edges[*count].t = t;
-    edges[*count].cause = cause;
-    edges[*count].x1 = x1;
-    edges[*count].y1 = y1;
-    edges[*count].x2 = x2;
-    edges[*count].y2 = y2;
-    (*count)++;
-}
-
-int build_scc_mask_from_edges(const WaitEdge* edges, int count) {
+ConflictGraphSummary analyze_conflict_graph(const WaitEdgeBuffer& wait_edges) {
     int adjacency[MAX_AGENTS][MAX_AGENTS] = {{0}};
-    for (int i = 0; i < count; ++i) {
-        const int from = edges[i].from_id;
-        const int to = edges[i].to_id;
-        if (from >= 0 && to >= 0 && from != to) adjacency[from][to] = 1;
+    for (int index = 0; index < wait_edges.count; ++index) {
+        const int from = wait_edges.edges[index].from_id;
+        const int to = wait_edges.edges[index].to_id;
+        if (from >= 0 && to >= 0 && from != to) {
+            adjacency[from][to] = 1;
+        }
     }
 
     int reach[MAX_AGENTS][MAX_AGENTS] = {{0}};
-    for (int i = 0; i < MAX_AGENTS; ++i) {
-        for (int j = 0; j < MAX_AGENTS; ++j) {
-            reach[i][j] = adjacency[i][j];
+    for (int row = 0; row < MAX_AGENTS; ++row) {
+        for (int col = 0; col < MAX_AGENTS; ++col) {
+            reach[row][col] = adjacency[row][col];
         }
     }
 
-    for (int k = 0; k < MAX_AGENTS; ++k) {
-        for (int i = 0; i < MAX_AGENTS; ++i) {
-            for (int j = 0; j < MAX_AGENTS; ++j) {
-                reach[i][j] = reach[i][j] || (reach[i][k] && reach[k][j]);
+    for (int mid = 0; mid < MAX_AGENTS; ++mid) {
+        for (int row = 0; row < MAX_AGENTS; ++row) {
+            for (int col = 0; col < MAX_AGENTS; ++col) {
+                reach[row][col] = reach[row][col] || (reach[row][mid] && reach[mid][col]);
             }
         }
     }
 
-    int mask = 0;
-    for (int i = 0; i < MAX_AGENTS; ++i) {
-        for (int j = 0; j < MAX_AGENTS; ++j) {
-            if (i != j && reach[i][j] && reach[j][i]) {
-                mask |= (1 << i);
-                mask |= (1 << j);
+    AgentMask mask{};
+    for (int row = 0; row < MAX_AGENTS; ++row) {
+        for (int col = 0; col < MAX_AGENTS; ++col) {
+            if (row != col && reach[row][col] && reach[col][row]) {
+                mask.set(row);
+                mask.set(col);
             }
         }
     }
-    return mask;
+    return ConflictGraphSummary{mask, wait_edges.count};
 }
 
-Node* try_pull_over(const PlanningContext& context, const ReservationTable* table, Agent* agent) {
+Node* try_pull_over(
+    const PlanningContext& context,
+    const ReservationTable& table,
+    Agent* agent,
+    DefaultPlannerScratch& scratch) {
     GridMap* map = context.map;
-    if (Node* searched = try_pull_over_via_search(context, map, table, agent)) {
+    if (Node* searched = try_pull_over_via_search(context, map, table, agent, scratch.pull_over_search)) {
         return searched;
     }
 
     PullOverCandidate best{};
-    for (int i = 1; i < 5; ++i) {
-        const int next_x = agent->pos->x + kDir5X[i];
-        const int next_y = agent->pos->y + kDir5Y[i];
+    for (int index = 1; index < 5; ++index) {
+        const int next_x = agent->pos->x + kDir5X[index];
+        const int next_y = agent->pos->y + kDir5Y[index];
         if (!grid_is_valid_coord(next_x, next_y)) continue;
+
         Node* candidate = &map->grid[next_y][next_x];
         if (candidate->is_obstacle || candidate->is_parked) continue;
         if (candidate->reserved_by_agent != -1 && candidate->reserved_by_agent != agent->id) continue;
-        if (ReservationTable_isOccupied(table, 1, candidate, context.whcaHorizon())) continue;
+        if (table.isOccupied(1, candidate, context.whcaHorizon())) continue;
 
         const PullOverCandidate current{
             candidate,
             candidate->is_goal ? 1 : 0,
             pull_over_neighbor_degree(map, candidate),
-            i,
+            index,
         };
         if (candidate_is_pull_over_better(current, best)) {
             best = current;
@@ -826,68 +824,90 @@ Node* try_pull_over(const PlanningContext& context, const ReservationTable* tabl
     if (best.node) return best.node;
 
     Node* current = agent->pos;
-    if (current && !ReservationTable_isOccupied(table, 1, current, context.whcaHorizon())) return current;
+    if (current && !table.isOccupied(1, current, context.whcaHorizon())) {
+        return current;
+    }
     return agent->pos;
 }
 
-int run_partial_CBS(
+CbsSolveResult run_partial_CBS(
     const PlanningContext& context,
-    int group_ids[],
+    const std::array<int, MAX_CBS_GROUP>& group_ids,
     int group_n,
-    const ReservationTable* base_rt,
-    Node* out_plans[MAX_AGENTS][MAX_WHCA_HORIZON + 1]) {
-    if (group_n <= 1) return 0;
+    const ReservationTable& base_rt,
+    DefaultPlannerScratch& scratch) {
+    CbsSolveResult result{};
+    result.plans.clear();
+    if (group_n <= 1) return result;
 
     AgentManager* manager = context.agents;
     GridMap* map = context.map;
     Logger* logger = context.logger;
     const int horizon = context.whcaHorizon();
 
-    int group_mask = 0;
-    for (int i = 0; i < group_n; ++i) group_mask |= (1 << group_ids[i]);
+    AgentMask group_mask{};
+    for (int index = 0; index < group_n; ++index) {
+        group_mask.set(group_ids[index]);
+    }
 
-    static int ext_occ[MAX_WHCA_HORIZON + 1][GRID_HEIGHT][GRID_WIDTH];
-    copy_ext_occ_without_group(context, base_rt, group_mask, ext_occ);
+    copy_ext_occ_without_group(context, base_rt, group_mask, scratch.ext_occ);
 
-    static CBSNode heap[kMaxCbsNodes];
     int heap_size = 0;
     int expansions = 0;
     const int expansion_budget = cbs_expansion_budget(group_n);
 
     CBSNode root{};
-    for (int i = 0; i < group_n; ++i) {
-        const int id = group_ids[i];
+    for (int index = 0; index < group_n; ++index) {
+        const int agent_id = group_ids[index];
         Node* plan[MAX_WHCA_HORIZON + 1];
-        if (!cbs_plan_agent_with_metrics(context, manager, map, id, ext_occ, root.cons, root.ncons, plan)) {
+        if (!cbs_plan_agent_with_metrics(
+                context,
+                manager,
+                map,
+                agent_id,
+                scratch.ext_occ,
+                scratch.cbs_search,
+                root.cons,
+                root.ncons,
+                plan)) {
             record_cbs_failure(context, expansions);
-            return 0;
+            return result;
         }
-        for (int t = 0; t <= horizon; ++t) root.plans[id][t] = plan[t];
+        for (int t = 0; t <= horizon; ++t) {
+            root.plans[agent_id][t] = plan[t];
+        }
     }
 
     Node* goals[MAX_AGENTS] = {0};
-    for (int i = 0; i < group_n; ++i) goals[group_ids[i]] = manager->agents[group_ids[i]].goal;
-    root.cost = cbs_cost_sum_adv(group_ids, group_n, root.plans, goals, horizon);
-    cbs_heap_push(heap, &heap_size, &root);
+    for (int index = 0; index < group_n; ++index) {
+        goals[group_ids[index]] = manager->agents[group_ids[index]].goal;
+    }
+    root.cost = cbs_cost_sum_adv(group_ids.data(), group_n, root.plans, goals, horizon);
+    cbs_heap_push(scratch.cbs_heap.data(), &heap_size, &root);
 
     while (heap_size > 0 && expansions < expansion_budget) {
-        const CBSNode current = cbs_heap_pop(heap, &heap_size);
+        const CBSNode current = cbs_heap_pop(scratch.cbs_heap.data(), &heap_size);
         expansions++;
         if (expansions > expansion_budget) break;
 
-        CBSConflict conflict;
-        if (!detect_first_conflict(current.plans, group_ids, group_n, &conflict, horizon)) {
-            for (int i = 0; i < group_n; ++i) {
-                const int id = group_ids[i];
-                for (int t = 0; t <= horizon; ++t) out_plans[id][t] = current.plans[id][t];
+        CBSConflict conflict{};
+        if (!detect_first_conflict(current.plans, group_ids.data(), group_n, &conflict, horizon)) {
+            for (int index = 0; index < group_n; ++index) {
+                const int agent_id = group_ids[index];
+                for (int t = 0; t <= horizon; ++t) {
+                    result.plans[agent_id][t] = current.plans[agent_id][t];
+                }
             }
             logger_log(logger, "[%sCBS%s] Partial CBS succeeded (group=%d agents, expansions=%d).", "\x1b[1;32m", "\x1b[0m", group_n, expansions);
             record_cbs_success(context, expansions);
-            return 1;
+            result.solved = true;
+            result.expansions = expansions;
+            return result;
         }
 
         for (int branch = 0; branch < 2; ++branch) {
-            if (heap_size >= kMaxCbsNodes) break;
+            if (heap_size >= MAX_CBS_NODES) break;
+
             CBSNode child = current;
             if (child.ncons >= MAX_CBS_CONS) continue;
 
@@ -915,25 +935,39 @@ int run_partial_CBS(
             }
             child.cons[child.ncons++] = constraint;
 
-            int ok = 1;
-            for (int i = 0; i < group_n; ++i) {
-                const int id = group_ids[i];
+            bool ok = true;
+            for (int index = 0; index < group_n; ++index) {
+                const int agent_id = group_ids[index];
                 Node* plan[MAX_WHCA_HORIZON + 1];
-                if (!cbs_plan_agent_with_metrics(context, manager, map, id, ext_occ, child.cons, child.ncons, plan)) {
-                    ok = 0;
+                if (!cbs_plan_agent_with_metrics(
+                        context,
+                        manager,
+                        map,
+                        agent_id,
+                        scratch.ext_occ,
+                        scratch.cbs_search,
+                        child.cons,
+                        child.ncons,
+                        plan)) {
+                    ok = false;
                     break;
                 }
-                for (int t = 0; t <= horizon; ++t) child.plans[id][t] = plan[t];
+                for (int t = 0; t <= horizon; ++t) {
+                    child.plans[agent_id][t] = plan[t];
+                }
             }
             if (!ok) continue;
 
-            for (int i = 0; i < group_n; ++i) goals[group_ids[i]] = manager->agents[group_ids[i]].goal;
-            child.cost = cbs_cost_sum_adv(group_ids, group_n, child.plans, goals, horizon);
-            cbs_heap_push(heap, &heap_size, &child);
+            for (int index = 0; index < group_n; ++index) {
+                goals[group_ids[index]] = manager->agents[group_ids[index]].goal;
+            }
+            child.cost = cbs_cost_sum_adv(group_ids.data(), group_n, child.plans, goals, horizon);
+            cbs_heap_push(scratch.cbs_heap.data(), &heap_size, &child);
         }
     }
 
     logger_log(logger, "[%sCBS%s] Partial CBS failed within the search budget (%d). Falling back to pull-over.", "\x1b[1;31m", "\x1b[0m", expansion_budget);
     record_cbs_failure(context, expansions);
-    return 0;
+    result.expansions = expansions;
+    return result;
 }
