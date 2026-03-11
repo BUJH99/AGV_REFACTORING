@@ -317,6 +317,29 @@ TEST(SimulationEngineTest, InternalStepScratchTouchedCellOwnerResetRemainsStable
     EXPECT_EQ(scratch.touched_cell_count, 0);
 }
 
+TEST(SimulationEngineTest, InternalReservationTableTouchedClearRemainsStable) {
+    GridMap map;
+    initialize_empty_map(&map);
+
+    ReservationTable table;
+    Node* stay = &map.grid[1][1];
+    Node* future = &map.grid[2][2];
+
+    table.setOccupant(0, stay, 3, MAX_WHCA_HORIZON);
+    table.setOccupant(2, future, 5, MAX_WHCA_HORIZON);
+
+    EXPECT_EQ(table.occupantAt(0, stay, MAX_WHCA_HORIZON), 3);
+    EXPECT_EQ(table.occupantAt(2, future, MAX_WHCA_HORIZON), 5);
+
+    table.clearAgent(5, MAX_WHCA_HORIZON);
+    EXPECT_EQ(table.occupantAt(0, stay, MAX_WHCA_HORIZON), 3);
+    EXPECT_EQ(table.occupantAt(2, future, MAX_WHCA_HORIZON), -1);
+
+    table.clear();
+    EXPECT_EQ(table.occupantAt(0, stay, MAX_WHCA_HORIZON), -1);
+    EXPECT_EQ(table.occupantAt(2, future, MAX_WHCA_HORIZON), -1);
+}
+
 TEST(SimulationEngineTest, InterleavedDefaultEnginesRemainIndependent) {
     agv::core::SimulationEngine first;
     agv::core::SimulationEngine second;

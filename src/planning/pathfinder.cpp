@@ -30,6 +30,17 @@ double Pathfinder::heuristic(const Node* lhs, const Node* rhs) {
     return manhattan_distance(lhs, rhs);
 }
 
+Pathfinder::SearchCell Pathfinder::makeInactiveSearchCell() {
+    SearchCell cell{};
+    cell.g = kPathfinderInf;
+    cell.rhs = kPathfinderInf;
+    cell.key = make_key(kPathfinderInf, kPathfinderInf);
+    cell.in_pq = false;
+    cell.pq_index = -1;
+    cell.generation = 0;
+    return cell;
+}
+
 Pathfinder::Pathfinder(Node* start, Node* goal, const Agent_* agent)
     : agent_(agent) {
     resetCoreState(start, goal);
@@ -162,11 +173,26 @@ void Pathfinder::resetLastRunMetrics() {
 }
 
 Pathfinder::SearchCell* Pathfinder::cell(const Node* node) {
-    return node ? &cells_[node->y][node->x] : nullptr;
+    if (!node) return nullptr;
+
+    SearchCell* search_cell = &cells_[node->y][node->x];
+    if (search_cell->generation != generation_) {
+        *search_cell = makeInactiveSearchCell();
+        search_cell->generation = generation_;
+    }
+    return search_cell;
 }
 
 const Pathfinder::SearchCell* Pathfinder::cell(const Node* node) const {
-    return node ? &cells_[node->y][node->x] : nullptr;
+    if (!node) return nullptr;
+
+    const SearchCell* search_cell = &cells_[node->y][node->x];
+    if (search_cell->generation == generation_) {
+        return search_cell;
+    }
+
+    static const SearchCell kInactiveSearchCell = makeInactiveSearchCell();
+    return &kInactiveSearchCell;
 }
 
 Key Pathfinder::keyFor(const Node* node) const {
@@ -321,11 +347,7 @@ void Pathfinder::updateVertex(GridMap* map, const AgentManager* am, Node* node) 
 void Pathfinder::resetAllCells() {
     for (int y = 0; y < GRID_HEIGHT; ++y) {
         for (int x = 0; x < GRID_WIDTH; ++x) {
-            cells_[y][x].g = kPathfinderInf;
-            cells_[y][x].rhs = kPathfinderInf;
-            cells_[y][x].in_pq = false;
-            cells_[y][x].pq_index = -1;
-            cells_[y][x].key = make_key(kPathfinderInf, kPathfinderInf);
+            cells_[y][x] = makeInactiveSearchCell();
         }
     }
 }
@@ -337,7 +359,11 @@ void Pathfinder::resetCoreState(Node* start, Node* goal) {
     km_ = 0.0;
     heap_.clear();
     resetLastRunMetrics();
-    resetAllCells();
+    generation_++;
+    if (generation_ == 0) {
+        generation_ = 1;
+        resetAllCells();
+    }
 
     if (!goal) return;
 

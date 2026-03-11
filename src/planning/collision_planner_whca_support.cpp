@@ -351,7 +351,7 @@ bool st_astar_plan_single(
     Node* start,
     Node* goal,
     int horizon,
-    int ext_occ[MAX_WHCA_HORIZON + 1][GRID_HEIGHT][GRID_WIDTH],
+    std::int16_t ext_occ[MAX_WHCA_HORIZON + 1][GRID_HEIGHT][GRID_WIDTH],
     SpaceTimeSearchBuffers& buffers,
     const CBSConstraint* constraints,
     int constraint_count,
@@ -588,12 +588,12 @@ void copy_ext_occ_without_group(
     const PlanningContext& context,
     const ReservationTable& base,
     AgentMask group_mask,
-    int out_occ[MAX_WHCA_HORIZON + 1][GRID_HEIGHT][GRID_WIDTH]) {
+    std::int16_t out_occ[MAX_WHCA_HORIZON + 1][GRID_HEIGHT][GRID_WIDTH]) {
     for (int t = 0; t <= context.whcaHorizon(); ++t) {
         for (int y = 0; y < GRID_HEIGHT; ++y) {
             for (int x = 0; x < GRID_WIDTH; ++x) {
                 const int occupant = base.occupantAt(t, y, x, context.whcaHorizon());
-                out_occ[t][y][x] = (occupant != -1 && group_mask.contains(occupant)) ? -1 : occupant;
+                out_occ[t][y][x] = static_cast<std::int16_t>((occupant != -1 && group_mask.contains(occupant)) ? -1 : occupant);
             }
         }
     }
@@ -635,7 +635,7 @@ bool cbs_plan_agent_with_metrics(
     AgentManager* manager,
     GridMap* map,
     int agent_id,
-    int ext_occ[MAX_WHCA_HORIZON + 1][GRID_HEIGHT][GRID_WIDTH],
+    std::int16_t ext_occ[MAX_WHCA_HORIZON + 1][GRID_HEIGHT][GRID_WIDTH],
     SpaceTimeSearchBuffers& buffers,
     const CBSConstraint* constraints,
     int constraint_count,
@@ -676,24 +676,53 @@ int cbs_expansion_budget(int group_n) {
 
 }  // namespace
 
-void ReservationTable::clear() {
-    for (int t = 0; t <= MAX_WHCA_HORIZON; ++t) {
-        for (int y = 0; y < GRID_HEIGHT; ++y) {
-            for (int x = 0; x < GRID_WIDTH; ++x) {
-                occ_[t][y][x] = -1;
-            }
-        }
+ReservationTable::ReservationTable() {
+    occ_.fill(-1);
+    touched_bits_.fill(0);
+}
+
+int ReservationTable::flatIndex(int t, int y, int x) {
+    return (t * GRID_WIDTH * GRID_HEIGHT) + (y * GRID_WIDTH) + x;
+}
+
+void ReservationTable::clearTouchedEntries() {
+    for (int i = 0; i < touched_count_; ++i) {
+        const int index = touched_indices_[i];
+        occ_[index] = -1;
+        touched_bits_[index / 64] &= ~(std::uint64_t{1} << (index % 64));
+    }
+    touched_count_ = 0;
+}
+
+void ReservationTable::rememberTouchedIndex(int index) {
+    if (index < 0 || index >= static_cast<int>(occ_.size())) {
+        return;
+    }
+
+    const std::uint64_t bit = std::uint64_t{1} << (index % 64);
+    std::uint64_t& word = touched_bits_[index / 64];
+    if ((word & bit) != 0) {
+        return;
+    }
+
+    word |= bit;
+    if (touched_count_ < static_cast<int>(touched_indices_.size())) {
+        touched_indices_[touched_count_++] = static_cast<std::uint16_t>(index);
     }
 }
 
+void ReservationTable::clear() {
+    clearTouchedEntries();
+}
+
 void ReservationTable::clearAgent(int agent_id, int horizon) {
-    for (int t = 1; t <= horizon; ++t) {
-        for (int y = 0; y < GRID_HEIGHT; ++y) {
-            for (int x = 0; x < GRID_WIDTH; ++x) {
-                if (occ_[t][y][x] == agent_id) {
-                    occ_[t][y][x] = -1;
-                }
-            }
+    const int t_limit = std::min(horizon, MAX_WHCA_HORIZON);
+    for (int i = 0; i < touched_count_; ++i) {
+        const int index = touched_indices_[i];
+        const int t = index / (GRID_WIDTH * GRID_HEIGHT);
+        if (t < 1 || t > t_limit) continue;
+        if (occ_[index] == agent_id) {
+            occ_[index] = -1;
         }
     }
 }
@@ -703,14 +732,14 @@ void ReservationTable::seedCurrent(AgentManager* manager) {
     for (int index = 0; index < MAX_AGENTS; ++index) {
         Agent* agent = &manager->agents[index];
         if (agent->pos && agent->state != AgentState::Charging) {
-            occ_[0][agent->pos->y][agent->pos->x] = agent->id;
+            setOccupant(0, agent->pos, agent->id, 0);
         }
     }
 }
 
 bool ReservationTable::isOccupied(int t, const Node* node, int horizon) const {
     if (!node || t < 0 || t > horizon) return true;
-    return occ_[t][node->y][node->x] != -1;
+    return occ_[flatIndex(t, node->y, node->x)] != -1;
 }
 
 int ReservationTable::occupantAt(int t, const Node* node, int horizon) const {
@@ -720,12 +749,14 @@ int ReservationTable::occupantAt(int t, const Node* node, int horizon) const {
 
 int ReservationTable::occupantAt(int t, int y, int x, int horizon) const {
     if (t < 0 || t > horizon || !grid_is_valid_coord(x, y)) return -1;
-    return occ_[t][y][x];
+    return occ_[flatIndex(t, y, x)];
 }
 
 void ReservationTable::setOccupant(int t, const Node* node, int agent_id, int horizon) {
     if (!node || t < 0 || t > horizon) return;
-    occ_[t][node->y][node->x] = agent_id;
+    const int index = flatIndex(t, node->y, node->x);
+    rememberTouchedIndex(index);
+    occ_[index] = static_cast<std::int16_t>(agent_id);
 }
 
 void WHCA_adjustHorizon(const PlanningContext& context, int wf_edges, int scc, Logger* logger) {

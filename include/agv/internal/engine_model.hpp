@@ -3,6 +3,7 @@
 #include "agv/internal/text_format.hpp"
 
 #include <array>
+#include <cstdint>
 #include <deque>
 #include <memory>
 #include <random>
@@ -116,6 +117,7 @@ private:
         Key key{};
         bool in_pq{false};
         int pq_index{-1};
+        std::uint16_t generation{0};
     };
 
     class NodeHeap final {
@@ -135,6 +137,7 @@ private:
 
     static int compareKeys(Key lhs, Key rhs);
     static double heuristic(const Node* lhs, const Node* rhs);
+    static SearchCell makeInactiveSearchCell();
 
     SearchCell* cell(const Node* node);
     const SearchCell* cell(const Node* node) const;
@@ -160,11 +163,12 @@ private:
     double km_{0.0};
     const Agent_* agent_{nullptr};
     PathfinderRunMetrics last_run_metrics_{};
+    std::uint16_t generation_{1};
 };
 
 class ReservationTable final {
 public:
-    ReservationTable() { clear(); }
+    ReservationTable();
 
     void clear();
     void clearAgent(int agent_id, int horizon);
@@ -175,7 +179,14 @@ public:
     void setOccupant(int t, const Node* node, int agent_id, int horizon);
 
 private:
-    int occ_[MAX_WHCA_HORIZON + 1][GRID_HEIGHT][GRID_WIDTH]{};
+    static int flatIndex(int t, int y, int x);
+    void clearTouchedEntries();
+    void rememberTouchedIndex(int index);
+
+    std::array<std::int16_t, MAX_TOT> occ_{};
+    std::array<std::uint16_t, MAX_TOT> touched_indices_{};
+    std::array<std::uint64_t, (MAX_TOT + 63) / 64> touched_bits_{};
+    int touched_count_{0};
 };
 
 enum class CauseType { Vertex = 0, Swap = 1 };
@@ -486,7 +497,7 @@ struct DefaultPlannerScratch final {
     std::array<int, MAX_CBS_GROUP> fallback_group_ids{};
     SpaceTimeSearchBuffers pull_over_search{};
     SpaceTimeSearchBuffers cbs_search{};
-    int ext_occ[MAX_WHCA_HORIZON + 1][GRID_HEIGHT][GRID_WIDTH]{};
+    std::int16_t ext_occ[MAX_WHCA_HORIZON + 1][GRID_HEIGHT][GRID_WIDTH]{};
     std::array<CBSNode, MAX_CBS_NODES> cbs_heap{};
 
     void clear() {
