@@ -169,7 +169,16 @@ void finish_parking_goal_local(
     agent->pf.reset();
 }
 
-void finish_return_home_empty_local(Logger* logger, Simulation* sim, Agent* agent) {
+void finish_return_home_empty_local(Logger* logger, Simulation* sim, Agent* agent, Node* reached) {
+    if (!agent) return;
+    if (agent->home_base && reached && reached != agent->home_base) {
+        logger_log(logger, "[%sInfo%s] Agent %c reached a temporary holding goal at (%d,%d). Resuming the return home path.",
+            C_CYN, C_NRM, agent->symbol, reached->x, reached->y);
+        agent->pf.reset();
+        agent->stuck_steps = 0;
+        return;
+    }
+
     logger_log(logger, "[%sInfo%s] Agent %c returned home after parking.", C_CYN, C_NRM, agent->symbol);
     agent->state = IDLE;
     agent->pf.reset();
@@ -221,7 +230,7 @@ void complete_agent_goal_local(
         finish_parking_goal_local(agents, scenario, map, logger, sim, agent, reached);
         break;
     case RETURNING_HOME_EMPTY:
-        finish_return_home_empty_local(logger, sim, agent);
+        finish_return_home_empty_local(logger, sim, agent, reached);
         break;
     case GOING_TO_COLLECT:
         finish_collect_goal_local(agents, map, logger, agent, reached);

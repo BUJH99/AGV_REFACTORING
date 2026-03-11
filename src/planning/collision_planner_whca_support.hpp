@@ -5,6 +5,7 @@
 constexpr int kPlannerMaxWaitEdges = 128;
 
 void ReservationTable_clear(ReservationTable* table);
+void ReservationTable_clearAgent(ReservationTable* table, int agent_id);
 void ReservationTable_seedCurrent(ReservationTable* table, AgentManager* manager);
 int ReservationTable_isOccupied(const ReservationTable* table, int t, const Node* node);
 int ReservationTable_getOccupant(const ReservationTable* table, int t, const Node* node);

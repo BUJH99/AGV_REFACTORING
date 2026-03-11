@@ -27,6 +27,8 @@ void pathfinder_compute_shortest_path(Pathfinder* pf, GridMap* map, const AgentM
 
 namespace {
 
+constexpr int kReturnHomeHoldingGoalStuckSteps = 12;
+
 enum class GoalTypeLocal {
     Parking,
     ParkedCar,
@@ -195,6 +197,12 @@ public:
 
     Node* resolveGoalForCurrentState() const {
         if (!context_.agent) return nullptr;
+        if (context_.agent->state == RETURNING_HOME_EMPTY &&
+            context_.agent->stuck_steps >= kReturnHomeHoldingGoalStuckSteps) {
+            if (Node* holding_goal = selectTemporaryHoldingGoal()) {
+                return holding_goal;
+            }
+        }
         const std::optional<GoalTypeLocal> goal_type = goal_type_for_state_local(context_.agent->state);
         if (!goal_type.has_value()) return nullptr;
         return selectBestGoal(*goal_type, nullptr);
@@ -231,6 +239,18 @@ public:
     }
 
 private:
+    Node* selectTemporaryHoldingGoal() const {
+        const GoalCandidateSetLocal candidates = make_goal_candidate_set_local(context_.map, GoalTypeLocal::Parking);
+        const PathCostEvaluatorLocal evaluator(context_);
+        double best_cost = INF;
+        Node* best = select_best_candidate_local(candidates, context_.agent, evaluator, &best_cost);
+        if (best) {
+            logger_log(context_.logger, "[%sPlan%s] Agent %c selected temporary holding goal (%d,%d) (cost %.1f)",
+                C_CYN, C_NRM, context_.agent->symbol, best->x, best->y, best_cost);
+        }
+        return best;
+    }
+
     Node* selectBestGoal(GoalTypeLocal type, double* out_cost) const {
         if (type == GoalTypeLocal::HomeBase) {
             const PathCostEvaluatorLocal evaluator(context_);
@@ -264,6 +284,21 @@ void release_current_goal_reservation_local(Agent* agent) {
     agent->goal = NULL;
 }
 
+void maybe_request_temporary_holding_goal_local(Agent* agent, Logger* logger) {
+    if (!agent ||
+        agent->state != RETURNING_HOME_EMPTY ||
+        agent->stuck_steps < kReturnHomeHoldingGoalStuckSteps ||
+        !agent->goal ||
+        agent->goal != agent->home_base) {
+        return;
+    }
+
+    logger_log(logger, "[%sPlan%s] Agent %c is stuck while returning home. Reassigning to a temporary holding goal.",
+        C_CYN, C_NRM, agent->symbol);
+    release_current_goal_reservation_local(agent);
+    agent->pf.reset();
+}
+
 void maybe_switch_to_charge_mode_local(Agent* agent, Logger* logger) {
     if (!agent) return;
     if (agent->state != RETURNING_HOME_EMPTY ||
@@ -292,7 +327,6 @@ Node* agent_runtime_select_best_charge_station(Agent* agent, GridMap* map, Agent
 
 void agent_runtime_assign_goal_if_needed(Agent* agent, GridMap* map, AgentManager* agents, Logger* logger) {
     if (!agent) return;
-    if (!agent_needs_goal_assignment_local(agent)) return;
 
     if (!agent->pos) {
         agent->goal = nullptr;
@@ -301,6 +335,8 @@ void agent_runtime_assign_goal_if_needed(Agent* agent, GridMap* map, AgentManage
     }
 
     maybe_switch_to_charge_mode_local(agent, logger);
+    maybe_request_temporary_holding_goal_local(agent, logger);
+    if (!agent_needs_goal_assignment_local(agent)) return;
     if (agent->state == IDLE || agent->state == CHARGING || agent->goal) return;
 
     GoalAssignmentPolicyLocal policy(GoalAssignmentContextLocal{agent, map, agents, logger});

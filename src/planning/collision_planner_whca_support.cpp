@@ -3,6 +3,7 @@
 #include "collision_planner_whca_support.hpp"
 
 #include <array>
+#include <climits>
 #include <cmath>
 #include <cstring>
 
@@ -14,12 +15,20 @@ void logger_log(Logger* logger, const char* format, ...);
 namespace {
 
 constexpr double kCollisionInf = 1e18;
-constexpr int kCbsMaxExpansions = 128;
-constexpr int kMaxCbsNodes = 256;
+constexpr int kCbsBaseExpansions = 128;
+constexpr int kCbsMaxExpansionsCap = 768;
+constexpr int kMaxCbsNodes = 1024;
 constexpr int kMaxTot = ((MAX_WHCA_HORIZON) + 1) * GRID_WIDTH * GRID_HEIGHT;
 constexpr int kTurn90Wait = 2;
 constexpr int kDir5X[5] = {0, 1, -1, 0, 0};
 constexpr int kDir5Y[5] = {0, 0, 0, 1, -1};
+
+struct PullOverCandidate final {
+    Node* node{nullptr};
+    int is_goal{0};
+    int degree{99};
+    int tie_break{99};
+};
 
 struct SpaceTimeSearchBuffers final {
     std::array<double, kMaxTot> g{};
@@ -53,6 +62,162 @@ int dir_turn_steps(AgentDir from, AgentDir to) {
 double manhattan_xy(int x1, int y1, int x2, int y2) {
     return std::fabs(static_cast<double>(x1) - static_cast<double>(x2)) +
         std::fabs(static_cast<double>(y1) - static_cast<double>(y2));
+}
+
+int st_index_local(int t, int y, int x) {
+    return (t * GRID_WIDTH * GRID_HEIGHT) + (y * GRID_WIDTH) + x;
+}
+
+int candidate_is_pull_over_better(const PullOverCandidate& lhs, const PullOverCandidate& rhs) {
+    if (!lhs.node) return 0;
+    if (!rhs.node) return 1;
+    if (lhs.is_goal != rhs.is_goal) return lhs.is_goal > rhs.is_goal;
+    if (lhs.degree != rhs.degree) return lhs.degree < rhs.degree;
+    return lhs.tie_break < rhs.tie_break;
+}
+
+int pull_over_neighbor_degree(const GridMap* map, const Node* node) {
+    if (!map || !node) return 99;
+
+    int degree = 0;
+    for (int i = 1; i < 5; ++i) {
+        const int next_x = node->x + kDir5X[i];
+        const int next_y = node->y + kDir5Y[i];
+        if (!grid_is_valid_coord(next_x, next_y)) continue;
+        const Node* candidate = &map->grid[next_y][next_x];
+        if (candidate->is_obstacle || candidate->is_parked) continue;
+        degree++;
+    }
+    return degree;
+}
+
+int pull_over_target_priority(const GridMap* map, const Node* node) {
+    if (!map || !node) return 0;
+    if (node->is_goal && !node->is_parked) return 3;
+
+    const int degree = pull_over_neighbor_degree(map, node);
+    if (degree <= 1) return 2;
+    if (degree == 2) return 1;
+    return 0;
+}
+
+int pull_over_can_enter(
+    const ReservationTable* table,
+    const Agent* agent,
+    int current_t,
+    const Node* current,
+    const Node* next) {
+    if (!table || !agent || !current || !next) return 0;
+    if (next->is_obstacle || next->is_parked) return 0;
+    if (next->reserved_by_agent != -1 && next->reserved_by_agent != agent->id) return 0;
+
+    const int next_t = current_t + 1;
+    if (ReservationTable_isOccupied(table, next_t, next)) return 0;
+
+    const int previous_occupant = ReservationTable_getOccupant(table, current_t, next);
+    const int occupant_into_current = ReservationTable_getOccupant(table, next_t, current);
+    if (previous_occupant != -1 && previous_occupant == occupant_into_current) return 0;
+
+    return 1;
+}
+
+Node* reconstruct_pull_over_first_step(
+    const GridMap* map,
+    int start_idx,
+    int target_idx,
+    const int* prev) {
+    if (!map || !prev || target_idx < 0) return nullptr;
+
+    int cursor = target_idx;
+    while (prev[cursor] != -1 && prev[cursor] != start_idx) {
+        cursor = prev[cursor];
+    }
+
+    const int remainder = cursor % (GRID_WIDTH * GRID_HEIGHT);
+    const int y = remainder / GRID_WIDTH;
+    const int x = remainder % GRID_WIDTH;
+    return &const_cast<GridMap*>(map)->grid[y][x];
+}
+
+Node* try_pull_over_via_search(const GridMap* map, const ReservationTable* table, Agent* agent) {
+    if (!map || !table || !agent || !agent->pos) return nullptr;
+
+    const int t_limit = agv_current_whca_horizon();
+    const int total = (t_limit + 1) * GRID_WIDTH * GRID_HEIGHT;
+    if (total > kMaxTot) return nullptr;
+
+    SpaceTimeSearchBuffers& buffers = search_buffers_local();
+    unsigned char* visited = buffers.open.data();
+    int* prev = buffers.prev.data();
+    int* queue = buffers.heap_nodes.data();
+
+    for (int i = 0; i < total; ++i) {
+        visited[i] = 0;
+        prev[i] = -1;
+    }
+
+    const int start_idx = st_index_local(0, agent->pos->y, agent->pos->x);
+    visited[start_idx] = 1;
+
+    int queue_head = 0;
+    int queue_tail = 0;
+    queue[queue_tail++] = start_idx;
+
+    int best_idx = -1;
+    int best_time = INT_MAX;
+    PullOverCandidate best_candidate{};
+
+    while (queue_head < queue_tail) {
+        const int cur = queue[queue_head++];
+        const int cur_t = cur / (GRID_WIDTH * GRID_HEIGHT);
+        if (best_idx != -1 && cur_t >= best_time) break;
+        if (cur_t >= t_limit) continue;
+
+        const int remainder = cur % (GRID_WIDTH * GRID_HEIGHT);
+        const int cur_y = remainder / GRID_WIDTH;
+        const int cur_x = remainder % GRID_WIDTH;
+        const Node* current = &map->grid[cur_y][cur_x];
+
+        for (int dir_index = 1; dir_index <= 5; ++dir_index) {
+            const int move_index = (dir_index < 5) ? dir_index : 0;
+            const int next_x = cur_x + kDir5X[move_index];
+            const int next_y = cur_y + kDir5Y[move_index];
+            if (!grid_is_valid_coord(next_x, next_y)) continue;
+
+            const Node* next = &map->grid[next_y][next_x];
+            if (!pull_over_can_enter(table, agent, cur_t, current, next)) continue;
+
+            const int next_t = cur_t + 1;
+            const int next_idx = st_index_local(next_t, next_y, next_x);
+            if (visited[next_idx]) continue;
+
+            visited[next_idx] = 1;
+            prev[next_idx] = cur;
+            queue[queue_tail++] = next_idx;
+
+            if (next == agent->pos) continue;
+
+            const int priority = pull_over_target_priority(map, next);
+            if (priority <= 0) continue;
+
+            const PullOverCandidate candidate{
+                &const_cast<GridMap*>(map)->grid[next_y][next_x],
+                next->is_goal ? 1 : 0,
+                pull_over_neighbor_degree(map, next),
+                (next_t * GRID_WIDTH * GRID_HEIGHT) + (next_y * GRID_WIDTH) + next_x,
+            };
+
+            if (best_idx == -1 || next_t < best_time ||
+                (next_t == best_time && candidate_is_pull_over_better(candidate, best_candidate))) {
+                best_idx = next_idx;
+                best_time = next_t;
+                best_candidate = candidate;
+            }
+        }
+    }
+
+    if (best_idx == -1) return nullptr;
+    return reconstruct_pull_over_first_step(map, start_idx, best_idx, prev);
 }
 
 int heap_prefer(double* fvals, int a, int b) {
@@ -477,6 +642,11 @@ int cbs_plan_agent_with_metrics(
     return 1;
 }
 
+int cbs_expansion_budget(int group_n) {
+    const int scaled = kCbsBaseExpansions + std::max(0, group_n - 2) * 96;
+    return std::min(kCbsMaxExpansionsCap, scaled);
+}
+
 }  // namespace
 
 void ReservationTable_clear(ReservationTable* table) {
@@ -484,6 +654,19 @@ void ReservationTable_clear(ReservationTable* table) {
         for (int y = 0; y < GRID_HEIGHT; ++y) {
             for (int x = 0; x < GRID_WIDTH; ++x) {
                 table->occ[t][y][x] = -1;
+            }
+        }
+    }
+}
+
+void ReservationTable_clearAgent(ReservationTable* table, int agent_id) {
+    if (!table) return;
+    for (int t = 1; t <= agv_current_whca_horizon(); ++t) {
+        for (int y = 0; y < GRID_HEIGHT; ++y) {
+            for (int x = 0; x < GRID_WIDTH; ++x) {
+                if (table->occ[t][y][x] == agent_id) {
+                    table->occ[t][y][x] = -1;
+                }
             }
         }
     }
@@ -582,19 +765,35 @@ int build_scc_mask_from_edges(const WaitEdge* edges, int count) {
 }
 
 Node* try_pull_over(const GridMap* map, const ReservationTable* table, Agent* agent) {
-    for (int i = 0; i < 5; ++i) {
+    if (Node* searched = try_pull_over_via_search(map, table, agent)) {
+        return searched;
+    }
+
+    PullOverCandidate best{};
+    for (int i = 1; i < 5; ++i) {
         const int next_x = agent->pos->x + kDir5X[i];
         const int next_y = agent->pos->y + kDir5Y[i];
         if (!grid_is_valid_coord(next_x, next_y)) continue;
         Node* candidate = &const_cast<GridMap*>(map)->grid[next_y][next_x];
-        if (candidate == agent->pos) {
-            if (!ReservationTable_isOccupied(table, 1, candidate)) return candidate;
-            continue;
-        }
         if (candidate->is_obstacle || candidate->is_parked) continue;
         if (candidate->reserved_by_agent != -1 && candidate->reserved_by_agent != agent->id) continue;
-        if (!ReservationTable_isOccupied(table, 1, candidate)) return candidate;
+        if (ReservationTable_isOccupied(table, 1, candidate)) continue;
+
+        const PullOverCandidate current{
+            candidate,
+            candidate->is_goal ? 1 : 0,
+            pull_over_neighbor_degree(map, candidate),
+            i,
+        };
+        if (candidate_is_pull_over_better(current, best)) {
+            best = current;
+        }
     }
+
+    if (best.node) return best.node;
+
+    Node* current = agent->pos;
+    if (current && !ReservationTable_isOccupied(table, 1, current)) return current;
     return agent->pos;
 }
 
@@ -617,6 +816,7 @@ int run_partial_CBS(
     static CBSNode heap[kMaxCbsNodes];
     int heap_size = 0;
     int expansions = 0;
+    const int expansion_budget = cbs_expansion_budget(group_n);
 
     CBSNode root;
     std::memset(&root, 0, sizeof(root));
@@ -635,10 +835,10 @@ int run_partial_CBS(
     root.cost = cbs_cost_sum_adv(group_ids, group_n, root.plans, goals, agv_current_whca_horizon());
     cbs_heap_push(heap, &heap_size, &root);
 
-    while (heap_size > 0 && expansions < kCbsMaxExpansions) {
+    while (heap_size > 0 && expansions < expansion_budget) {
         const CBSNode current = cbs_heap_pop(heap, &heap_size);
         expansions++;
-        if (expansions > kCbsMaxExpansions) break;
+        if (expansions > expansion_budget) break;
 
         CBSConflict conflict;
         if (!detect_first_conflict(current.plans, group_ids, group_n, &conflict, agv_current_whca_horizon())) {
@@ -699,7 +899,7 @@ int run_partial_CBS(
         }
     }
 
-    logger_log(logger, "[%sCBS%s] Partial CBS failed within the search budget. Falling back to pull-over.", "\x1b[1;31m", "\x1b[0m");
+    logger_log(logger, "[%sCBS%s] Partial CBS failed within the search budget (%d). Falling back to pull-over.", "\x1b[1;31m", "\x1b[0m", expansion_budget);
     agv_record_cbs_failure(expansions);
     return 0;
 }

@@ -61,9 +61,11 @@ void agent_manager_plan_and_resolve_collisions_core(AgentManager* m, GridMap* ma
     const int scc_mask = build_scc_mask_from_edges(wf_edges, wf_cnt);
     agv_record_wf_scc_metrics(wf_cnt, scc_mask ? 1 : 0);
 
-    default_planner_apply_fallbacks(m, map, lg, &rt, scc_mask, next_pos);
+    int fallback_leader = -1;
+    int pull_over_mask = 0;
+    default_planner_apply_fallbacks(m, map, lg, &rt, scc_mask, next_pos, &fallback_leader, &pull_over_mask);
 
-    default_planner_resolve_pairwise_first_step_conflicts(m, lg, next_pos);
+    default_planner_resolve_pairwise_first_step_conflicts(m, lg, next_pos, fallback_leader, pull_over_mask);
 
     WHCA_adjustHorizon(wf_cnt, scc_mask ? 1 : 0, lg);
 }

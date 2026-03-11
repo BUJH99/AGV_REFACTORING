@@ -19,6 +19,9 @@ void pathfinder_compute_shortest_path(Pathfinder* pf, GridMap* map, const AgentM
 namespace {
 
 constexpr int kMaxCbsGroup = 8;
+constexpr int kReturnHomeEscapePriorityStuck = 20;
+constexpr int kReturnHomeEscapeBoost = 250;
+constexpr int kReturnHomeBayMoveBoost = 1000;
 
 void reserve_goal_tail_local(ReservationTable* table, int start_step, Node* goal, int agent_id, Node* plan[MAX_WHCA_HORIZON + 1]) {
     for (int step = start_step; step <= agv_current_whca_horizon(); ++step) {
@@ -61,18 +64,31 @@ void apply_cbs_solution_local(const int group_ids[], int group_size, Node* cbs_p
 int apply_pull_over_fallback_local(
     AgentManager* manager,
     GridMap* map,
-    const ReservationTable* table,
+    ReservationTable* table,
     const int group_ids[],
     int group_size,
     int leader_mask,
-    Node* next_pos[MAX_AGENTS]) {
+    Node* next_pos[MAX_AGENTS],
+    int* out_pull_over_mask) {
     const int leader = best_in_mask(manager, leader_mask);
+    if (out_pull_over_mask) *out_pull_over_mask = 0;
+
+    for (int group_index = 0; group_index < group_size; ++group_index) {
+        const int agent_id = group_ids[group_index];
+        if (agent_id == leader) continue;
+        ReservationTable_clearAgent(table, agent_id);
+    }
+
     for (int group_index = 0; group_index < group_size; ++group_index) {
         const int agent_id = group_ids[group_index];
         if (agent_id == leader) continue;
         Node* pull_over = try_pull_over(map, table, &manager->agents[agent_id]);
         if (pull_over) {
             next_pos[agent_id] = pull_over;
+            ReservationTable_setOccupant(table, 1, pull_over, agent_id);
+            if (out_pull_over_mask && pull_over != manager->agents[agent_id].pos) {
+                *out_pull_over_mask |= (1 << agent_id);
+            }
         }
     }
     return leader;
@@ -89,6 +105,29 @@ int all_active_agents_waiting_local(const AgentManager* manager, Node* next_pos[
     return 1;
 }
 
+int is_return_home_escape_move_local(const Agent* agent, Node* next) {
+    return agent &&
+        next &&
+        agent->state == RETURNING_HOME_EMPTY &&
+        next != agent->pos &&
+        next->is_goal &&
+        !next->is_parked;
+}
+
+int conflict_priority_local(const Agent* agent, Node* next) {
+    if (!agent) return -999999;
+
+    int score = priority_score(agent);
+    if (agent->state == RETURNING_HOME_EMPTY &&
+        agent->stuck_steps >= kReturnHomeEscapePriorityStuck) {
+        score += kReturnHomeEscapeBoost;
+        if (is_return_home_escape_move_local(agent, next)) {
+            score += kReturnHomeBayMoveBoost;
+        }
+    }
+    return score;
+}
+
 class FallbackResolutionPolicyLocal final {
 public:
     FallbackResolutionPolicyLocal(
@@ -96,8 +135,16 @@ public:
         GridMap* map,
         Logger* logger,
         ReservationTable* table,
-        Node* next_pos[MAX_AGENTS])
-        : manager_(manager), map_(map), logger_(logger), table_(table), next_pos_(next_pos) {}
+        Node* next_pos[MAX_AGENTS],
+        int* fallback_leader,
+        int* pull_over_mask)
+        : manager_(manager),
+          map_(map),
+          logger_(logger),
+          table_(table),
+          next_pos_(next_pos),
+          fallback_leader_(fallback_leader),
+          pull_over_mask_(pull_over_mask) {}
 
     void handleSccMask(int scc_mask) const {
         if (!scc_mask) return;
@@ -113,8 +160,9 @@ public:
             return;
         }
 
-        const int leader = apply_pull_over_fallback_local(manager_, map_, table_, group_ids, group_n, scc_mask, next_pos_);
+        const int leader = apply_pull_over_fallback_local(manager_, map_, table_, group_ids, group_n, scc_mask, next_pos_, pull_over_mask_);
         if (leader >= 0) {
+            if (fallback_leader_) *fallback_leader_ = leader;
             logger_log(logger_, "[%sWFG%s] SCC detected: leader=%c commits, others pull over.",
                 C_B_YEL, C_NRM, manager_->agents[leader].symbol);
         }
@@ -145,7 +193,9 @@ public:
             return;
         }
 
-        apply_pull_over_fallback_local(manager_, map_, table_, group_ids, group_n, 0x3FF, next_pos_);
+        const int all_agents_mask = (MAX_AGENTS >= static_cast<int>(sizeof(int) * 8)) ? -1 : ((1 << MAX_AGENTS) - 1);
+        const int leader = apply_pull_over_fallback_local(manager_, map_, table_, group_ids, group_n, all_agents_mask, next_pos_, pull_over_mask_);
+        if (fallback_leader_) *fallback_leader_ = leader;
         logger_log(logger_, "[%sWFG%s] Deadlock fallback: leader-only move, others pull-over.", C_B_YEL, C_NRM);
     }
 
@@ -155,6 +205,8 @@ private:
     Logger* logger_{nullptr};
     ReservationTable* table_{nullptr};
     Node** next_pos_{nullptr};
+    int* fallback_leader_{nullptr};
+    int* pull_over_mask_{nullptr};
 };
 
 }  // namespace
@@ -284,8 +336,20 @@ void default_planner_apply_fallbacks(
     Logger* logger,
     ReservationTable* table,
     int scc_mask,
-    Node* next_pos[MAX_AGENTS]) {
-    const FallbackResolutionPolicyLocal fallback_policy(manager, map, logger, table, next_pos);
+    Node* next_pos[MAX_AGENTS],
+    int* out_fallback_leader,
+    int* out_pull_over_mask) {
+    if (out_fallback_leader) *out_fallback_leader = -1;
+    if (out_pull_over_mask) *out_pull_over_mask = 0;
+
+    const FallbackResolutionPolicyLocal fallback_policy(
+        manager,
+        map,
+        logger,
+        table,
+        next_pos,
+        out_fallback_leader,
+        out_pull_over_mask);
     if (scc_mask) {
         fallback_policy.handleSccMask(scc_mask);
     } else {
@@ -296,25 +360,77 @@ void default_planner_apply_fallbacks(
 void default_planner_resolve_pairwise_first_step_conflicts(
     AgentManager* manager,
     Logger* logger,
-    Node* next_pos[MAX_AGENTS]) {
+    Node* next_pos[MAX_AGENTS],
+    int fallback_leader,
+    int pull_over_mask) {
     for (int i = 0; i < MAX_AGENTS; i++) {
         for (int j = i + 1; j < MAX_AGENTS; j++) {
             if (manager->agents[i].state == IDLE || manager->agents[j].state == IDLE ||
                 manager->agents[i].state == CHARGING || manager->agents[j].state == CHARGING) continue;
 
+            const int i_pull_over = (pull_over_mask & (1 << i)) != 0;
+            const int j_pull_over = (pull_over_mask & (1 << j)) != 0;
+            const int i_is_leader = (i == fallback_leader);
+            const int j_is_leader = (j == fallback_leader);
+            const int i_escape_move = is_return_home_escape_move_local(&manager->agents[i], next_pos[i]);
+            const int j_escape_move = is_return_home_escape_move_local(&manager->agents[j], next_pos[j]);
+            const int priority_i = conflict_priority_local(&manager->agents[i], next_pos[i]);
+            const int priority_j = conflict_priority_local(&manager->agents[j], next_pos[j]);
+
             if (next_pos[i] == next_pos[j]) {
+                if (i_is_leader != j_is_leader) {
+                    if (i_is_leader) {
+                        logger_log(logger, "[%sAvoid%s] Deadlock leader Agent %c keeps the vertex.", C_B_RED, C_NRM, manager->agents[i].symbol);
+                        next_pos[j] = manager->agents[j].pos;
+                    } else {
+                        logger_log(logger, "[%sAvoid%s] Deadlock leader Agent %c keeps the vertex.", C_B_RED, C_NRM, manager->agents[j].symbol);
+                        next_pos[i] = manager->agents[i].pos;
+                    }
+                    continue;
+                }
+
+                if (i_pull_over != j_pull_over) {
+                    if (i_pull_over) {
+                        logger_log(logger, "[%sAvoid%s] Pull-over escape: Agent %c yields.", C_B_RED, C_NRM, manager->agents[j].symbol);
+                        next_pos[j] = manager->agents[j].pos;
+                    } else {
+                        logger_log(logger, "[%sAvoid%s] Pull-over escape: Agent %c yields.", C_B_RED, C_NRM, manager->agents[i].symbol);
+                        next_pos[i] = manager->agents[i].pos;
+                    }
+                    continue;
+                }
+
+                if (i_escape_move != j_escape_move) {
+                    if (i_escape_move) {
+                        logger_log(logger, "[%sAvoid%s] Escape move: Agent %c yields.", C_B_RED, C_NRM, manager->agents[j].symbol);
+                        next_pos[j] = manager->agents[j].pos;
+                    } else {
+                        logger_log(logger, "[%sAvoid%s] Escape move: Agent %c yields.", C_B_RED, C_NRM, manager->agents[i].symbol);
+                        next_pos[i] = manager->agents[i].pos;
+                    }
+                    continue;
+                }
+
                 if ((manager->agents[i].state == GOING_TO_PARK && manager->agents[j].state == RETURNING_HOME_EMPTY) ||
                     (manager->agents[j].state == GOING_TO_PARK && manager->agents[i].state == RETURNING_HOME_EMPTY)) {
-                    if (manager->agents[i].state == RETURNING_HOME_EMPTY) {
-                        logger_log(logger, "[%sAvoid%s] Vertex conflict: parking flow has priority, Agent %c waits.", C_B_RED, C_NRM, manager->agents[i].symbol);
-                        next_pos[i] = manager->agents[i].pos;
-                    } else {
-                        logger_log(logger, "[%sAvoid%s] Vertex conflict: parking flow has priority, Agent %c waits.", C_B_RED, C_NRM, manager->agents[j].symbol);
+                    const int return_i = (manager->agents[i].state == RETURNING_HOME_EMPTY);
+                    const Agent* returning_agent = return_i ? &manager->agents[i] : &manager->agents[j];
+                    if (returning_agent->stuck_steps < kReturnHomeEscapePriorityStuck) {
+                        if (return_i) {
+                            logger_log(logger, "[%sAvoid%s] Vertex conflict: parking flow has priority, Agent %c waits.", C_B_RED, C_NRM, manager->agents[i].symbol);
+                            next_pos[i] = manager->agents[i].pos;
+                        } else {
+                            logger_log(logger, "[%sAvoid%s] Vertex conflict: parking flow has priority, Agent %c waits.", C_B_RED, C_NRM, manager->agents[j].symbol);
+                            next_pos[j] = manager->agents[j].pos;
+                        }
+                    } else if (priority_i >= priority_j) {
+                        logger_log(logger, "[%sAvoid%s] Vertex conflict: starvation escape gives Agent %c priority.", C_B_RED, C_NRM, manager->agents[i].symbol);
                         next_pos[j] = manager->agents[j].pos;
+                    } else {
+                        logger_log(logger, "[%sAvoid%s] Vertex conflict: starvation escape gives Agent %c priority.", C_B_RED, C_NRM, manager->agents[j].symbol);
+                        next_pos[i] = manager->agents[i].pos;
                     }
                 } else {
-                    const int priority_i = priority_score(&manager->agents[i]);
-                    const int priority_j = priority_score(&manager->agents[j]);
                     if (priority_i >= priority_j) {
                         logger_log(logger, "[%sAvoid%s] Vertex conflict: Agent %c yields.", C_B_RED, C_NRM, manager->agents[j].symbol);
                         next_pos[j] = manager->agents[j].pos;
@@ -324,18 +440,59 @@ void default_planner_resolve_pairwise_first_step_conflicts(
                     }
                 }
             } else if (next_pos[i] == manager->agents[j].pos && next_pos[j] == manager->agents[i].pos) {
+                if (i_is_leader != j_is_leader) {
+                    if (i_is_leader) {
+                        logger_log(logger, "[%sAvoid%s] Deadlock leader Agent %c keeps the swap.", C_B_RED, C_NRM, manager->agents[i].symbol);
+                        next_pos[j] = manager->agents[j].pos;
+                    } else {
+                        logger_log(logger, "[%sAvoid%s] Deadlock leader Agent %c keeps the swap.", C_B_RED, C_NRM, manager->agents[j].symbol);
+                        next_pos[i] = manager->agents[i].pos;
+                    }
+                    continue;
+                }
+
+                if (i_pull_over != j_pull_over) {
+                    if (i_pull_over) {
+                        logger_log(logger, "[%sAvoid%s] Pull-over escape: Agent %c yields the swap.", C_B_RED, C_NRM, manager->agents[j].symbol);
+                        next_pos[j] = manager->agents[j].pos;
+                    } else {
+                        logger_log(logger, "[%sAvoid%s] Pull-over escape: Agent %c yields the swap.", C_B_RED, C_NRM, manager->agents[i].symbol);
+                        next_pos[i] = manager->agents[i].pos;
+                    }
+                    continue;
+                }
+
+                if (i_escape_move != j_escape_move) {
+                    if (i_escape_move) {
+                        logger_log(logger, "[%sAvoid%s] Escape move: Agent %c yields the swap.", C_B_RED, C_NRM, manager->agents[j].symbol);
+                        next_pos[j] = manager->agents[j].pos;
+                    } else {
+                        logger_log(logger, "[%sAvoid%s] Escape move: Agent %c yields the swap.", C_B_RED, C_NRM, manager->agents[i].symbol);
+                        next_pos[i] = manager->agents[i].pos;
+                    }
+                    continue;
+                }
+
                 if ((manager->agents[i].state == GOING_TO_PARK && manager->agents[j].state == RETURNING_HOME_EMPTY) ||
                     (manager->agents[j].state == GOING_TO_PARK && manager->agents[i].state == RETURNING_HOME_EMPTY)) {
-                    if (manager->agents[i].state == RETURNING_HOME_EMPTY) {
-                        logger_log(logger, "[%sAvoid%s] Swap conflict: parking flow has priority, Agent %c waits.", C_B_RED, C_NRM, manager->agents[i].symbol);
-                        next_pos[i] = manager->agents[i].pos;
-                    } else {
-                        logger_log(logger, "[%sAvoid%s] Swap conflict: parking flow has priority, Agent %c waits.", C_B_RED, C_NRM, manager->agents[j].symbol);
+                    const int return_i = (manager->agents[i].state == RETURNING_HOME_EMPTY);
+                    const Agent* returning_agent = return_i ? &manager->agents[i] : &manager->agents[j];
+                    if (returning_agent->stuck_steps < kReturnHomeEscapePriorityStuck) {
+                        if (return_i) {
+                            logger_log(logger, "[%sAvoid%s] Swap conflict: parking flow has priority, Agent %c waits.", C_B_RED, C_NRM, manager->agents[i].symbol);
+                            next_pos[i] = manager->agents[i].pos;
+                        } else {
+                            logger_log(logger, "[%sAvoid%s] Swap conflict: parking flow has priority, Agent %c waits.", C_B_RED, C_NRM, manager->agents[j].symbol);
+                            next_pos[j] = manager->agents[j].pos;
+                        }
+                    } else if (priority_i >= priority_j) {
+                        logger_log(logger, "[%sAvoid%s] Swap conflict: starvation escape gives Agent %c priority.", C_B_RED, C_NRM, manager->agents[i].symbol);
                         next_pos[j] = manager->agents[j].pos;
+                    } else {
+                        logger_log(logger, "[%sAvoid%s] Swap conflict: starvation escape gives Agent %c priority.", C_B_RED, C_NRM, manager->agents[j].symbol);
+                        next_pos[i] = manager->agents[i].pos;
                     }
                 } else {
-                    const int priority_i = priority_score(&manager->agents[i]);
-                    const int priority_j = priority_score(&manager->agents[j]);
                     if (priority_i >= priority_j) {
                         logger_log(logger, "[%sAvoid%s] Swap conflict: Agent %c yields.", C_B_RED, C_NRM, manager->agents[j].symbol);
                         next_pos[j] = manager->agents[j].pos;

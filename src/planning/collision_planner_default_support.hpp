@@ -24,8 +24,12 @@ void default_planner_apply_fallbacks(
     Logger* logger,
     ReservationTable* table,
     int scc_mask,
-    Node* next_pos[MAX_AGENTS]);
+    Node* next_pos[MAX_AGENTS],
+    int* out_fallback_leader,
+    int* out_pull_over_mask);
 void default_planner_resolve_pairwise_first_step_conflicts(
     AgentManager* manager,
     Logger* logger,
-    Node* next_pos[MAX_AGENTS]);
+    Node* next_pos[MAX_AGENTS],
+    int fallback_leader,
+    int pull_over_mask);

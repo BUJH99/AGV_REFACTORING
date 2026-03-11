@@ -882,11 +882,17 @@ void logger_log(Logger* l, const char* fmt, ...) {
 
 
 int grid_is_node_blocked(const GridMap* map, const AgentManager* am, const Node* n, const struct Agent_* agent) {
+    constexpr int kReturnHomeBayEscapeStuckSteps = 6;
     if (n->is_obstacle || n->is_parked || n->is_temp) return TRUE;
 
 
     if (agent && agent->state == RETURNING_HOME_EMPTY && n->is_goal && !n->is_parked) {
-        return TRUE;
+        const int allow_temporary_bay_escape =
+            agent->stuck_steps >= kReturnHomeBayEscapeStuckSteps &&
+            (n->reserved_by_agent == -1 || n->reserved_by_agent == agent->id);
+        if (!allow_temporary_bay_escape) {
+            return TRUE;
+        }
     }
 
     for (int i = 0; i < MAX_AGENTS; i++) {
