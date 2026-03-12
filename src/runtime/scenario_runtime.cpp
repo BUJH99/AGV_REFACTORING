@@ -22,7 +22,10 @@ void agent_begin_task_park(Agent* agent, ScenarioManager* scenario, Logger* logg
     agent->metrics_task_start_step = scenario->time_step;
     agent->metrics_distance_at_start = agent->total_distance_traveled;
     agent->metrics_turns_current = 0;
-    if (logger) logger_log(logger, "[%sTask%s] Agent %c assigned to a parking task.", C_CYN, C_NRM, agent->symbol);
+    if (logger) {
+        logger_log_event(logger, "Dispatch", "Info", agent->id, scenario->current_phase_index,
+            "Agent %c assigned to a parking task.", agent->symbol);
+    }
 }
 
 void agent_begin_task_exit(Agent* agent, ScenarioManager* scenario, Logger* logger) {
@@ -32,7 +35,10 @@ void agent_begin_task_exit(Agent* agent, ScenarioManager* scenario, Logger* logg
     agent->metrics_task_start_step = scenario->time_step;
     agent->metrics_distance_at_start = agent->total_distance_traveled;
     agent->metrics_turns_current = 0;
-    if (logger) logger_log(logger, "[%sTask%s] Agent %c assigned to a retrieval task.", C_CYN, C_NRM, agent->symbol);
+    if (logger) {
+        logger_log_event(logger, "Dispatch", "Info", agent->id, scenario->current_phase_index,
+            "Agent %c assigned to a retrieval task.", agent->symbol);
+    }
 }
 
 ScenarioManager::ScenarioManager() = default;
@@ -78,6 +84,18 @@ void ScenarioManager::applySpeedMultiplier(float speedMultiplier) {
 
 ScenarioManager::~ScenarioManager() {
     clearTaskQueue();
+}
+
+void simulation_set_speed_multiplier(Simulation* sim, double speed_multiplier) {
+    if (!sim || !sim->scenario_manager) {
+        return;
+    }
+
+    const float normalized = std::clamp(
+        static_cast<float>(speed_multiplier),
+        0.0f,
+        MAX_SPEED_MULTIPLIER);
+    sim->scenario_manager->applySpeedMultiplier(normalized);
 }
 
 namespace {
@@ -128,7 +146,11 @@ void apply_realtime_config(ScenarioManager& scenario, const SimulationConfig& cf
 void apply_selected_algorithm(Simulation* sim, int algorithm_choice) {
     sim->path_algo = (algorithm_choice == 2) ? PathAlgo::AStarSimple :
         (algorithm_choice == 3) ? PathAlgo::DStarBasic : PathAlgo::Default;
-    logger_log(sim->logger, "[%sAlgo%s] Algorithm selected: %d", C_B_CYN, C_NRM, algorithm_choice);
+    const char* algorithm_name = (sim->path_algo == PathAlgo::AStarSimple)
+        ? "astar"
+        : ((sim->path_algo == PathAlgo::DStarBasic) ? "dstar" : "default");
+    logger_log_event(sim->logger, "Control", "Info", std::nullopt, std::nullopt,
+        "Algorithm selected: %s", algorithm_name);
     sim->render_state.configureForAlgorithm(sim->path_algo);
     sim->planner = planner_from_pathalgo(sim->path_algo);
 }
@@ -320,7 +342,8 @@ int simulation_setup_map_local(Simulation* sim) {
     int map_id = get_integer_input_local("Select map id (1~7): ", 1, 7);
     sim->map_id = map_id;
     grid_map_load_scenario(sim->map, sim->agent_manager, map_id);
-    logger_log(sim->logger, "[%sMap%s] Map #%d loaded.", C_B_CYN, C_NRM, map_id);
+    logger_log_event(sim->logger, "Control", "Info", std::nullopt, std::nullopt,
+        "Map #%d loaded.", map_id);
     do_ms_pause(800);
     return 1;
 }
@@ -352,14 +375,16 @@ private:
         DynamicPhase* phase = &scenario->phases[scenario->current_phase_index];
         if (scenario->tasks_completed_in_phase < phase->task_count) return true;
 
-        logger_log(logger, "[%sPhase%s] %d completed (%s %d).", C_B_YEL, C_NRM,
+        logger_log_event(logger, "Scenario", "Info", std::nullopt, scenario->current_phase_index,
+            "Phase %d completed (%s %d).",
             scenario->current_phase_index + 1, phase->type_name.c_str(), phase->task_count);
         scenario->current_phase_index++;
         scenario->tasks_completed_in_phase = 0;
         if (scenario->current_phase_index < scenario->num_phases) {
             DynamicPhase* next_phase = &scenario->phases[scenario->current_phase_index];
-            logger_log(logger, "[%sPhase%s] %d start: %s %d.",
-                C_B_YEL, C_NRM, scenario->current_phase_index + 1, next_phase->type_name.c_str(), next_phase->task_count);
+            logger_log_event(logger, "Scenario", "Info", std::nullopt, scenario->current_phase_index,
+                "Phase %d start: %s %d.",
+                scenario->current_phase_index + 1, next_phase->type_name.c_str(), next_phase->task_count);
             do_ms_pause(1500);
         }
         return false;
@@ -379,7 +404,8 @@ private:
         if (scenario->park_chance > 0 && roll_park < scenario->park_chance) {
             int before = scenario->task_count;
             if (agents->total_cars_parked < map->num_goals) {
-                logger_log(logger, "[%sEvent%s] New parking request.", C_B_GRN, C_NRM);
+                logger_log_event(logger, "Scenario", "Info", std::nullopt, std::nullopt,
+                    "New parking request.");
                 scenario->enqueueTask(TaskType::Park);
             }
             if (scenario->task_count > before) sim->requests_created_total++;
@@ -388,7 +414,8 @@ private:
         if (scenario->exit_chance > 0 && roll_exit < scenario->exit_chance) {
             int before = scenario->task_count;
             if (agents->total_cars_parked > 0) {
-                logger_log(logger, "[%sEvent%s] New exit request.", C_B_YEL, C_NRM);
+                logger_log_event(logger, "Scenario", "Info", std::nullopt, std::nullopt,
+                    "New exit request.");
                 scenario->enqueueTask(TaskType::Exit);
             }
             if (scenario->task_count > before) sim->requests_created_total++;
@@ -409,7 +436,8 @@ private:
                 if (agv_select_best_charge_station(agent, map, agents, logger)) {
                     agent->state = AgentState::GoingToCharge;
                 } else {
-                    logger_log(logger, "[%sWarn%s] Agent %c charge required but no station is available.", C_YEL, C_NRM, agent->symbol);
+                    logger_log_event(logger, "Charge", "Warn", agent->id, scenario->current_phase_index,
+                        "Agent %c charge required but no station is available.", agent->symbol);
                 }
                 continue;
             }
@@ -498,6 +526,9 @@ bool apply_simulation_config(Simulation* sim, const SimulationConfig& cfg) {
     ScenarioManager& scenario = *sim->scenario_manager;
     reset_scenario_runtime_state(scenario);
     scenario.mode = cfg.mode;
+    logger_log_event(sim->logger, "Control", "Info", std::nullopt, std::nullopt,
+        "Scenario mode configured: %s.",
+        scenario.mode == SimulationMode::Realtime ? "realtime" : "custom");
 
     if (scenario.mode == SimulationMode::Realtime) {
         apply_realtime_config(scenario, cfg);
@@ -506,6 +537,13 @@ bool apply_simulation_config(Simulation* sim, const SimulationConfig& cfg) {
     }
 
     scenario.applySpeedMultiplier(cfg.speed_multiplier);
+    logger_log_event(sim->logger, "Control", "Info", std::nullopt, std::nullopt,
+        "Map #%d loaded.", sim->map_id);
+    const char* algorithm_name = (sim->path_algo == PathAlgo::AStarSimple)
+        ? "astar"
+        : ((sim->path_algo == PathAlgo::DStarBasic) ? "dstar" : "default");
+    logger_log_event(sim->logger, "Control", "Info", std::nullopt, std::nullopt,
+        "Algorithm selected: %s", algorithm_name);
     sim->resetRuntimeStats();
     return true;
 }

@@ -11,7 +11,6 @@
 
 #include "agv/internal/engine_internal.hpp"
 
-void ui_handle_control_key(Simulation* sim, int ch, bool& is_paused, bool& quit_flag);
 void simulation_display_status(Simulation* sim, bool is_paused);
 Planner planner_from_pathalgo(PathAlgo algo);
 RendererFacade renderer_create_facade(void);
@@ -152,9 +151,17 @@ int read_control_key() {
     return console_read_key_nonblocking().value_or(0);
 }
 
-void handle_control_input(Simulation* sim, int last_key, bool& is_paused, bool& quit_flag) {
+void handle_control_input(
+    Simulation* sim,
+    int last_key,
+    bool& is_paused,
+    bool& quit_flag,
+    bool& return_to_menu) {
     if (!last_key) return;
-    ui_handle_control_key(sim, last_key, is_paused, quit_flag);
+    ui_handle_control_key(sim, last_key, is_paused, quit_flag, return_to_menu);
+    if (quit_flag || return_to_menu) {
+        return;
+    }
     if (is_paused && std::tolower(last_key) == 's') {
         sim->render_state.force_next_flush = true;
         return;
@@ -180,11 +187,13 @@ Simulation_::Simulation_() {
     map_id = 1;
     path_algo = PathAlgo::Default;
     display_buffer.reserve(DISPLAY_BUFFER_SIZE);
+    logger->bindSimulation(this);
     planner = planner_from_pathalgo(path_algo);
     renderer = renderer_create_facade();
     render_state.configureForAlgorithm(path_algo);
     planner_metrics.whca_h = runtime_tuning.whca_horizon;
     grid_map_load_scenario(map, agent_manager, map_id);
+    logger->setContext(0, 0, scenario_manager ? scenario_manager->current_phase_index : -1);
 }
 
 Simulation_::~Simulation_() = default;
@@ -292,6 +301,7 @@ void Simulation_::resetRuntimeStats() {
     last_deadlock_event = {};
     workload_snapshot = {};
     step_scratch = {};
+    logger->setContext(0, render_model.frame_id, scenario_manager ? scenario_manager->current_phase_index : -1);
 }
 
 void Simulation_::reportRealtimeDashboard() {
@@ -388,19 +398,20 @@ bool Simulation_::isComplete() const {
     return false;
 }
 
-void Simulation_::run() {
+bool Simulation_::run() {
     Simulation* sim = this;
     bool is_paused = false;
     bool quit_flag = false;
+    bool return_to_menu = false;
 
     sim->resetRuntimeStats();
     sim->render_state.force_next_flush = true;
     sim->renderer.drawFrame(sim, is_paused);
 
-    while (!quit_flag) {
+    while (!quit_flag && !return_to_menu) {
         const int last_key = read_control_key();
-        handle_control_input(sim, last_key, is_paused, quit_flag);
-        if (quit_flag) continue;
+        handle_control_input(sim, last_key, is_paused, quit_flag, return_to_menu);
+        if (quit_flag || return_to_menu) continue;
         if (should_wait_while_paused(is_paused, last_key)) {
             platform_sleep_for_ms(PAUSE_POLL_INTERVAL_MS);
             continue;
@@ -412,15 +423,17 @@ void Simulation_::run() {
         maybe_report_realtime_dashboard(sim);
         maybe_sleep_for_simulation_speed(sim->scenario_manager);
     }
+
+    return return_to_menu;
 }
 
-bool execute_headless_step(Simulation* sim) {
+bool execute_headless_step(Simulation* sim, bool allow_sleep) {
     if (!sim) return true;
     if (sim->isComplete()) return true;
     sim->executeOneStep(false);
     if (sim->isComplete()) return true;
     maybe_report_realtime_dashboard(sim);
-    if (sim->scenario_manager->simulation_speed > 0) {
+    if (allow_sleep && sim->scenario_manager->simulation_speed > 0) {
         platform_sleep_for_ms(sim->scenario_manager->simulation_speed);
     }
     return false;
@@ -428,7 +441,7 @@ bool execute_headless_step(Simulation* sim) {
 
 bool run_simulation_to_completion(Simulation* sim) {
     if (!sim) return false;
-    while (!execute_headless_step(sim)) {
+    while (!execute_headless_step(sim, true)) {
     }
     return true;
 }

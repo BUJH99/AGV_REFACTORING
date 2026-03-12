@@ -41,6 +41,23 @@ TEST(DebugSupportTest, InternalRecentLogCollectionPreservesChronologicalOrderAcr
     EXPECT_EQ(lines.back(), "line-6");
 }
 
+TEST(DebugSupportTest, StructuredLogCollectionPreservesRepeatedMessagesBeyondLegacyTail) {
+    Logger logger;
+    logger.setContext(7, 0, -1);
+
+    for (int index = 0; index < LOG_BUFFER_LINES + 3; ++index) {
+        logger.appendLine("[CTRL] repeated");
+    }
+
+    const auto entries = collect_structured_logs(&logger, 0, RENDER_LOG_BATCH_LIMIT);
+    ASSERT_EQ(entries.size(), static_cast<std::size_t>(LOG_BUFFER_LINES + 3));
+    EXPECT_EQ(entries.front().seq, 1u);
+    EXPECT_EQ(entries.back().seq, static_cast<std::uint64_t>(LOG_BUFFER_LINES + 3));
+    EXPECT_TRUE(std::all_of(entries.begin(), entries.end(), [](const auto& entry) {
+        return entry.step == 7 && entry.category == "Control" && entry.text == "[CTRL] repeated";
+    }));
+}
+
 TEST(DebugSupportTest, PublicDebugSnapshotCapturesLogsAgentsAndFrame) {
     agv::core::SimulationEngine engine;
     configure_debug_engine(engine);

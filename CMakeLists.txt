@@ -34,7 +34,7 @@ target_include_directories(agv_core
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-target_link_libraries(agv_core PUBLIC psapi)
+target_link_libraries(agv_core PUBLIC psapi shell32 ole32)
 target_link_libraries(agv_core PUBLIC nlohmann_json::nlohmann_json)
 
 if(MSVC)
@@ -70,6 +70,7 @@ if(BUILD_TESTING)
         tests/simulation_engine_test.cpp
         tests/debug_support_test.cpp
         tests/render_model_test.cpp
+        tests/launch_workflow_test.cpp
     )
     target_link_libraries(agv_core_tests PRIVATE agv_core GTest::gtest_main)
     include(GoogleTest)

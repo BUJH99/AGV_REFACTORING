@@ -2,6 +2,7 @@
 
 #include "agv/simulation_engine.hpp"
 
+#include <cstdint>
 #include <iosfwd>
 #include <string_view>
 #include <vector>
@@ -21,6 +22,9 @@ private:
     core::SimulationEngine engine_{};
     bool subscribed_{false};
     bool paused_{false};
+    bool shutting_down_{false};
+    std::uint64_t current_session_id_{0};
+    std::uint64_t next_event_id_{1};
 
     nlohmann::json buildFrameEvent();
 };

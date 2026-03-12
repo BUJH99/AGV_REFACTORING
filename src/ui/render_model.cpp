@@ -3,7 +3,6 @@
 #include "agv/internal/engine_internal.hpp"
 
 #include <algorithm>
-#include <cctype>
 
 namespace {
 
@@ -28,78 +27,6 @@ GridCoord node_coord(const Node* node) {
     return GridCoord{node->x, node->y};
 }
 
-std::string strip_ansi(std::string_view text) {
-    std::string cleaned;
-    cleaned.reserve(text.size());
-
-    for (std::size_t index = 0; index < text.size(); ++index) {
-        const char ch = text[index];
-        if (ch == '\x1b' && (index + 1) < text.size() && text[index + 1] == '[') {
-            index += 2;
-            while (index < text.size()) {
-                const char code = text[index];
-                if ((code >= '@' && code <= '~') || std::isalpha(static_cast<unsigned char>(code))) {
-                    break;
-                }
-                ++index;
-            }
-            continue;
-        }
-        cleaned.push_back(ch);
-    }
-
-    return cleaned;
-}
-
-std::size_t longest_log_overlap(
-    const std::vector<std::string>& previous_logs,
-    const std::vector<std::string>& current_logs) {
-    const std::size_t limit = std::min(previous_logs.size(), current_logs.size());
-    for (std::size_t overlap = limit; overlap > 0; --overlap) {
-        bool matched = true;
-        for (std::size_t offset = 0; offset < overlap; ++offset) {
-            if (previous_logs[previous_logs.size() - overlap + offset] != current_logs[offset]) {
-                matched = false;
-                break;
-            }
-        }
-        if (matched) {
-            return overlap;
-        }
-    }
-    return 0;
-}
-
-std::pair<std::string, std::string> classify_log_line(std::string_view cleaned) {
-    auto classify_token = [](std::string token) {
-        std::transform(token.begin(), token.end(), token.begin(),
-            [](unsigned char value) { return static_cast<char>(std::toupper(value)); });
-
-        if (token == "WARN" || token == "AVOID") {
-            return std::pair<std::string, std::string>{"warning", token};
-        }
-        if (token == "CTRL") {
-            return std::pair<std::string, std::string>{"info", token};
-        }
-        if (token == "ERR" || token == "ERROR") {
-            return std::pair<std::string, std::string>{"error", token};
-        }
-        if (token == "CBS" || token == "WFG" || token == "WHCA" || token == "PLAN" ||
-            token == "CHARGE" || token == "EVENT" || token == "MAP" || token == "INFO") {
-            return std::pair<std::string, std::string>{"info", token};
-        }
-        return std::pair<std::string, std::string>{"info", token.empty() ? std::string("GENERAL") : token};
-    };
-
-    const std::size_t open = cleaned.find('[');
-    const std::size_t close = (open == std::string_view::npos) ? std::string_view::npos : cleaned.find(']', open + 1);
-    if (open == std::string_view::npos || close == std::string_view::npos || close <= open + 1) {
-        return {"info", "GENERAL"};
-    }
-
-    return classify_token(std::string(cleaned.substr(open + 1, close - open - 1)));
-}
-
 int current_step(const Simulation* simulation) {
     if (!simulation) {
         return 0;
@@ -109,6 +36,8 @@ int current_step(const Simulation* simulation) {
     }
     return simulation->scenario_manager ? simulation->scenario_manager->time_step : 0;
 }
+
+bool action_in_progress(const Agent& agent);
 
 int count_in_flight_tasks(const AgentManager* manager) {
     if (!manager) {
@@ -122,6 +51,35 @@ int count_in_flight_tasks(const AgentManager* manager) {
             state == ::AgentState::ReturningHomeEmpty ||
             state == ::AgentState::GoingToCollect ||
             state == ::AgentState::ReturningWithCar) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+int count_ready_idle_agents(const AgentManager* manager) {
+    if (!manager) {
+        return 0;
+    }
+
+    int count = 0;
+    for (int index = 0; index < MAX_AGENTS; ++index) {
+        const Agent& agent = manager->agents[index];
+        if (agent.pos && agent.state == ::AgentState::Idle) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+int count_goal_action_agents(const AgentManager* manager) {
+    if (!manager) {
+        return 0;
+    }
+
+    int count = 0;
+    for (int index = 0; index < MAX_AGENTS; ++index) {
+        if (action_in_progress(manager->agents[index])) {
             ++count;
         }
     }
@@ -165,66 +123,99 @@ double average_cpu_ms(const Simulation* simulation) {
     return simulation->total_cpu_time_ms / static_cast<double>(steps);
 }
 
-void trim_log_history(RenderModelCache& cache) {
-    while (cache.log_history.size() > RenderModelCache::kLogHistoryLimit) {
-        cache.log_history.pop_front();
-    }
-}
-
-void refresh_log_history(Simulation* simulation) {
-    if (!simulation) {
-        return;
-    }
-
-    RenderModelCache& cache = simulation->render_model;
-    const std::vector<std::string> raw_logs = collect_recent_logs(simulation->logger);
-    const std::size_t overlap = longest_log_overlap(cache.recent_log_lines, raw_logs);
-    const int step = current_step(simulation);
-
-    for (std::size_t index = overlap; index < raw_logs.size(); ++index) {
-        const std::string cleaned = strip_ansi(raw_logs[index]);
-        const auto [level, category] = classify_log_line(cleaned);
-        StructuredLogEntry entry;
-        entry.seq = cache.next_log_seq++;
-        entry.step = step;
-        entry.category = category;
-        entry.level = level;
-        entry.text = cleaned;
-        cache.log_history.push_back(entry);
-    }
-
-    cache.recent_log_lines = raw_logs;
-    trim_log_history(cache);
-}
-
-std::vector<StructuredLogEntry> collect_log_tail(const RenderModelCache& cache, std::size_t max_entries) {
+std::vector<StructuredLogEntry> collect_log_tail(const Logger* logger, std::size_t max_entries) {
     std::vector<StructuredLogEntry> logs;
-    if (max_entries == 0 || cache.log_history.empty()) {
+    if (!logger || logger->structured_logs.empty() || max_entries == 0) {
         return logs;
     }
 
-    const std::size_t count = std::min<std::size_t>(max_entries, cache.log_history.size());
+    const std::size_t count = std::min<std::size_t>(max_entries, logger->structured_logs.size());
     logs.reserve(count);
-    const std::size_t start = cache.log_history.size() - count;
-    for (std::size_t index = start; index < cache.log_history.size(); ++index) {
-        logs.push_back(cache.log_history[index]);
+    const std::size_t start = logger->structured_logs.size() - count;
+    for (std::size_t index = start; index < logger->structured_logs.size(); ++index) {
+        logs.push_back(logger->structured_logs[index]);
     }
     return logs;
 }
 
-std::vector<StructuredLogEntry> collect_logs_after(
-    const RenderModelCache& cache,
-    std::uint64_t last_seq) {
-    std::vector<StructuredLogEntry> logs;
-    for (const StructuredLogEntry& entry : cache.log_history) {
-        if (entry.seq > last_seq) {
-            logs.push_back(entry);
+std::vector<StructuredLogEntry> collect_logs_after(const Logger* logger, std::uint64_t last_seq) {
+    return collect_structured_logs(logger, last_seq, RENDER_LOG_BATCH_LIMIT);
+}
+
+bool action_in_progress(const Agent& agent) {
+    return agent.action_timer > 0 &&
+        (agent.state == ::AgentState::GoingToPark || agent.state == ::AgentState::GoingToCollect);
+}
+
+bool cancellation_contains(
+    const std::array<int, MAX_AGENTS>& values,
+    int count,
+    int agent_id) {
+    for (int index = 0; index < count; ++index) {
+        if (values[index] == agent_id) {
+            return true;
         }
     }
-    return logs;
+    return false;
 }
 
-AgentRenderState build_agent_render_state(const Agent& agent) {
+bool moved_last_step(const Simulation* simulation, int agent_id) {
+    if (!simulation || agent_id < 0 || agent_id >= MAX_AGENTS) {
+        return false;
+    }
+
+    const Node* previous = simulation->step_scratch.previous_positions[agent_id];
+    const Node* next = simulation->step_scratch.next_positions[agent_id];
+    return previous != nullptr && next != nullptr && previous != next;
+}
+
+agv::core::AgentWaitReason classify_wait_reason(
+    const Simulation* simulation,
+    const Agent& agent,
+    bool goal_action_in_progress) {
+    if (!agent.pos || agent.state == ::AgentState::Idle) {
+        return agv::core::AgentWaitReason::Idle;
+    }
+
+    if (agent.state == ::AgentState::Charging || agent.charge_timer > 0) {
+        return agv::core::AgentWaitReason::Charging;
+    }
+
+    if (goal_action_in_progress) {
+        return agv::core::AgentWaitReason::GoalAction;
+    }
+
+    if (agent.rotation_wait > 0) {
+        return agv::core::AgentWaitReason::Rotation;
+    }
+
+    if (simulation) {
+        const StepScratch& scratch = simulation->step_scratch;
+        if (cancellation_contains(scratch.blocker_canceled_agent_ids, scratch.blocker_canceled_count, agent.id)) {
+            return agv::core::AgentWaitReason::BlockedByStationary;
+        }
+        if (cancellation_contains(scratch.order_canceled_agent_ids, scratch.order_canceled_count, agent.id) ||
+            simulation->render_model.planner_overlay.yield_agents.contains(agent.id)) {
+            return agv::core::AgentWaitReason::PriorityYield;
+        }
+    }
+
+    if (agent.oscillation_steps > 0) {
+        return agv::core::AgentWaitReason::Oscillating;
+    }
+
+    if (agent.stuck_steps > 0) {
+        return agv::core::AgentWaitReason::Stuck;
+    }
+
+    if (agent.pos && agent.goal && agent.pos == agent.goal) {
+        return agv::core::AgentWaitReason::GoalAction;
+    }
+
+    return agv::core::AgentWaitReason::None;
+}
+
+AgentRenderState build_agent_render_state(const Simulation* simulation, const Agent& agent) {
     AgentRenderState snapshot;
     snapshot.id = agent.id;
     snapshot.symbol = agent.symbol;
@@ -238,6 +229,17 @@ AgentRenderState build_agent_render_state(const Agent& agent) {
     snapshot.chargeTimer = agent.charge_timer;
     snapshot.actionTimer = agent.action_timer;
     snapshot.rotationWait = agent.rotation_wait;
+    snapshot.taskActive = agent.metrics_task_active;
+    snapshot.taskAgeSteps = agent.metrics_task_active
+        ? std::max(current_step(simulation) - agent.metrics_task_start_step, 0)
+        : 0;
+    snapshot.taskDistance = agent.metrics_task_active
+        ? std::max(agent.total_distance_traveled - agent.metrics_distance_at_start, 0.0)
+        : 0.0;
+    snapshot.taskTurns = agent.metrics_turns_current;
+    snapshot.goalActionInProgress = action_in_progress(agent);
+    snapshot.movedLastStep = moved_last_step(simulation, agent.id);
+    snapshot.waitReason = classify_wait_reason(simulation, agent, snapshot.goalActionInProgress);
     snapshot.stuckSteps = agent.stuck_steps;
     snapshot.oscillationSteps = agent.oscillation_steps;
     return snapshot;
@@ -365,11 +367,31 @@ HudSnapshot build_hud_snapshot(const Simulation* simulation, const RenderQueryOp
     snapshot.queuedTaskCount = simulation->scenario_manager ? simulation->scenario_manager->task_count : 0;
     snapshot.inFlightTaskCount = count_in_flight_tasks(simulation->agent_manager);
     snapshot.outstandingTaskCount = current_outstanding_task_count(simulation);
+    snapshot.readyIdleAgentCount = simulation->agent_manager ? count_ready_idle_agents(simulation->agent_manager) : 0;
+    snapshot.activeGoalActionCount = simulation->agent_manager ? count_goal_action_agents(simulation->agent_manager) : 0;
+    snapshot.waitingAgentCount = simulation->last_waiting_agent_count;
+    snapshot.stuckAgentCount = simulation->last_stuck_agent_count;
+    snapshot.oscillatingAgentCount = simulation->last_oscillating_agent_count;
+    snapshot.noMovementStreak = simulation->no_movement_streak;
+    snapshot.maxNoMovementStreak = simulation->max_no_movement_streak;
+    snapshot.lastTaskCompletionStep = simulation->last_task_completion_step;
+    snapshot.stepsSinceLastTaskCompletion = (simulation->last_task_completion_step > 0)
+        ? std::max(current_step(simulation) - simulation->last_task_completion_step, 0)
+        : current_step(simulation);
+    snapshot.oldestQueuedRequestAge = simulation->oldest_request_age_last;
     snapshot.parkedCars = simulation->agent_manager ? simulation->agent_manager->total_cars_parked : 0;
     snapshot.totalGoalCount = simulation->map ? simulation->map->num_goals : 0;
     snapshot.lastStepCpuTimeMs = simulation->last_step_cpu_time_ms;
+    snapshot.lastPlanningTimeMs = simulation->last_planning_time_ms;
     snapshot.avgCpuTimeMs = average_cpu_ms(simulation);
     snapshot.totalCpuTimeMs = simulation->total_cpu_time_ms;
+    snapshot.plannedMoveCount = simulation->step_scratch.planned_move_count;
+    snapshot.postRotationMoveCount = simulation->step_scratch.post_rotation_move_count;
+    snapshot.postBlockerMoveCount = simulation->step_scratch.post_blocker_move_count;
+    snapshot.finalMoveCount = simulation->step_scratch.final_move_count;
+    snapshot.rotationCanceledCount = simulation->step_scratch.rotation_canceled_count;
+    snapshot.blockerCanceledCount = simulation->step_scratch.blocker_canceled_count;
+    snapshot.orderCanceledCount = simulation->step_scratch.order_canceled_count;
     snapshot.plannerWaitEdges = simulation->planner_metrics.wf_edges_last;
     snapshot.plannerSccCount = simulation->planner_metrics.scc_last;
     snapshot.plannerCbsSucceeded = simulation->planner_metrics.cbs_ok_last != 0;
@@ -384,13 +406,13 @@ RenderFrameSnapshot build_frame_snapshot(Simulation* simulation, const RenderQue
         return snapshot;
     }
 
-    refresh_log_history(simulation);
-
     const RenderModelCache& cache = simulation->render_model;
     snapshot.sessionId = cache.session_id;
     snapshot.sceneVersion = cache.scene_version;
     snapshot.frameId = cache.frame_id;
-    snapshot.lastLogSeq = cache.log_history.empty() ? 0 : cache.log_history.back().seq;
+    snapshot.lastLogSeq = (!simulation->logger || simulation->logger->structured_logs.empty())
+        ? 0
+        : simulation->logger->structured_logs.back().seq;
     snapshot.hud = build_hud_snapshot(simulation, options);
 
     if (simulation->agent_manager) {
@@ -400,7 +422,7 @@ RenderFrameSnapshot build_frame_snapshot(Simulation* simulation, const RenderQue
             if (!agent.pos && !agent.home_base && !agent.goal) {
                 continue;
             }
-            snapshot.agents.push_back(build_agent_render_state(agent));
+            snapshot.agents.push_back(build_agent_render_state(simulation, agent));
         }
     }
 
@@ -412,7 +434,7 @@ RenderFrameSnapshot build_frame_snapshot(Simulation* simulation, const RenderQue
     }
 
     if (options.logsTail) {
-        snapshot.logsTail = collect_log_tail(cache, options.maxLogEntries);
+        snapshot.logsTail = collect_log_tail(simulation->logger, options.maxLogEntries);
     }
     snapshot.plannerOverlay = build_planner_overlay_snapshot(simulation, options);
     return snapshot;
@@ -434,11 +456,29 @@ bool hud_equal(const HudSnapshot& lhs, const HudSnapshot& rhs) {
         lhs.queuedTaskCount == rhs.queuedTaskCount &&
         lhs.inFlightTaskCount == rhs.inFlightTaskCount &&
         lhs.outstandingTaskCount == rhs.outstandingTaskCount &&
+        lhs.readyIdleAgentCount == rhs.readyIdleAgentCount &&
+        lhs.activeGoalActionCount == rhs.activeGoalActionCount &&
+        lhs.waitingAgentCount == rhs.waitingAgentCount &&
+        lhs.stuckAgentCount == rhs.stuckAgentCount &&
+        lhs.oscillatingAgentCount == rhs.oscillatingAgentCount &&
+        lhs.noMovementStreak == rhs.noMovementStreak &&
+        lhs.maxNoMovementStreak == rhs.maxNoMovementStreak &&
+        lhs.lastTaskCompletionStep == rhs.lastTaskCompletionStep &&
+        lhs.stepsSinceLastTaskCompletion == rhs.stepsSinceLastTaskCompletion &&
+        lhs.oldestQueuedRequestAge == rhs.oldestQueuedRequestAge &&
         lhs.parkedCars == rhs.parkedCars &&
         lhs.totalGoalCount == rhs.totalGoalCount &&
         lhs.lastStepCpuTimeMs == rhs.lastStepCpuTimeMs &&
+        lhs.lastPlanningTimeMs == rhs.lastPlanningTimeMs &&
         lhs.avgCpuTimeMs == rhs.avgCpuTimeMs &&
         lhs.totalCpuTimeMs == rhs.totalCpuTimeMs &&
+        lhs.plannedMoveCount == rhs.plannedMoveCount &&
+        lhs.postRotationMoveCount == rhs.postRotationMoveCount &&
+        lhs.postBlockerMoveCount == rhs.postBlockerMoveCount &&
+        lhs.finalMoveCount == rhs.finalMoveCount &&
+        lhs.rotationCanceledCount == rhs.rotationCanceledCount &&
+        lhs.blockerCanceledCount == rhs.blockerCanceledCount &&
+        lhs.orderCanceledCount == rhs.orderCanceledCount &&
         lhs.plannerWaitEdges == rhs.plannerWaitEdges &&
         lhs.plannerSccCount == rhs.plannerSccCount &&
         lhs.plannerCbsSucceeded == rhs.plannerCbsSucceeded &&
@@ -463,6 +503,13 @@ bool agent_equal(const AgentRenderState& lhs, const AgentRenderState& rhs) {
         lhs.chargeTimer == rhs.chargeTimer &&
         lhs.actionTimer == rhs.actionTimer &&
         lhs.rotationWait == rhs.rotationWait &&
+        lhs.taskActive == rhs.taskActive &&
+        lhs.taskAgeSteps == rhs.taskAgeSteps &&
+        lhs.taskDistance == rhs.taskDistance &&
+        lhs.taskTurns == rhs.taskTurns &&
+        lhs.goalActionInProgress == rhs.goalActionInProgress &&
+        lhs.movedLastStep == rhs.movedLastStep &&
+        lhs.waitReason == rhs.waitReason &&
         lhs.stuckSteps == rhs.stuckSteps &&
         lhs.oscillationSteps == rhs.oscillationSteps;
 }
@@ -533,9 +580,9 @@ bool overlay_equal(const PlannerOverlaySnapshot& lhs, const PlannerOverlaySnapsh
 }
 
 RenderFrameDelta build_frame_delta(
+    const Simulation* simulation,
     const RenderFrameSnapshot& previous,
-    const RenderFrameSnapshot& current,
-    const RenderModelCache& cache) {
+    const RenderFrameSnapshot& current) {
     RenderFrameDelta delta;
     delta.sessionId = current.sessionId;
     delta.sceneVersion = current.sceneVersion;
@@ -570,7 +617,7 @@ RenderFrameDelta build_frame_delta(
         }
     }
 
-    delta.newLogs = collect_logs_after(cache, previous.lastLogSeq);
+    delta.newLogs = collect_logs_after(simulation ? simulation->logger : nullptr, previous.lastLogSeq);
     if (!overlay_equal(previous.plannerOverlay, current.plannerOverlay)) {
         delta.overlayChanged = current.plannerOverlay.available;
         delta.plannerOverlay = current.plannerOverlay;
@@ -632,7 +679,7 @@ RenderFrameSnapshot filter_frame_for_options(RenderFrameSnapshot snapshot, const
 RenderQueryOptions full_capture_options() {
     RenderQueryOptions options;
     options.logsTail = true;
-    options.maxLogEntries = LOG_BUFFER_LINES;
+    options.maxLogEntries = RENDER_LOG_TAIL_LINES;
     options.plannerOverlay = true;
     return options;
 }
@@ -646,7 +693,10 @@ void render_model_reset(Simulation* sim, std::uint64_t session_id) {
 
     sim->render_model.reset(session_id);
     sim->render_model.frame_id = static_cast<std::uint64_t>(std::max(current_step(sim), 0));
-    refresh_log_history(sim);
+    if (sim->logger) {
+        sim->logger->setContext(current_step(sim), sim->render_model.frame_id,
+            sim->scenario_manager ? sim->scenario_manager->current_phase_index : -1);
+    }
     sim->render_model.last_advanced_frame = build_frame_snapshot(sim, full_capture_options());
     sim->render_model.has_last_advanced_frame = true;
 }
@@ -659,7 +709,7 @@ void render_model_capture_advanced_frame(Simulation* sim) {
     RenderModelCache& cache = sim->render_model;
     RenderFrameSnapshot current = build_frame_snapshot(sim, full_capture_options());
     if (cache.has_last_advanced_frame && current.frameId >= cache.last_advanced_frame.frameId) {
-        push_delta(cache, build_frame_delta(cache.last_advanced_frame, current, cache));
+        push_delta(cache, build_frame_delta(sim, cache.last_advanced_frame, current));
     }
     cache.last_advanced_frame = std::move(current);
     cache.has_last_advanced_frame = true;
@@ -799,4 +849,16 @@ RenderFrameDelta snapshot_render_delta(
     }
 
     return filter_delta_for_options(aggregated, options);
+}
+
+std::vector<StructuredLogEntry> snapshot_structured_logs(
+    Simulation* sim,
+    std::uint64_t since_seq,
+    std::size_t max_entries) {
+    if (!sim) {
+        return {};
+    }
+
+    const std::size_t limit = (max_entries == 0) ? RENDER_LOG_BATCH_LIMIT : max_entries;
+    return collect_structured_logs(sim->logger, since_seq, limit);
 }

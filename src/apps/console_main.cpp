@@ -21,15 +21,8 @@ using agv::core::SimulationMode;
 
 struct CliOptions {
     bool interactive{true};
-    std::uint32_t seed{1};
-    int mapId{1};
-    PathAlgo algorithm{PathAlgo::Default};
-    ScenarioConfig scenario{};
-    bool suppressOutput{true};
-    std::optional<int> maxSteps;
-    std::optional<std::string> debugReportPath;
-    std::optional<std::string> deadlockReportPath;
-    bool stopOnDeadlock{false};
+    agv::core::LaunchConfig launch{};
+    agv::core::HeadlessRunOptions run{};
 };
 
 PathAlgo parseAlgorithm(const std::string& value);
@@ -51,48 +44,48 @@ bool parse_headless_option(CliOptions& options, std::string_view argument, int& 
     if (argument == "--headless") {
         mark_headless_mode(options);
     } else if (argument == "--seed") {
-        options.seed = static_cast<std::uint32_t>(std::stoul(next_argument_value(index, argc, argv, "--seed")));
+        options.launch.seed = static_cast<std::uint32_t>(std::stoul(next_argument_value(index, argc, argv, "--seed")));
         mark_headless_mode(options);
     } else if (argument == "--map") {
-        options.mapId = std::stoi(next_argument_value(index, argc, argv, "--map"));
+        options.launch.mapId = std::stoi(next_argument_value(index, argc, argv, "--map"));
         mark_headless_mode(options);
     } else if (argument == "--algo") {
-        options.algorithm = parseAlgorithm(next_argument_value(index, argc, argv, "--algo"));
+        options.launch.algorithm = parseAlgorithm(next_argument_value(index, argc, argv, "--algo"));
         mark_headless_mode(options);
     } else if (argument == "--mode") {
-        options.scenario.mode = parseMode(next_argument_value(index, argc, argv, "--mode"));
+        options.launch.scenario.mode = parseMode(next_argument_value(index, argc, argv, "--mode"));
         mark_headless_mode(options);
     } else if (argument == "--speed") {
-        options.scenario.speedMultiplier = std::stod(next_argument_value(index, argc, argv, "--speed"));
+        options.launch.scenario.speedMultiplier = std::stod(next_argument_value(index, argc, argv, "--speed"));
         mark_headless_mode(options);
     } else if (argument == "--phase") {
-        if (options.scenario.phases.size() == 1 &&
-            options.scenario.phases.front().type == PhaseType::Park &&
-            options.scenario.phases.front().taskCount == 1) {
-            options.scenario.phases.clear();
+        if (options.launch.scenario.phases.size() == 1 &&
+            options.launch.scenario.phases.front().type == PhaseType::Park &&
+            options.launch.scenario.phases.front().taskCount == 1) {
+            options.launch.scenario.phases.clear();
         }
-        options.scenario.phases.push_back(parsePhase(next_argument_value(index, argc, argv, "--phase")));
+        options.launch.scenario.phases.push_back(parsePhase(next_argument_value(index, argc, argv, "--phase")));
         mark_headless_mode(options);
     } else if (argument == "--park-chance") {
-        options.scenario.realtimeParkChance = std::stoi(next_argument_value(index, argc, argv, "--park-chance"));
+        options.launch.scenario.realtimeParkChance = std::stoi(next_argument_value(index, argc, argv, "--park-chance"));
         mark_headless_mode(options);
     } else if (argument == "--exit-chance") {
-        options.scenario.realtimeExitChance = std::stoi(next_argument_value(index, argc, argv, "--exit-chance"));
+        options.launch.scenario.realtimeExitChance = std::stoi(next_argument_value(index, argc, argv, "--exit-chance"));
         mark_headless_mode(options);
     } else if (argument == "--max-steps") {
-        options.maxSteps = std::stoi(next_argument_value(index, argc, argv, "--max-steps"));
+        options.run.maxSteps = std::stoi(next_argument_value(index, argc, argv, "--max-steps"));
         mark_headless_mode(options);
     } else if (argument == "--debug-report") {
-        options.debugReportPath = next_argument_value(index, argc, argv, "--debug-report");
+        options.run.debugReportPath = next_argument_value(index, argc, argv, "--debug-report");
         mark_headless_mode(options);
     } else if (argument == "--deadlock-report") {
-        options.deadlockReportPath = next_argument_value(index, argc, argv, "--deadlock-report");
+        options.run.deadlockReportPath = next_argument_value(index, argc, argv, "--deadlock-report");
         mark_headless_mode(options);
     } else if (argument == "--stop-on-deadlock") {
-        options.stopOnDeadlock = true;
+        options.run.stopOnDeadlock = true;
         mark_headless_mode(options);
     } else if (argument == "--render") {
-        options.suppressOutput = false;
+        options.run.renderOutputEnabled = true;
         mark_headless_mode(options);
     } else {
         return false;
@@ -177,8 +170,8 @@ CliOptions parseArgs(int argc, char* argv[]) {
         }
     }
 
-    if (options.scenario.mode == SimulationMode::Custom && options.scenario.phases.empty()) {
-        options.scenario.phases.push_back({PhaseType::Park, 1});
+    if (options.launch.seed == 0) {
+        options.launch.seed = 1;
     }
 
     return options;
@@ -187,25 +180,38 @@ CliOptions parseArgs(int argc, char* argv[]) {
 int runInteractive() {
     SimulationEngine engine;
     engine.prepareConsole();
-    if (!engine.interactiveSetup()) {
-        std::cout << "\nSimulation cancelled.\n";
+    while (true) {
+        if (!engine.interactiveSetup()) {
+            std::cout << "\nSimulation cancelled.\n";
+            return 0;
+        }
+
+        const bool return_to_menu = engine.runInteractiveConsole();
+        if (return_to_menu) {
+            std::cout << "\nReturned to launch menu.\n";
+            continue;
+        }
+
+        engine.printPerformanceSummary();
+        std::cout << "\nPress any key to exit...\n";
+        (void)console_read_key_blocking();
         return 0;
     }
-
-    engine.runInteractiveConsole();
-    engine.printPerformanceSummary();
-    std::cout << "\nPress any key to exit...\n";
-    (void)console_read_key_blocking();
-    return 0;
 }
 
 int runHeadless(const CliOptions& options) {
     SimulationEngine engine;
-    engine.setSeed(options.seed);
-    engine.loadMap(options.mapId);
-    engine.setAlgorithm(options.algorithm);
-    engine.configureScenario(options.scenario);
-    engine.setSuppressOutput(options.suppressOutput);
+    const agv::core::ValidationResult validation = agv::core::validateLaunchConfig(options.launch);
+    if (!validation.ok()) {
+        for (const auto& issue : validation.errors) {
+            std::cerr << issue.field << ": " << issue.message << '\n';
+        }
+        return 1;
+    }
+
+    engine.setTerminalOutputEnabled(options.run.renderOutputEnabled);
+    engine.configureLaunch(validation.normalizedConfig);
+    engine.startConfiguredSession();
 
     auto build_deadlock_report_path = [](const std::string& base_path, const agv::core::MetricsSnapshot& metrics) {
         std::filesystem::path path(base_path);
@@ -222,24 +228,24 @@ int runHeadless(const CliOptions& options) {
     };
 
     const bool needs_step_loop =
-        options.maxSteps.has_value() ||
-        options.debugReportPath.has_value() ||
-        options.deadlockReportPath.has_value() ||
-        options.stopOnDeadlock;
+        options.run.maxSteps.has_value() ||
+        options.run.debugReportPath.has_value() ||
+        options.run.deadlockReportPath.has_value() ||
+        options.run.stopOnDeadlock;
 
     if (needs_step_loop) {
         std::uint64_t previous_deadlock_count = 0;
-        const int max_steps = options.maxSteps.value_or(std::numeric_limits<int>::max());
+        const int max_steps = options.run.maxSteps.value_or(std::numeric_limits<int>::max());
         for (int step = 0; step < max_steps && !engine.isComplete(); ++step) {
             engine.step();
             const auto metrics = engine.snapshotMetrics();
             if (metrics.deadlockCount > previous_deadlock_count) {
                 previous_deadlock_count = metrics.deadlockCount;
-                if (options.deadlockReportPath.has_value()) {
-                    const std::string report_path = build_deadlock_report_path(*options.deadlockReportPath, metrics);
+                if (options.run.deadlockReportPath.has_value()) {
+                    const std::string report_path = build_deadlock_report_path(*options.run.deadlockReportPath, metrics);
                     engine.writeDebugReport(report_path, true);
                 }
-                if (options.stopOnDeadlock) {
+                if (options.run.stopOnDeadlock) {
                     break;
                 }
             }
@@ -248,8 +254,8 @@ int runHeadless(const CliOptions& options) {
         engine.runUntilComplete();
     }
 
-    if (options.debugReportPath.has_value()) {
-        engine.writeDebugReport(*options.debugReportPath, true);
+    if (options.run.debugReportPath.has_value()) {
+        engine.writeDebugReport(*options.run.debugReportPath, true);
     }
 
     const auto metrics = engine.snapshotMetrics();

@@ -156,13 +156,17 @@ TEST(RenderModelTest, StructuredLogsAreSanitizedAndCategorized) {
     configure_engine(engine, agv::core::PathAlgo::Default, make_single_phase_custom_scenario(), 1);
 
     engine.step();
-    const auto frame = engine.snapshotRenderFrame();
+    const auto logs = engine.snapshotStructuredLogs();
 
-    ASSERT_FALSE(frame.logsTail.empty());
-    EXPECT_FALSE(std::all_of(frame.logsTail.begin(), frame.logsTail.end(),
-        [](const auto& entry) { return entry.category == "GENERAL"; }));
-    EXPECT_TRUE(std::all_of(frame.logsTail.begin(), frame.logsTail.end(),
+    ASSERT_FALSE(logs.empty());
+    EXPECT_FALSE(std::all_of(logs.begin(), logs.end(),
+        [](const auto& entry) { return entry.category == "General"; }));
+    EXPECT_TRUE(std::all_of(logs.begin(), logs.end(),
         [](const auto& entry) { return !has_ansi_escape(entry.text); }));
+    EXPECT_TRUE(std::any_of(logs.begin(), logs.end(),
+        [](const auto& entry) { return entry.agentId.has_value(); }));
+    EXPECT_TRUE(std::any_of(logs.begin(), logs.end(),
+        [](const auto& entry) { return entry.frameId == 0 || entry.frameId == 1; }));
 }
 
 TEST(RenderModelTest, PlannerOverlayProvidesCoordinateBasedPaths) {
@@ -192,6 +196,57 @@ TEST(RenderModelTest, StaleFrameRequestRequiresFullResyncAfterHistoryWindow) {
 
     const auto delta = engine.snapshotRenderDelta(initial.frameId);
     EXPECT_TRUE(delta.requiresFullResync);
+}
+
+TEST(RenderModelTest, AgentAndHudSnapshotsExposeOperationalFields) {
+    agv::core::SimulationEngine engine;
+    configure_engine(engine, agv::core::PathAlgo::Default, make_single_phase_custom_scenario(), 1);
+
+    engine.step();
+    const auto frame = engine.snapshotRenderFrame();
+    const auto debug = engine.snapshotDebugState();
+
+    EXPECT_GE(frame.hud.readyIdleAgentCount, 0);
+    EXPECT_GE(frame.hud.activeGoalActionCount, 0);
+    EXPECT_GE(frame.hud.waitingAgentCount, 0);
+    EXPECT_GE(frame.hud.plannedMoveCount, frame.hud.finalMoveCount);
+    EXPECT_GE(frame.hud.oldestQueuedRequestAge, 0);
+    EXPECT_EQ(frame.hud.noMovementStreak, debug.runtime.noMovementStreak);
+    EXPECT_EQ(frame.hud.maxNoMovementStreak, debug.runtime.maxNoMovementStreak);
+    EXPECT_EQ(frame.hud.lastTaskCompletionStep, debug.runtime.lastTaskCompletionStep);
+    EXPECT_EQ(frame.hud.stepsSinceLastTaskCompletion, debug.runtime.stepsSinceLastTaskCompletion);
+
+    ASSERT_FALSE(frame.agents.empty());
+    for (const auto& agent : frame.agents) {
+        const auto debug_it = std::find_if(debug.agents.begin(), debug.agents.end(),
+            [&agent](const auto& item) { return item.id == agent.id; });
+        ASSERT_NE(debug_it, debug.agents.end());
+        EXPECT_EQ(agent.taskActive, debug_it->taskActive);
+        EXPECT_EQ(agent.taskAgeSteps, debug_it->taskAgeSteps);
+        EXPECT_DOUBLE_EQ(agent.taskDistance, debug_it->taskDistance);
+        EXPECT_EQ(agent.taskTurns, debug_it->taskTurns);
+        if (agent.state == agv::core::AgentState::Idle) {
+            EXPECT_EQ(agent.waitReason, agv::core::AgentWaitReason::Idle);
+        }
+        if (agent.actionTimer > 0) {
+            EXPECT_EQ(agent.waitReason, agv::core::AgentWaitReason::GoalAction);
+        }
+    }
+}
+
+TEST(RenderModelTest, SnapshotFrameTextIncludesOperationalHudAndStructuredLogPrefixes) {
+    agv::core::SimulationEngine engine;
+    configure_engine(engine, agv::core::PathAlgo::Default, make_single_phase_custom_scenario(), 1);
+
+    engine.step();
+    const auto frame = engine.snapshotFrame();
+
+    EXPECT_NE(frame.text.find("Backlog/Completion"), std::string::npos);
+    EXPECT_NE(frame.text.find("Fleet Activity"), std::string::npos);
+    EXPECT_NE(frame.text.find("Planner Pipeline"), std::string::npos);
+    EXPECT_NE(frame.text.find("Task(age/d/t)"), std::string::npos);
+    EXPECT_NE(frame.text.find("[Control]"), std::string::npos);
+    EXPECT_NE(frame.text.find("paused)"), std::string::npos);
 }
 
 TEST(RenderModelTest, FullSnapshotPlusDeltaReplayReconstructsLatestState) {
@@ -227,14 +282,13 @@ TEST(RenderModelTest, FullSnapshotPlusDeltaReplayReconstructsLatestState) {
 TEST(RenderModelTest, IpcServerSupportsStaticSceneDeltaFlowWithMockClient) {
     std::stringstream input;
     input
-        << R"({"command":"loadMap","mapId":1})" << '\n'
-        << R"({"command":"setAlgorithm","algorithm":"default"})" << '\n'
-        << R"({"command":"configureScenario","scenario":{"mode":"custom","speedMultiplier":0.0,"phases":[{"type":"park","taskCount":1}]}})" << '\n'
-        << R"({"command":"subscribeFrameDelta","enabled":true})" << '\n'
-        << R"({"command":"getStaticScene"})" << '\n'
-        << R"({"command":"getFrame"})" << '\n'
-        << R"({"command":"step"})" << '\n'
-        << R"({"command":"getDelta","sinceFrameId":0})" << '\n';
+        << R"({"protocolVersion":1,"requestId":"start","command":"startSession","launchConfig":{"seed":7,"mapId":1,"algorithm":"default","scenario":{"mode":"custom","speedMultiplier":0.0,"phases":[{"type":"park","taskCount":1}]}}})" << '\n'
+        << R"({"protocolVersion":1,"requestId":"subscribe","command":"subscribeFrameDelta","enabled":true})" << '\n'
+        << R"({"protocolVersion":1,"requestId":"scene","command":"getStaticScene","sessionId":1})" << '\n'
+        << R"({"protocolVersion":1,"requestId":"frame","command":"getFrame","sessionId":1})" << '\n'
+        << R"({"protocolVersion":1,"requestId":"burst","command":"runBurst","sessionId":1,"maxSteps":1,"maxDurationMs":10})" << '\n'
+        << R"({"protocolVersion":1,"requestId":"delta","command":"getDelta","sessionId":1,"sinceFrameId":0})" << '\n'
+        << R"({"protocolVersion":1,"requestId":"logs","command":"getLogs","sessionId":1,"sinceSeq":0})" << '\n';
 
     std::stringstream output;
     agv::ipc::RenderIpcServer server;
@@ -243,6 +297,7 @@ TEST(RenderModelTest, IpcServerSupportsStaticSceneDeltaFlowWithMockClient) {
     bool saw_scene = false;
     bool saw_event = false;
     bool saw_delta = false;
+    bool saw_logs = false;
 
     std::string line;
     while (std::getline(output, line)) {
@@ -264,11 +319,18 @@ TEST(RenderModelTest, IpcServerSupportsStaticSceneDeltaFlowWithMockClient) {
             EXPECT_FALSE(message["delta"]["requiresFullResync"].get<bool>());
             EXPECT_GE(message["delta"]["toFrameId"].get<std::uint64_t>(), 1u);
         }
+        if (message.value("command", std::string{}) == "getLogs") {
+            saw_logs = true;
+            EXPECT_TRUE(message.contains("logs"));
+            EXPECT_TRUE(message["logs"].is_array());
+            EXPECT_GE(message["lastLogSeq"].get<std::uint64_t>(), 0u);
+        }
     }
 
     EXPECT_TRUE(saw_scene);
     EXPECT_TRUE(saw_event);
     EXPECT_TRUE(saw_delta);
+    EXPECT_TRUE(saw_logs);
 }
 
 }  // namespace

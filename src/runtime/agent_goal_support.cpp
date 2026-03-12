@@ -219,15 +219,17 @@ public:
         if (agent_returns_home_local(context_.agent->state)) {
             if (!context_.agent->home_base) {
                 context_.agent->state = AgentState::Idle;
-                logger_log(context_.logger, "[%sWarn%s] Agent %c: no home position is configured. Switching to IDLE.",
-                    C_B_RED, C_NRM, context_.agent->symbol);
+                logger_log_event(context_.logger, "Wait", "Warn", context_.agent->id, std::nullopt,
+                    "Agent %c: no home position is configured. Switching to IDLE.",
+                    context_.agent->symbol);
             }
             return;
         }
 
         context_.agent->state = AgentState::Idle;
-        logger_log(context_.logger, "[%sInfo%s] Agent %c: no valid goal found. Waiting.",
-            C_YEL, C_NRM, context_.agent->symbol);
+        logger_log_event(context_.logger, "Wait", "Info", context_.agent->id, std::nullopt,
+            "Agent %c: no valid goal found. Waiting.",
+            context_.agent->symbol);
     }
 
     Node* selectBestChargeStation() const {
@@ -242,8 +244,9 @@ private:
         double best_cost = INF;
         Node* best = select_best_candidate_local(candidates, context_.agent, evaluator, &best_cost);
         if (best) {
-            logger_log(context_.logger, "[%sPlan%s] Agent %c selected temporary holding goal (%d,%d) (cost %.1f)",
-                C_CYN, C_NRM, context_.agent->symbol, best->x, best->y, best_cost);
+            logger_log_event(context_.logger, "Planner", "Info", context_.agent->id, std::nullopt,
+                "Agent %c selected temporary holding goal (%d,%d) (cost %.1f)",
+                context_.agent->symbol, best->x, best->y, best_cost);
         }
         return best;
     }
@@ -265,8 +268,9 @@ private:
 
         const std::string_view label = goal_selection_log_label_local(type);
         if (!label.empty() && best && out_cost) {
-            logger_log(context_.logger, "[%sPlan%s] Agent %c selected %s (%d,%d) (cost %.1f)",
-                C_CYN, C_NRM, context_.agent->symbol, label, best->x, best->y, *out_cost);
+            logger_log_event(context_.logger, "Planner", "Info", context_.agent->id, std::nullopt,
+                "Agent %c selected %s (%d,%d) (cost %.1f)",
+                context_.agent->symbol, label, best->x, best->y, *out_cost);
         }
 
         return best;
@@ -289,8 +293,9 @@ void maybe_request_temporary_holding_goal_local(Agent* agent, Logger* logger) {
     if (agent->state == AgentState::ReturningHomeEmpty &&
         agent->home_base &&
         agent->goal != agent->home_base) {
-        logger_log(logger, "[%sPlan%s] Agent %c is returning home with a stale temporary holding goal (%d,%d). Restoring the home goal.",
-            C_CYN, C_NRM, agent->symbol, agent->goal->x, agent->goal->y);
+        logger_log_event(logger, "Planner", "Info", agent->id, std::nullopt,
+            "Agent %c is returning home with a stale temporary holding goal (%d,%d). Restoring the home goal.",
+            agent->symbol, agent->goal->x, agent->goal->y);
         release_current_goal_reservation_local(agent);
         agent->pf.reset();
         return;
@@ -303,8 +308,9 @@ void maybe_request_temporary_holding_goal_local(Agent* agent, Logger* logger) {
     if (agent->state == AgentState::ReturningHomeEmpty &&
         agent->home_base &&
         agent->goal == agent->home_base) {
-        logger_log(logger, "[%sPlan%s] Agent %c is stuck while returning home. Keeping the home goal and replanning with temporary bay traversal enabled.",
-            C_CYN, C_NRM, agent->symbol);
+        logger_log_event(logger, "Planner", "Warn", agent->id, std::nullopt,
+            "Agent %c is stuck while returning home. Keeping the home goal and replanning with temporary bay traversal enabled.",
+            agent->symbol);
         agent->pf.reset();
         return;
     }
@@ -314,8 +320,9 @@ void maybe_request_temporary_holding_goal_local(Agent* agent, Logger* logger) {
         return;
     }
 
-    logger_log(logger, "[%sPlan%s] Agent %c is stuck while returning home. Reassigning to a temporary holding goal.",
-        C_CYN, C_NRM, agent->symbol);
+    logger_log_event(logger, "Planner", "Warn", agent->id, std::nullopt,
+        "Agent %c is stuck while returning home. Reassigning to a temporary holding goal.",
+        agent->symbol);
     release_current_goal_reservation_local(agent);
     agent->pf.reset();
 }
@@ -328,8 +335,9 @@ void maybe_switch_to_charge_mode_local(Agent* agent, Logger* logger) {
     }
 
     release_current_goal_reservation_local(agent);
-    logger_log(logger, "[%sCharge%s] Agent %c exceeded the mileage threshold while returning home. Switching to charge mode.",
-        C_B_YEL, C_NRM, agent->symbol);
+    logger_log_event(logger, "Charge", "Info", agent->id, std::nullopt,
+        "Agent %c exceeded the mileage threshold while returning home. Switching to charge mode.",
+        agent->symbol);
     agent->state = AgentState::GoingToCharge;
 }
 

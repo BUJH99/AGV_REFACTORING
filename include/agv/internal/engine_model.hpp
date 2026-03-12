@@ -289,15 +289,35 @@ public:
     int exit_chance{30};
 };
 
+class Simulation_;
+
+struct LoggerMessageMeta final {
+    std::string category{"General"};
+    std::string level{"Info"};
+    std::optional<int> agentId{};
+    std::optional<int> phaseIndex{};
+};
+
 class Logger final {
 public:
+    static constexpr std::size_t kStructuredLogHistoryLimit = 512;
+
     Logger() = default;
 
+    void bindSimulation(Simulation_* simulation);
+    void setContext(int step, std::uint64_t frame_id, int phase_index);
     void appendLine(std::string_view message);
+    void appendStructuredLine(const LoggerMessageMeta& meta, std::string_view message);
 
     std::array<std::string, LOG_BUFFER_LINES> logs{};
     int log_head{0};
     int log_count{0};
+    std::deque<agv::core::StructuredLogEntry> structured_logs{};
+    std::uint64_t next_structured_seq{1};
+    Simulation_* owner{nullptr};
+    int context_step{0};
+    std::uint64_t context_frame_id{0};
+    int context_phase_index{-1};
 };
 
 template <typename... Args>
@@ -306,6 +326,27 @@ inline void logger_log(Logger* logger, std::string_view format, Args&&... args) 
         return;
     }
     logger->appendLine(agv::internal::text::printf_like(format, std::forward<Args>(args)...));
+}
+
+template <typename... Args>
+inline void logger_log_event(
+    Logger* logger,
+    std::string_view category,
+    std::string_view level,
+    std::optional<int> agent_id,
+    std::optional<int> phase_index,
+    std::string_view format,
+    Args&&... args) {
+    if (!logger) {
+        return;
+    }
+
+    LoggerMessageMeta meta;
+    meta.category = std::string(category);
+    meta.level = std::string(level);
+    meta.agentId = agent_id;
+    meta.phaseIndex = phase_index;
+    logger->appendStructuredLine(meta, agv::internal::text::printf_like(format, std::forward<Args>(args)...));
 }
 
 using Simulation = Simulation_;
@@ -653,14 +694,10 @@ struct PlannerOverlayCapture final {
 
 struct RenderModelCache final {
     static constexpr std::size_t kDeltaHistoryLimit = 256;
-    static constexpr std::size_t kLogHistoryLimit = 1024;
 
     std::uint64_t session_id{0};
     std::uint64_t scene_version{0};
     std::uint64_t frame_id{0};
-    std::uint64_t next_log_seq{1};
-    std::vector<std::string> recent_log_lines{};
-    std::deque<agv::core::StructuredLogEntry> log_history{};
     agv::core::RenderFrameSnapshot last_advanced_frame{};
     bool has_last_advanced_frame{false};
     std::deque<agv::core::RenderFrameDelta> recent_deltas{};
@@ -670,9 +707,6 @@ struct RenderModelCache final {
         session_id = new_session_id;
         scene_version = 1;
         frame_id = 0;
-        next_log_seq = 1;
-        recent_log_lines.clear();
-        log_history.clear();
         last_advanced_frame = {};
         has_last_advanced_frame = false;
         recent_deltas.clear();
@@ -759,7 +793,7 @@ public:
     void updateState();
     void executeOneStep(bool is_paused);
     bool isComplete() const;
-    void run();
+    bool run();
     void printPerformanceSummary() const;
 
     GridMap map_storage{};

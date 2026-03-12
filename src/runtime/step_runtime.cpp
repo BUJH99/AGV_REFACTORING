@@ -541,6 +541,9 @@ private:
         frame.cleanup_region = (frame.is_custom_mode &&
             frame.phase_idx_for_step >= sim->scenario_manager->num_phases);
         frame.step_start_cpu = clock();
+        if (sim->logger) {
+            sim->logger->setContext(frame.step_label, 0, frame.phase_idx_for_step);
+        }
         return frame;
     }
 
@@ -672,6 +675,9 @@ private:
         sim->total_executed_steps = frame.step_label;
         sim->render_model.frame_id = static_cast<std::uint64_t>(frame.step_label);
         render_model_capture_advanced_frame(sim);
+        if (sim->logger) {
+            sim->logger->setContext(frame.step_label, sim->render_model.frame_id, frame.phase_idx_for_step);
+        }
         if (!sim->render_state.suppress_flush) {
             sim->renderer.drawFrame(sim, is_paused);
         }

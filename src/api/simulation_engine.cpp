@@ -1,9 +1,13 @@
 #include "agv/simulation_engine.hpp"
 
+#include "agv/internal/console_launch_wizard.hpp"
 #include "agv/internal/engine_internal.hpp"
 
 #include <algorithm>
+#include <chrono>
+#include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
@@ -72,6 +76,49 @@ AgentState fromInternalAgentState(::AgentState state) {
 
 PhaseType fromInternalPhase(::PhaseType phase) {
     return phase == ::PhaseType::Exit ? PhaseType::Exit : PhaseType::Park;
+}
+
+LaunchConfig default_launch_config() {
+    LaunchConfig config;
+    config.seed = static_cast<std::uint32_t>(std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
+    config.mapId = 1;
+    config.algorithm = PathAlgo::Default;
+    config.scenario.mode = SimulationMode::Custom;
+    config.scenario.speedMultiplier = 0.0;
+    config.scenario.realtimeParkChance = 0;
+    config.scenario.realtimeExitChance = 0;
+    config.scenario.phases = {{PhaseType::Park, 1}};
+    return config;
+}
+
+SimulationConfig to_internal_config(const LaunchConfig& launch_config, bool terminal_output_enabled) {
+    SimulationConfig config{};
+    config.seed = launch_config.seed;
+    config.map_id = launch_config.mapId;
+    config.path_algo = toInternalAlgo(launch_config.algorithm);
+    config.mode = toInternalMode(launch_config.scenario.mode);
+    config.speed_multiplier = static_cast<float>(launch_config.scenario.speedMultiplier);
+    config.realtime_park_chance = launch_config.scenario.realtimeParkChance;
+    config.realtime_exit_chance = launch_config.scenario.realtimeExitChance;
+    config.num_phases = std::min<int>(static_cast<int>(launch_config.scenario.phases.size()), MAX_PHASES);
+    std::fill(config.phases.begin(), config.phases.end(), ConfigPhase{::PhaseType::Park, 1});
+    for (int index = 0; index < config.num_phases; ++index) {
+        config.phases[index].type = toInternalPhase(launch_config.scenario.phases[static_cast<std::size_t>(index)].type);
+        config.phases[index].task_count = launch_config.scenario.phases[static_cast<std::size_t>(index)].taskCount;
+    }
+    config.suppress_stdout = !terminal_output_enabled;
+    return config;
+}
+
+std::string join_validation_messages(const std::vector<ValidationIssue>& issues) {
+    std::ostringstream message;
+    for (std::size_t index = 0; index < issues.size(); ++index) {
+        if (index > 0) {
+            message << "; ";
+        }
+        message << issues[index].field << ": " << issues[index].message;
+    }
+    return message.str();
 }
 
 int countInFlightTasks(const AgentManager* manager) {
@@ -733,14 +780,94 @@ std::string buildDebugReportText(const DebugSnapshot& snapshot) {
 
 }  // namespace
 
+ValidationResult validateLaunchConfig(const LaunchConfig& config) {
+    ValidationResult result;
+    result.normalizedConfig = config;
+
+    if (result.normalizedConfig.seed == 0) {
+        result.normalizedConfig.seed = default_launch_config().seed;
+    }
+
+    if (result.normalizedConfig.mapId < 1 || result.normalizedConfig.mapId > 7) {
+        result.errors.push_back({"mapId", "out_of_range", "Map id must be in the range 1..7."});
+    }
+
+    if (result.normalizedConfig.scenario.speedMultiplier < 0.0 ||
+        result.normalizedConfig.scenario.speedMultiplier > static_cast<double>(MAX_SPEED_MULTIPLIER)) {
+        result.errors.push_back({
+            "scenario.speedMultiplier",
+            "out_of_range",
+            "Speed multiplier must be in the range 0.0..10000.0.",
+        });
+    }
+
+    if (result.normalizedConfig.scenario.realtimeParkChance < 0 ||
+        result.normalizedConfig.scenario.realtimeParkChance > 100) {
+        result.errors.push_back({
+            "scenario.realtimeParkChance",
+            "out_of_range",
+            "Realtime park chance must be in the range 0..100.",
+        });
+    }
+
+    if (result.normalizedConfig.scenario.realtimeExitChance < 0 ||
+        result.normalizedConfig.scenario.realtimeExitChance > 100) {
+        result.errors.push_back({
+            "scenario.realtimeExitChance",
+            "out_of_range",
+            "Realtime exit chance must be in the range 0..100.",
+        });
+    }
+
+    if ((result.normalizedConfig.scenario.realtimeParkChance +
+            result.normalizedConfig.scenario.realtimeExitChance) > 100) {
+        result.errors.push_back({
+            "scenario.realtimeChanceSum",
+            "sum_exceeds_100",
+            "Realtime park chance plus exit chance must not exceed 100.",
+        });
+    }
+
+    if (result.normalizedConfig.scenario.phases.size() > static_cast<std::size_t>(MAX_PHASES)) {
+        result.errors.push_back({
+            "scenario.phases",
+            "too_many_phases",
+            "Custom scenarios support at most 20 phases.",
+        });
+    }
+
+    for (std::size_t index = 0; index < result.normalizedConfig.scenario.phases.size(); ++index) {
+        if (result.normalizedConfig.scenario.phases[index].taskCount <= 0) {
+            result.errors.push_back({
+                "scenario.phases[" + std::to_string(index) + "].taskCount",
+                "non_positive_task_count",
+                "Each phase task count must be at least 1.",
+            });
+        }
+    }
+
+    if (result.normalizedConfig.scenario.mode == SimulationMode::Custom &&
+        result.normalizedConfig.scenario.phases.empty()) {
+        result.warnings.push_back({
+            "scenario.phases",
+            "defaulted_single_park",
+            "Empty custom phases were normalized to a single Park x1 phase.",
+        });
+        result.normalizedConfig.scenario.phases.push_back({PhaseType::Park, 1});
+    }
+
+    return result;
+}
+
 struct SimulationEngine::Impl {
     std::unique_ptr<Simulation> simulation;
-    SimulationConfig config{};
+    LaunchConfig staged_launch_config{};
+    bool terminal_output_enabled{true};
     bool dirty{true};
     std::uint64_t session_counter{0};
  
     Impl()
-        : config(default_simulation_config()) {
+        : staged_launch_config(default_launch_config()) {
     }
 
     Simulation& createFreshSimulation() {
@@ -755,19 +882,47 @@ struct SimulationEngine::Impl {
         return *simulation;
     }
 
+    ValidationResult validateStagedLaunchConfig() const {
+        return validateLaunchConfig(staged_launch_config);
+    }
+
     Simulation& rebuildSimulationIfNeeded() {
         if (!dirty && simulation != nullptr) {
             return *simulation;
         }
 
+        const ValidationResult validation = validateStagedLaunchConfig();
+        if (!validation.ok()) {
+            throw std::invalid_argument(join_validation_messages(validation.errors));
+        }
+
         createFreshSimulation();
-        if (!apply_simulation_config(simulation.get(), config)) {
+        if (!apply_simulation_config(
+                simulation.get(),
+                to_internal_config(validation.normalizedConfig, terminal_output_enabled))) {
             throw std::runtime_error("apply_simulation_config failed");
         }
         render_model_reset(simulation.get(), ++session_counter);
-
+        staged_launch_config = validation.normalizedConfig;
         dirty = false;
         return *simulation;
+    }
+
+    SessionDescriptor makeSessionDescriptor(const LaunchConfig& launch_config) const {
+        SessionDescriptor descriptor;
+        if (simulation != nullptr) {
+            descriptor.sessionId = simulation->render_model.session_id;
+            descriptor.sceneVersion = simulation->render_model.scene_version;
+            descriptor.frameId = simulation->render_model.frame_id;
+        }
+        descriptor.launchConfig = launch_config;
+        return descriptor;
+    }
+
+    SessionDescriptor startConfiguredSession() {
+        dirty = true;
+        (void)rebuildSimulationIfNeeded();
+        return makeSessionDescriptor(staged_launch_config);
     }
 };
 
@@ -780,41 +935,61 @@ SimulationEngine::SimulationEngine(SimulationEngine&&) noexcept = default;
 
 SimulationEngine& SimulationEngine::operator=(SimulationEngine&&) noexcept = default;
 
+void SimulationEngine::configureLaunch(const LaunchConfig& config) {
+    const ValidationResult validation = validateLaunchConfig(config);
+    if (!validation.ok()) {
+        throw std::invalid_argument(join_validation_messages(validation.errors));
+    }
+
+    impl_->staged_launch_config = validation.normalizedConfig;
+    impl_->dirty = true;
+}
+
+SessionDescriptor SimulationEngine::startConfiguredSession() {
+    return impl_->startConfiguredSession();
+}
+
+void SimulationEngine::setTerminalOutputEnabled(bool enabled) {
+    impl_->terminal_output_enabled = enabled;
+    if (impl_->simulation != nullptr) {
+        impl_->simulation->suppress_stdout = !enabled;
+        impl_->simulation->render_state.suppress_flush = !enabled;
+    }
+}
+
+void SimulationEngine::setSpeedMultiplier(double multiplier) {
+    if (multiplier < 0.0 || multiplier > static_cast<double>(MAX_SPEED_MULTIPLIER)) {
+        throw std::invalid_argument("scenario.speedMultiplier: Speed multiplier must be in the range 0.0..10000.0.");
+    }
+
+    impl_->staged_launch_config.scenario.speedMultiplier = multiplier;
+    if (impl_->simulation != nullptr && !impl_->dirty) {
+        simulation_set_speed_multiplier(impl_->simulation.get(), multiplier);
+    }
+}
+
 void SimulationEngine::setSeed(std::uint32_t seed) {
-    impl_->config.seed = seed;
+    impl_->staged_launch_config.seed = seed;
     impl_->dirty = true;
 }
 
 void SimulationEngine::loadMap(int mapId) {
-    impl_->config.map_id = mapId;
+    impl_->staged_launch_config.mapId = mapId;
     impl_->dirty = true;
 }
 
 void SimulationEngine::setAlgorithm(PathAlgo algorithm) {
-    impl_->config.path_algo = toInternalAlgo(algorithm);
+    impl_->staged_launch_config.algorithm = algorithm;
     impl_->dirty = true;
 }
 
 void SimulationEngine::configureScenario(const ScenarioConfig& config) {
-    impl_->config.mode = toInternalMode(config.mode);
-    impl_->config.speed_multiplier = static_cast<float>(config.speedMultiplier);
-    impl_->config.realtime_park_chance = config.realtimeParkChance;
-    impl_->config.realtime_exit_chance = config.realtimeExitChance;
-    impl_->config.num_phases = std::min<int>(static_cast<int>(config.phases.size()), MAX_PHASES);
-
-    std::fill(impl_->config.phases.begin(), impl_->config.phases.end(), ConfigPhase{::PhaseType::Park, 1});
-    for (int i = 0; i < impl_->config.num_phases; ++i) {
-        const auto& phase = config.phases[static_cast<std::size_t>(i)];
-        impl_->config.phases[i].type = toInternalPhase(phase.type);
-        impl_->config.phases[i].task_count = phase.taskCount;
-    }
-
+    impl_->staged_launch_config.scenario = config;
     impl_->dirty = true;
 }
 
 void SimulationEngine::setSuppressOutput(bool suppress) {
-    impl_->config.suppress_stdout = suppress;
-    impl_->dirty = true;
+    setTerminalOutputEnabled(!suppress);
 }
 
 void SimulationEngine::prepareConsole() {
@@ -822,26 +997,34 @@ void SimulationEngine::prepareConsole() {
 }
 
 bool SimulationEngine::interactiveSetup() {
-    Simulation& simulation = impl_->createFreshSimulation();
-    impl_->dirty = false;
-    const bool configured = simulation_setup(&simulation) != 0;
-    if (configured) {
-        render_model_reset(&simulation, ++impl_->session_counter);
+    LaunchConfig launch_config;
+    const std::filesystem::path last_launch_path = agv::internal::console::default_last_launch_path();
+    if (!agv::internal::console::run_console_launch_wizard(
+            std::cin,
+            std::cout,
+            last_launch_path,
+            launch_config)) {
+        return false;
     }
-    return configured;
+
+    configureLaunch(launch_config);
+    const SessionDescriptor session = startConfiguredSession();
+    (void)agv::internal::console::save_last_launch_config(last_launch_path, session.launchConfig);
+    return true;
 }
 
-void SimulationEngine::runInteractiveConsole() {
+bool SimulationEngine::runInteractiveConsole() {
     Simulation& simulation = impl_->requireInitialized("interactiveSetup must be called first");
 
     ui_enter_alt_screen();
     try {
-        simulation.run();
+        const bool return_to_menu = simulation.run();
+        ui_leave_alt_screen();
+        return return_to_menu;
     } catch (...) {
         ui_leave_alt_screen();
         throw;
     }
-    ui_leave_alt_screen();
 }
 
 void SimulationEngine::printPerformanceSummary() const {
@@ -849,7 +1032,42 @@ void SimulationEngine::printPerformanceSummary() const {
 }
 
 void SimulationEngine::step() {
-    execute_headless_step(&impl_->rebuildSimulationIfNeeded());
+    execute_headless_step(&impl_->rebuildSimulationIfNeeded(), true);
+}
+
+BurstRunResult SimulationEngine::runBurst(int maxSteps, int maxDurationMs) {
+    if (maxSteps <= 0 && maxDurationMs <= 0) {
+        throw std::invalid_argument("runBurst requires a positive maxSteps or maxDurationMs.");
+    }
+
+    Simulation& simulation = impl_->rebuildSimulationIfNeeded();
+    BurstRunResult result;
+    const auto start = std::chrono::steady_clock::now();
+
+    while (!simulation.isComplete()) {
+        if (maxSteps > 0 && result.executedSteps >= maxSteps) {
+            break;
+        }
+        if (maxDurationMs > 0) {
+            const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - start);
+            if (elapsed.count() >= maxDurationMs) {
+                break;
+            }
+        }
+
+        const bool complete_after_step = execute_headless_step(&simulation, false);
+        ++result.executedSteps;
+        if (complete_after_step) {
+            break;
+        }
+    }
+
+    const RenderFrameSnapshot frame = snapshot_render_frame(&simulation, RenderQueryOptions{});
+    result.complete = simulation.isComplete();
+    result.frameId = frame.frameId;
+    result.lastLogSeq = frame.lastLogSeq;
+    return result;
 }
 
 void SimulationEngine::runUntilComplete() {
@@ -879,6 +1097,12 @@ RenderFrameDelta SimulationEngine::snapshotRenderDelta(
     std::uint64_t sinceFrameId,
     const RenderQueryOptions& options) {
     return snapshot_render_delta(&impl_->rebuildSimulationIfNeeded(), sinceFrameId, options);
+}
+
+std::vector<StructuredLogEntry> SimulationEngine::snapshotStructuredLogs(
+    std::uint64_t sinceSeq,
+    std::size_t maxEntries) {
+    return snapshot_structured_logs(&impl_->rebuildSimulationIfNeeded(), sinceSeq, maxEntries);
 }
 
 RenderFrame SimulationEngine::snapshotFrame(bool paused) {

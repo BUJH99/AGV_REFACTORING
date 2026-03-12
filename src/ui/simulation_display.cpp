@@ -47,59 +47,103 @@ std::string_view path_algo_label(agv::core::PathAlgo algorithm) {
     }
 }
 
-std::string_view agent_state_label(agv::core::AgentState state) {
+std::string_view agent_state_short_label(agv::core::AgentState state) {
     switch (state) {
         case agv::core::AgentState::GoingToPark:
-            return "GOING_TO_PARK";
+            return "TO_PARK";
         case agv::core::AgentState::ReturningHomeEmpty:
-            return "RETURN_HOME_EMPTY";
+            return "HOME_EMPTY";
         case agv::core::AgentState::GoingToCollect:
-            return "GOING_TO_COLLECT";
+            return "TO_PICK";
         case agv::core::AgentState::ReturningWithCar:
-            return "RETURN_WITH_CAR";
+            return "RETURN_CAR";
         case agv::core::AgentState::GoingToCharge:
-            return "GO_TO_CHARGE";
+            return "TO_CHARGE";
         case agv::core::AgentState::Charging:
             return "CHARGING";
         case agv::core::AgentState::ReturningHomeMaintenance:
-            return "RETURN_HOME_MAINT";
+            return "HOME_MAINT";
         case agv::core::AgentState::Idle:
         default:
             return "IDLE";
     }
 }
 
-const char* agent_state_color(agv::core::AgentState state) {
-    switch (state) {
-        case agv::core::AgentState::GoingToPark:
-        case agv::core::AgentState::GoingToCollect:
-            return C_YEL;
-        case agv::core::AgentState::ReturningHomeEmpty:
-        case agv::core::AgentState::ReturningHomeMaintenance:
-            return C_CYN;
-        case agv::core::AgentState::ReturningWithCar:
-            return C_GRN;
-        case agv::core::AgentState::GoingToCharge:
-            return C_B_RED;
-        case agv::core::AgentState::Charging:
-            return C_RED;
-        case agv::core::AgentState::Idle:
+const char* log_level_color(const StructuredLogEntry& entry) {
+    if (entry.level == "Warn") {
+        return C_B_YEL;
+    }
+    if (entry.level == "Error") {
+        return C_B_RED;
+    }
+    if (entry.category == "Control") {
+        return C_B_CYN;
+    }
+    if (entry.category == "Planner") {
+        return C_B_MAG;
+    }
+    if (entry.category == "Charge") {
+        return C_B_GRN;
+    }
+    if (entry.category == "Wait") {
+        return C_CYN;
+    }
+    if (entry.category == "Dispatch") {
+        return C_GRN;
+    }
+    if (entry.category == "Scenario") {
+        return C_YEL;
+    }
+    if (entry.category == "Deadlock") {
+        return C_B_RED;
+    }
+    return C_GRY;
+}
+
+std::string_view wait_reason_label(agv::core::AgentWaitReason reason) {
+    switch (reason) {
+        case agv::core::AgentWaitReason::Idle:
+            return "IDLE";
+        case agv::core::AgentWaitReason::Charging:
+            return "CHG";
+        case agv::core::AgentWaitReason::GoalAction:
+            return "ACT";
+        case agv::core::AgentWaitReason::Rotation:
+            return "ROT";
+        case agv::core::AgentWaitReason::BlockedByStationary:
+            return "BLK";
+        case agv::core::AgentWaitReason::PriorityYield:
+            return "YLD";
+        case agv::core::AgentWaitReason::Stuck:
+            return "STK";
+        case agv::core::AgentWaitReason::Oscillating:
+            return "OSC";
+        case agv::core::AgentWaitReason::None:
         default:
-            return C_GRY;
+            return "-";
     }
 }
 
-const char* log_level_color(const StructuredLogEntry& entry) {
-    if (entry.level == "warning") {
-        return C_B_YEL;
+std::string format_task_summary(const AgentRenderState& agent) {
+    if (!agent.taskActive) {
+        return "-";
     }
-    if (entry.level == "error") {
-        return C_B_RED;
+    return linef("%3d/%4.1f/%2d", agent.taskAgeSteps, agent.taskDistance, agent.taskTurns);
+}
+
+std::string format_timer_summary(const AgentRenderState& agent) {
+    return linef("%2d/%2d/%2d", agent.chargeTimer, agent.actionTimer, agent.rotationWait);
+}
+
+std::string format_log_prefix(const StructuredLogEntry& entry) {
+    std::string prefix = linef("[s%06d][%s]", entry.step, entry.category.c_str());
+    if (entry.agentId.has_value()) {
+        prefix += linef("[A%d]", *entry.agentId);
     }
-    if (entry.category == "CTRL") {
-        return C_B_CYN;
+    if (entry.phaseIndex.has_value()) {
+        prefix += linef("[P%d]", *entry.phaseIndex);
     }
-    return C_GRY;
+    return prefix;
 }
 
 std::string join_lines(const std::vector<std::string>& lines) {
@@ -121,64 +165,52 @@ void append_hud_lines(std::vector<std::string>& lines, const HudSnapshot& hud) {
         paused_suffix = linef(" %s[ PAUSED ]%s", C_B_YEL, C_NRM);
     }
 
-    if (hud.mode == agv::core::SimulationMode::Custom) {
-        if (hud.currentPhaseIndex >= 0 && hud.currentPhaseIndex < hud.totalPhases) {
-            lines.push_back(linef(
-                "%s--- Custom Scenario: %d/%d [Speed: %.1fx] ---  (Map #%d)%s%s",
-                C_B_WHT,
-                hud.currentPhaseIndex + 1,
-                hud.totalPhases,
-                hud.speedMultiplier,
-                hud.mapId,
-                paused_suffix.c_str(),
-                C_NRM));
-            lines.push_back(linef(
-                "Time: %d, Current Task: %s (%d/%d)",
-                hud.step,
-                hud.currentPhaseType == agv::core::PhaseType::Exit ? "Exit" : "Park",
-                hud.phaseTasksCompleted,
-                hud.phaseTaskTarget));
-        } else {
-            lines.push_back(linef(
-                "%s--- Custom Scenario: All phases complete ---  (Map #%d)%s%s",
-                C_B_WHT,
-                hud.mapId,
-                paused_suffix.c_str(),
-                C_NRM));
-            lines.push_back(linef("Time: %d", hud.step));
-        }
-    } else {
-        lines.push_back(linef(
-            "%s--- Real-Time Simulation [Speed: %.1fx] ---  (Map #%d)%s%s",
-            C_B_WHT,
-            hud.speedMultiplier,
-            hud.mapId,
-            paused_suffix.c_str(),
-            C_NRM));
-        lines.push_back(linef(
-            "Time: %d | Pending Tasks: %d | In-Flight: %d | Outstanding: %d",
-            hud.step,
-            hud.queuedTaskCount,
-            hud.inFlightTaskCount,
-            hud.outstandingTaskCount));
-    }
-
-    lines.push_back(linef("Parked Cars: %d/%d", hud.parkedCars, hud.totalGoalCount));
+    const char* mode_label = (hud.mode == agv::core::SimulationMode::Realtime) ? "Real-Time" : "Custom";
     lines.push_back(linef(
-        "CPU Time (ms) - Last: %.3f | Avg: %.3f | Total: %.2f",
-        hud.lastStepCpuTimeMs,
-        hud.avgCpuTimeMs,
-        hud.totalCpuTimeMs));
-    lines.push_back(linef("%sPath Algo:%s %s", C_B_WHT, C_NRM, path_algo_label(hud.algorithm).data()));
-    lines.push_back(linef(
-        "%sWHCA horizon:%s %d  | wf_edges(last): %d  | SCC(last): %d  | CBS(last): %s (exp:%d)",
+        "%s--- %s Simulation --- Map #%d | Step %d | Speed %.1fx%s%s",
         C_B_WHT,
-        C_NRM,
-        hud.whcaHorizon,
+        mode_label,
+        hud.mapId,
+        hud.step,
+        hud.speedMultiplier,
+        paused_suffix.c_str(),
+        C_NRM));
+    lines.push_back(linef(
+        "Backlog/Completion | queued:%d inflight:%d outstanding:%d oldest:%d last_done:%d ago:%d parked:%d/%d",
+        hud.queuedTaskCount,
+        hud.inFlightTaskCount,
+        hud.outstandingTaskCount,
+        hud.oldestQueuedRequestAge,
+        hud.lastTaskCompletionStep,
+        hud.stepsSinceLastTaskCompletion,
+        hud.parkedCars,
+        hud.totalGoalCount));
+    lines.push_back(linef(
+        "Fleet Activity     | ready_idle:%d action:%d waiting:%d stuck:%d oscillating:%d no_move:%d/%d",
+        hud.readyIdleAgentCount,
+        hud.activeGoalActionCount,
+        hud.waitingAgentCount,
+        hud.stuckAgentCount,
+        hud.oscillatingAgentCount,
+        hud.noMovementStreak,
+        hud.maxNoMovementStreak));
+    lines.push_back(linef(
+        "Planner Pipeline   | moves p/r/b/f=%d/%d/%d/%d cancel r/b/o=%d/%d/%d wf:%d scc:%d cbs:%s exp:%d whca:%d cpu:%.3f/%.3f/%.2f",
+        hud.plannedMoveCount,
+        hud.postRotationMoveCount,
+        hud.postBlockerMoveCount,
+        hud.finalMoveCount,
+        hud.rotationCanceledCount,
+        hud.blockerCanceledCount,
+        hud.orderCanceledCount,
         hud.plannerWaitEdges,
         hud.plannerSccCount,
         hud.plannerCbsSucceeded ? "OK" : "FAIL",
-        hud.plannerCbsExpansions));
+        hud.plannerCbsExpansions,
+        hud.whcaHorizon,
+        hud.lastPlanningTimeMs,
+        hud.lastStepCpuTimeMs,
+        hud.totalCpuTimeMs));
 }
 
 void initialize_grid_buffers(
@@ -283,30 +315,38 @@ void append_grid_lines(
 }
 
 void append_agent_lines(std::vector<std::string>& lines, const std::vector<AgentRenderState>& agents) {
+    lines.push_back(linef(
+        "%-5s %-11s %-9s %-9s %-14s %-5s %-8s %-7s %-6s",
+        "AGV",
+        "State",
+        "Pos",
+        "Goal",
+        "Task(age/d/t)",
+        "Wait",
+        "Timers",
+        "Stk/Osc",
+        "Dist"));
     for (const AgentRenderState& agent : agents) {
         const char* agent_color = kAgentColors[static_cast<std::size_t>(agent.id % kAgentColors.size())];
-        const char* state_color = agent_state_color(agent.state);
-        const std::string status = (agent.state == agv::core::AgentState::Charging)
-            ? linef("CHARGING... (%d)", agent.chargeTimer)
-            : std::string(agent_state_label(agent.state));
-
-        std::string line = linef(
-            "%sAgent %c%s: (%2d,%d) -> (%2d,%d) [Mileage: %.1f/%d] ",
+        const std::string task = format_task_summary(agent);
+        const std::string timers = format_timer_summary(agent);
+        const std::string wait = std::string(wait_reason_label(agent.waitReason));
+        lines.push_back(linef(
+            "%s%-5c%s %-11.11s (%2d,%2d)   (%2d,%2d)   %-14.14s %-5.5s %-8.8s %2d/%-4d %.1f",
             agent_color,
             agent.symbol,
             C_NRM,
+            agent_state_short_label(agent.state).data(),
             agent.position.x,
             agent.position.y,
             agent.goal.x,
             agent.goal.y,
-            agent.totalDistanceTraveled,
-            static_cast<int>(DISTANCE_BEFORE_CHARGE));
-        line += linef("[%s%s%s] [stuck:%d]",
-            state_color,
-            status.c_str(),
-            C_NRM,
-            agent.stuckSteps);
-        lines.push_back(std::move(line));
+            task.c_str(),
+            wait.c_str(),
+            timers.c_str(),
+            agent.stuckSteps,
+            agent.oscillationSteps,
+            agent.totalDistanceTraveled));
     }
 }
 
@@ -318,7 +358,8 @@ void append_log_lines(std::vector<std::string>& lines, const std::vector<Structu
     }
 
     for (const StructuredLogEntry& entry : logs) {
-        lines.push_back(linef("%s%s%s", log_level_color(entry), entry.text.c_str(), C_NRM));
+        const std::string prefix = format_log_prefix(entry);
+        lines.push_back(linef("%s%s %s%s", log_level_color(entry), prefix.c_str(), entry.text.c_str(), C_NRM));
     }
 }
 
@@ -352,21 +393,22 @@ void append_control_lines(std::vector<std::string>& lines) {
         "]tep | [" + C_YEL + "+" + C_NRM + "]/[" + C_YEL + "-" + C_NRM +
         "] Speed | [" + C_YEL + "[" + C_NRM + "]/[" + C_YEL + "]" + C_NRM +
         "] Render stride | [" + C_YEL + "F" + C_NRM + "]ast render | [" +
-        C_YEL + "C" + C_NRM + "]olor simple | [" + C_YEL + "Q" + C_NRM + "]uit");
+        C_YEL + "C" + C_NRM + "]olor simple | [" + C_YEL + "M" + C_NRM +
+        "]enu (paused) | [" + C_YEL + "Q" + C_NRM + "]uit");
 }
 
 std::vector<std::string> compose_terminal_lines(Simulation* sim, bool is_paused) {
     RenderQueryOptions options;
     options.paused = is_paused;
     options.logsTail = true;
-    options.maxLogEntries = LOG_BUFFER_LINES;
+    options.maxLogEntries = RENDER_LOG_TAIL_LINES;
     options.plannerOverlay = false;
 
     const StaticSceneSnapshot scene = snapshot_static_scene(sim);
     const RenderFrameSnapshot frame = snapshot_render_frame(sim, options);
 
     std::vector<std::string> lines;
-    lines.reserve(static_cast<std::size_t>(GRID_HEIGHT + MAX_AGENTS + LOG_BUFFER_LINES + 24));
+    lines.reserve(static_cast<std::size_t>(GRID_HEIGHT + MAX_AGENTS + RENDER_LOG_TAIL_LINES + 24));
 
     append_hud_lines(lines, frame.hud);
     append_blank_line(lines);
@@ -384,22 +426,19 @@ std::vector<std::string> compose_terminal_lines(Simulation* sim, bool is_paused)
     return lines;
 }
 
-void ui_update_simulation_speed_from_multiplier(Simulation* sim) {
-    sim->scenario_manager->simulation_speed = static_cast<int>(100.0f / sim->scenario_manager->speed_multiplier);
-    if (sim->scenario_manager->simulation_speed < 0) {
-        sim->scenario_manager->simulation_speed = 0;
-    }
-}
-
 void ui_apply_speed_multiplier_delta(Simulation* sim, float delta) {
-    sim->scenario_manager->speed_multiplier += delta;
-    if (sim->scenario_manager->speed_multiplier > MAX_SPEED_MULTIPLIER) {
-        sim->scenario_manager->speed_multiplier = MAX_SPEED_MULTIPLIER;
+    if (!sim || !sim->scenario_manager) {
+        return;
     }
-    if (sim->scenario_manager->speed_multiplier < 0.1f) {
-        sim->scenario_manager->speed_multiplier = 0.1f;
+
+    double next = static_cast<double>(sim->scenario_manager->speed_multiplier) + delta;
+    if (next < 0.1) {
+        next = 0.1;
     }
-    ui_update_simulation_speed_from_multiplier(sim);
+    if (next > static_cast<double>(MAX_SPEED_MULTIPLIER)) {
+        next = static_cast<double>(MAX_SPEED_MULTIPLIER);
+    }
+    simulation_set_speed_multiplier(sim, next);
 }
 
 std::size_t render_stride_or_one(const RendererState& render_state) {
@@ -488,29 +527,46 @@ bool simulation_should_flush_display_buffer(Simulation* sim) {
 
 }  // namespace
 
-void ui_handle_control_key(Simulation* sim, int ch, bool& is_paused, bool& quit_flag) {
+void ui_handle_control_key(
+    Simulation* sim,
+    int ch,
+    bool& is_paused,
+    bool& quit_flag,
+    bool& return_to_menu) {
     switch (tolower(ch)) {
         case 'p':
             is_paused = !is_paused;
-            logger_log(sim->logger, is_paused ? "[CTRL] Simulation Paused." : "[CTRL] Simulation Resumed.");
+            logger_log_event(sim->logger, "Control", "Info", std::nullopt, std::nullopt,
+                is_paused ? "Simulation paused." : "Simulation resumed.");
             break;
         case 's':
             if (is_paused) {
-                logger_log(sim->logger, "[CTRL] Advancing one step.");
+                logger_log_event(sim->logger, "Control", "Info", std::nullopt, std::nullopt,
+                    "Advancing one step.");
             }
             break;
         case '+':
         case '=':
             ui_apply_speed_multiplier_delta(sim, 0.5f);
-            logger_log(sim->logger, "[CTRL] Speed increased to %.1fx", sim->scenario_manager->speed_multiplier);
+            logger_log_event(sim->logger, "Control", "Info", std::nullopt, std::nullopt,
+                "Speed increased to %.1fx", sim->scenario_manager->speed_multiplier);
             break;
         case '-':
             ui_apply_speed_multiplier_delta(sim, -0.5f);
-            logger_log(sim->logger, "[CTRL] Speed decreased to %.1fx", sim->scenario_manager->speed_multiplier);
+            logger_log_event(sim->logger, "Control", "Info", std::nullopt, std::nullopt,
+                "Speed decreased to %.1fx", sim->scenario_manager->speed_multiplier);
             break;
         case 'q':
             quit_flag = true;
-            logger_log(sim->logger, "[CTRL] Quit simulation.");
+            logger_log_event(sim->logger, "Control", "Info", std::nullopt, std::nullopt,
+                "Quit simulation.");
+            break;
+        case 'm':
+            if (is_paused) {
+                return_to_menu = true;
+                logger_log_event(sim->logger, "Control", "Info", std::nullopt, std::nullopt,
+                    "Returning to launch menu.");
+            }
             break;
         case ']':
             if (sim->render_state.render_stride < RENDER_STRIDE_MAX) {
@@ -519,21 +575,25 @@ void ui_handle_control_key(Simulation* sim, int ch, bool& is_paused, bool& quit_
             if (sim->render_state.render_stride < RENDER_STRIDE_MIN) {
                 sim->render_state.render_stride = RENDER_STRIDE_MIN;
             }
-            logger_log(sim->logger, "[CTRL] Render stride = %d", sim->render_state.render_stride);
+            logger_log_event(sim->logger, "Control", "Info", std::nullopt, std::nullopt,
+                "Render stride = %d", sim->render_state.render_stride);
             break;
         case '[':
             if (sim->render_state.render_stride > RENDER_STRIDE_MIN) {
                 sim->render_state.render_stride >>= 1;
             }
-            logger_log(sim->logger, "[CTRL] Render stride = %d", sim->render_state.render_stride);
+            logger_log_event(sim->logger, "Control", "Info", std::nullopt, std::nullopt,
+                "Render stride = %d", sim->render_state.render_stride);
             break;
         case 'f':
             sim->render_state.fast_render = !sim->render_state.fast_render;
-            logger_log(sim->logger, sim->render_state.fast_render ? "[CTRL] Fast render ON" : "[CTRL] Fast render OFF");
+            logger_log_event(sim->logger, "Control", "Info", std::nullopt, std::nullopt,
+                sim->render_state.fast_render ? "Fast render ON" : "Fast render OFF");
             break;
         case 'c':
             sim->render_state.simple_colors = !sim->render_state.simple_colors;
-            logger_log(sim->logger, sim->render_state.simple_colors ? "[CTRL] Simple colors ON" : "[CTRL] Simple colors OFF");
+            logger_log_event(sim->logger, "Control", "Info", std::nullopt, std::nullopt,
+                sim->render_state.simple_colors ? "Simple colors ON" : "Simple colors OFF");
             break;
     }
 }

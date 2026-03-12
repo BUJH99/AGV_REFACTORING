@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -46,6 +47,49 @@ struct ScenarioConfig {
     int realtimeParkChance{0};
     int realtimeExitChance{0};
     std::vector<PhaseConfig> phases{{PhaseType::Park, 1}};
+};
+
+struct LaunchConfig {
+    std::uint32_t seed{0};
+    int mapId{1};
+    PathAlgo algorithm{PathAlgo::Default};
+    ScenarioConfig scenario{};
+};
+
+struct HeadlessRunOptions {
+    std::optional<int> maxSteps{};
+    bool renderOutputEnabled{false};
+    std::optional<std::string> debugReportPath{};
+    std::optional<std::string> deadlockReportPath{};
+    bool stopOnDeadlock{false};
+};
+
+struct ValidationIssue {
+    std::string field{};
+    std::string code{};
+    std::string message{};
+};
+
+struct ValidationResult {
+    LaunchConfig normalizedConfig{};
+    std::vector<ValidationIssue> errors{};
+    std::vector<ValidationIssue> warnings{};
+
+    [[nodiscard]] bool ok() const { return errors.empty(); }
+};
+
+struct SessionDescriptor {
+    std::uint64_t sessionId{0};
+    std::uint64_t sceneVersion{0};
+    std::uint64_t frameId{0};
+    LaunchConfig launchConfig{};
+};
+
+struct BurstRunResult {
+    int executedSteps{0};
+    bool complete{false};
+    std::uint64_t frameId{0};
+    std::uint64_t lastLogSeq{0};
 };
 
 struct DistributionSummary {
@@ -168,12 +212,27 @@ struct GoalRenderState {
     int reservedByAgent{-1};
 };
 
+enum class AgentWaitReason {
+    None = 0,
+    Idle = 1,
+    Charging = 2,
+    GoalAction = 3,
+    Rotation = 4,
+    BlockedByStationary = 5,
+    PriorityYield = 6,
+    Stuck = 7,
+    Oscillating = 8,
+};
+
 struct StructuredLogEntry {
     std::uint64_t seq{0};
     int step{0};
+    std::uint64_t frameId{0};
     std::string category{};
     std::string level{};
     std::string text{};
+    std::optional<int> agentId{};
+    std::optional<int> phaseIndex{};
 };
 
 struct OverlayWaitEdge {
@@ -221,11 +280,29 @@ struct HudSnapshot {
     int queuedTaskCount{0};
     int inFlightTaskCount{0};
     int outstandingTaskCount{0};
+    int readyIdleAgentCount{0};
+    int activeGoalActionCount{0};
+    int waitingAgentCount{0};
+    int stuckAgentCount{0};
+    int oscillatingAgentCount{0};
+    int noMovementStreak{0};
+    int maxNoMovementStreak{0};
+    int lastTaskCompletionStep{0};
+    int stepsSinceLastTaskCompletion{0};
+    int oldestQueuedRequestAge{0};
     int parkedCars{0};
     int totalGoalCount{0};
     double lastStepCpuTimeMs{0.0};
+    double lastPlanningTimeMs{0.0};
     double avgCpuTimeMs{0.0};
     double totalCpuTimeMs{0.0};
+    int plannedMoveCount{0};
+    int postRotationMoveCount{0};
+    int postBlockerMoveCount{0};
+    int finalMoveCount{0};
+    int rotationCanceledCount{0};
+    int blockerCanceledCount{0};
+    int orderCanceledCount{0};
     int plannerWaitEdges{0};
     int plannerSccCount{0};
     bool plannerCbsSucceeded{false};
@@ -246,6 +323,13 @@ struct AgentRenderState {
     int chargeTimer{0};
     int actionTimer{0};
     int rotationWait{0};
+    bool taskActive{false};
+    int taskAgeSteps{0};
+    double taskDistance{0.0};
+    int taskTurns{0};
+    bool goalActionInProgress{false};
+    bool movedLastStep{false};
+    AgentWaitReason waitReason{AgentWaitReason::None};
     int stuckSteps{0};
     int oscillationSteps{0};
 };
@@ -265,7 +349,7 @@ struct StaticSceneSnapshot {
 struct RenderQueryOptions {
     bool paused{false};
     bool logsTail{true};
-    std::size_t maxLogEntries{5};
+    std::size_t maxLogEntries{8};
     bool plannerOverlay{false};
 };
 
@@ -402,6 +486,8 @@ struct DebugSnapshot {
     DeadlockSnapshot deadlock;
 };
 
+ValidationResult validateLaunchConfig(const LaunchConfig& config);
+
 class SimulationEngine {
 public:
     SimulationEngine();
@@ -412,6 +498,11 @@ public:
     SimulationEngine(SimulationEngine&&) noexcept;
     SimulationEngine& operator=(SimulationEngine&&) noexcept;
 
+    void configureLaunch(const LaunchConfig& config);
+    SessionDescriptor startConfiguredSession();
+    void setTerminalOutputEnabled(bool enabled);
+    void setSpeedMultiplier(double multiplier);
+
     void setSeed(std::uint32_t seed);
     void loadMap(int mapId);
     void setAlgorithm(PathAlgo algorithm);
@@ -420,16 +511,20 @@ public:
 
     void prepareConsole();
     bool interactiveSetup();
-    void runInteractiveConsole();
+    bool runInteractiveConsole();
     void printPerformanceSummary() const;
 
     void step();
+    BurstRunResult runBurst(int maxSteps, int maxDurationMs);
     void runUntilComplete();
     bool isComplete();
     MetricsSnapshot snapshotMetrics();
     StaticSceneSnapshot snapshotStaticScene();
     RenderFrameSnapshot snapshotRenderFrame(const RenderQueryOptions& options = {});
     RenderFrameDelta snapshotRenderDelta(std::uint64_t sinceFrameId, const RenderQueryOptions& options = {});
+    std::vector<StructuredLogEntry> snapshotStructuredLogs(
+        std::uint64_t sinceSeq = 0,
+        std::size_t maxEntries = 256);
     RenderFrame snapshotFrame(bool paused = false);
     std::vector<std::string> snapshotRecentLogs();
     DebugSnapshot snapshotDebugState(bool paused = false);

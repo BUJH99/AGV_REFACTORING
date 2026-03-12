@@ -112,7 +112,8 @@ int advance_goal_action_timer_local(Agent* agent, Logger* logger) {
 
     if (agent->action_timer <= 0) {
         agent->action_timer = TASK_ACTION_TICKS;
-        logger_log(logger, "[%sTask%s] Agent %c, %s task started (%d ticks).", C_YEL, C_NRM, agent->symbol,
+        logger_log_event(logger, "Dispatch", "Info", agent->id, std::nullopt,
+            "Agent %c, %s task started (%d ticks).", agent->symbol,
             agent->state == AgentState::GoingToPark ? "parking" : "exiting", agent->action_timer);
         return 0;
     }
@@ -132,8 +133,9 @@ void clear_goal_reservation_local(Agent* agent, Node* reached) {
 bool reached_temporary_return_waypoint_local(Logger* logger, Agent* agent, Node* reached, const char* reason) {
     if (!agent) return false;
     if (agent->home_base && reached && reached != agent->home_base) {
-        logger_log(logger, "[%sInfo%s] Agent %c reached a temporary holding goal at (%d,%d). Resuming the %s path.",
-            C_CYN, C_NRM, agent->symbol, reached->x, reached->y, reason);
+        logger_log_event(logger, "Wait", "Info", agent->id, std::nullopt,
+            "Agent %c reached a temporary holding goal at (%d,%d). Resuming the %s path.",
+            agent->symbol, reached->x, reached->y, reason);
         agent->pf.reset();
         agent->stuck_steps = 0;
         return true;
@@ -152,7 +154,8 @@ void finish_parking_goal_local(
     reached->is_parked = true;
     agents->total_cars_parked++;
     broadcast_cell_change_local(agents, map, reached);
-    logger_log(logger, "[%sPark%s] Agent %c parked a vehicle at (%d,%d).", C_GRN, C_NRM, agent->symbol, reached->x, reached->y);
+    logger_log_event(logger, "Dispatch", "Info", agent->id, std::nullopt,
+        "Agent %c parked a vehicle at (%d,%d).", agent->symbol, reached->x, reached->y);
     record_completed_phase_task_local(scenario, sim, PhaseType::Park);
     agent->state = AgentState::ReturningHomeEmpty;
     agent->pf.reset();
@@ -164,14 +167,16 @@ void finish_return_home_empty_local(Logger* logger, Simulation* sim, Agent* agen
         return;
     }
 
-    logger_log(logger, "[%sInfo%s] Agent %c returned home after parking.", C_CYN, C_NRM, agent->symbol);
+    logger_log_event(logger, "Motion", "Info", agent->id, std::nullopt,
+        "Agent %c returned home after parking.", agent->symbol);
     agent->state = AgentState::Idle;
     agent->pf.reset();
     metrics_finalize_task_if_active_local(sim, agent);
 }
 
 void finish_collect_goal_local(AgentManager* agents, GridMap* map, Logger* logger, Agent* agent, Node* reached) {
-    logger_log(logger, "[%sExit%s] Agent %c picked up a parked vehicle at (%d,%d).", C_YEL, C_NRM, agent->symbol, reached->x, reached->y);
+    logger_log_event(logger, "Dispatch", "Info", agent->id, std::nullopt,
+        "Agent %c picked up a parked vehicle at (%d,%d).", agent->symbol, reached->x, reached->y);
     reached->is_parked = false;
     agents->total_cars_parked--;
     broadcast_cell_change_local(agents, map, reached);
@@ -180,7 +185,8 @@ void finish_collect_goal_local(AgentManager* agents, GridMap* map, Logger* logge
 }
 
 void finish_return_with_car_local(ScenarioManager* scenario, Logger* logger, Simulation* sim, Agent* agent) {
-    logger_log(logger, "[%sExit%s] Agent %c completed the retrieval task.", C_GRN, C_NRM, agent->symbol);
+    logger_log_event(logger, "Dispatch", "Info", agent->id, std::nullopt,
+        "Agent %c completed the retrieval task.", agent->symbol);
     record_completed_phase_task_local(scenario, sim, PhaseType::Exit);
     agent->state = AgentState::Idle;
     agent->pf.reset();
@@ -188,7 +194,8 @@ void finish_return_with_car_local(ScenarioManager* scenario, Logger* logger, Sim
 }
 
 void finish_charge_arrival_local(AgentManager* agents, GridMap* map, Logger* logger, Agent* agent) {
-    logger_log(logger, "[%sCharge%s] Agent %c started charging (%d steps).", C_B_YEL, C_NRM, agent->symbol, CHARGE_TIME);
+    logger_log_event(logger, "Charge", "Info", agent->id, std::nullopt,
+        "Agent %c started charging (%d steps).", agent->symbol, CHARGE_TIME);
     agent->state = AgentState::Charging;
     agent->charge_timer = CHARGE_TIME;
     if (agent->pos) {
@@ -201,7 +208,8 @@ void finish_return_maintenance_local(Logger* logger, Agent* agent) {
         return;
     }
 
-    logger_log(logger, "[%sInfo%s] Agent %c returned home after charging.", C_CYN, C_NRM, agent->symbol);
+    logger_log_event(logger, "Motion", "Info", agent->id, std::nullopt,
+        "Agent %c returned home after charging.", agent->symbol);
     agent->state = AgentState::Idle;
     agent->pf.reset();
 }
@@ -251,7 +259,8 @@ void reset_goal_and_path_local(Agent* agent) {
 }
 
 void finish_charging_cycle_local(AgentManager* agents, GridMap* map, Logger* logger, Agent* agent) {
-    logger_log(logger, "[%sCharge%s] Agent %c finished charging.", C_B_GRN, C_NRM, agent->symbol);
+    logger_log_event(logger, "Charge", "Info", agent->id, std::nullopt,
+        "Agent %c finished charging.", agent->symbol);
     agent->total_distance_traveled = 0.0;
     agent->state = AgentState::ReturningHomeMaintenance;
     if (agent->pos) {

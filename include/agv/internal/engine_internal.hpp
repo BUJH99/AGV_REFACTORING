@@ -15,6 +15,8 @@ inline constexpr int MAX_CHARGE_STATIONS = 10;
 inline constexpr int MAX_PHASES = 20;
 inline constexpr int LOG_BUFFER_LINES = 5;
 inline constexpr int LOG_BUFFER_WIDTH = 256;
+inline constexpr std::size_t RENDER_LOG_TAIL_LINES = 8;
+inline constexpr std::size_t RENDER_LOG_BATCH_LIMIT = 256;
 inline constexpr int MAX_WHCA_HORIZON = 11;
 inline constexpr int MIN_WHCA_HORIZON = 5;
 inline constexpr int MAX_CBS_CONS = 128;
@@ -220,11 +222,16 @@ void agv_execute_step_service(Simulation* sim, bool is_paused);
 
 SimulationConfig default_simulation_config();
 bool apply_simulation_config(Simulation* sim, const SimulationConfig& config);
-bool execute_headless_step(Simulation* sim);
+void simulation_set_speed_multiplier(Simulation* sim, double speed_multiplier);
+bool execute_headless_step(Simulation* sim, bool allow_sleep = true);
 bool run_simulation_to_completion(Simulation* sim);
 RunSummary collect_run_summary(const Simulation* sim);
 std::string build_render_frame_text(Simulation* sim, bool is_paused);
 std::vector<std::string> collect_recent_logs(const Logger* logger);
+std::vector<agv::core::StructuredLogEntry> collect_structured_logs(
+    const Logger* logger,
+    std::uint64_t since_seq = 0,
+    std::size_t max_entries = RENDER_LOG_BATCH_LIMIT);
 void render_model_reset(Simulation* sim, std::uint64_t session_id);
 void render_model_capture_advanced_frame(Simulation* sim);
 agv::core::StaticSceneSnapshot snapshot_static_scene(const Simulation* sim);
@@ -233,6 +240,10 @@ agv::core::RenderFrameDelta snapshot_render_delta(
     Simulation* sim,
     std::uint64_t since_frame_id,
     const agv::core::RenderQueryOptions& options);
+std::vector<agv::core::StructuredLogEntry> snapshot_structured_logs(
+    Simulation* sim,
+    std::uint64_t since_seq,
+    std::size_t max_entries);
 
 struct ConsoleSize {
     int columns{0};
@@ -248,6 +259,12 @@ struct ConsoleSize {
 };
 
 void agv_prepare_console();
+void ui_handle_control_key(
+    Simulation* sim,
+    int ch,
+    bool& is_paused,
+    bool& quit_flag,
+    bool& return_to_menu);
 void ui_enter_alt_screen();
 void ui_leave_alt_screen();
 void platform_sleep_for_ms(int ms);
