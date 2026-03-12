@@ -1,3 +1,4 @@
+#include "agv/console_shell.hpp"
 #include "agv/simulation_engine.hpp"
 #include "agv/internal/engine_internal.hpp"
 
@@ -179,20 +180,20 @@ CliOptions parseArgs(int argc, char* argv[]) {
 
 int runInteractive() {
     SimulationEngine engine;
-    engine.prepareConsole();
+    agv::console::prepareConsole();
     while (true) {
-        if (!engine.interactiveSetup()) {
+        if (!agv::console::interactiveSetup(engine)) {
             std::cout << "\nSimulation cancelled.\n";
             return 0;
         }
 
-        const bool return_to_menu = engine.runInteractiveConsole();
+        const bool return_to_menu = agv::console::runInteractiveConsole(engine);
         if (return_to_menu) {
             std::cout << "\nReturned to launch menu.\n";
             continue;
         }
 
-        engine.printPerformanceSummary();
+        agv::console::printPerformanceSummary(engine);
         std::cout << "\nPress any key to exit...\n";
         (void)console_read_key_blocking();
         return 0;
@@ -210,6 +211,9 @@ int runHeadless(const CliOptions& options) {
     }
 
     engine.setTerminalOutputEnabled(options.run.renderOutputEnabled);
+    engine.setCaptureLevel(options.run.renderOutputEnabled
+        ? agv::core::CaptureLevel::Frame
+        : agv::core::CaptureLevel::None);
     engine.configureLaunch(validation.normalizedConfig);
     engine.startConfiguredSession();
 
@@ -243,7 +247,7 @@ int runHeadless(const CliOptions& options) {
                 previous_deadlock_count = metrics.deadlockCount;
                 if (options.run.deadlockReportPath.has_value()) {
                     const std::string report_path = build_deadlock_report_path(*options.run.deadlockReportPath, metrics);
-                    engine.writeDebugReport(report_path, true);
+                    agv::console::writeDebugReport(engine, report_path, true);
                 }
                 if (options.run.stopOnDeadlock) {
                     break;
@@ -255,7 +259,7 @@ int runHeadless(const CliOptions& options) {
     }
 
     if (options.run.debugReportPath.has_value()) {
-        engine.writeDebugReport(*options.run.debugReportPath, true);
+        agv::console::writeDebugReport(engine, *options.run.debugReportPath, true);
     }
 
     const auto metrics = engine.snapshotMetrics();

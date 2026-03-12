@@ -195,7 +195,7 @@ agv::core::AgentWaitReason classify_wait_reason(
             return agv::core::AgentWaitReason::BlockedByStationary;
         }
         if (cancellation_contains(scratch.order_canceled_agent_ids, scratch.order_canceled_count, agent.id) ||
-            simulation->render_model.planner_overlay.yield_agents.contains(agent.id)) {
+            simulation->planner_capture.yield_agents.contains(agent.id)) {
             return agv::core::AgentWaitReason::PriorityYield;
         }
     }
@@ -284,7 +284,7 @@ PlannerOverlaySnapshot build_planner_overlay_snapshot(const Simulation* simulati
         return snapshot;
     }
 
-    const PlannerOverlayCapture& capture = simulation->render_model.planner_overlay;
+    const PlannerOverlayCapture& capture = simulation->planner_capture;
     if (!capture.valid) {
         return snapshot;
     }

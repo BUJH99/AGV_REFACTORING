@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <title>AGV Electron Shell</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell" id="app-shell">
+      <div class="ambient ambient-one"></div>
+      <div class="ambient ambient-two"></div>
+      <div class="ambient ambient-three"></div>
+
+      <section class="stage-shell">
+        <div class="canvas-shell">
+          <canvas id="scene-canvas" width="1440" height="900"></canvas>
+        </div>
+
+        <div id="viewport-empty" class="viewport-empty glass-card">
+          <p class="section-kicker">Ready to load</p>
+          <h2>Spin up one immutable session to bring the map into view.</h2>
+          <p>
+            The backend keeps the scene behind the session boundary. Review the
+            current setup, then load the first frame directly into the canvas.
+          </p>
+          <div id="launch-summary-empty" class="launch-summary"></div>
+          <div class="empty-actions">
+            <button
+              id="viewport-start-button"
+              class="primary-button"
+              type="button"
+            >
+              Load Session
+            </button>
+            <button
+              id="viewport-setup-button"
+              class="ghost-button"
+              type="button"
+            >
+              Open Setup
+            </button>
+          </div>
+        </div>
+
+        <div id="route-hud" class="route-hud glass-card hidden ui-layer">
+          <p class="section-kicker">Selected Route</p>
+          <h3 id="route-agent-title">No agent selected</h3>
+          <p id="route-goal" class="route-copy">Goal -</p>
+          <p id="route-meta" class="route-copy muted">Select an AGV to inspect.</p>
+          <div id="route-warning" class="route-warning hidden"></div>
+        </div>
+
+        <div class="top-bar glass-card ui-layer">
+          <div class="mission-block">
+            <div id="live-indicator" class="live-indicator idle"></div>
+            <div class="mission-copy">
+              <p class="section-kicker">Current run</p>
+              <div class="mission-pills">
+                <span id="session-pill" class="pill neutral">No session</span>
+                <span id="map-pill" class="pill">Map -</span>
+                <span id="frame-pill" class="pill">Frame -</span>
+                <span id="step-pill" class="pill">Step -</span>
+              </div>
+              <p id="run-control-help" class="mission-help">
+                Load a session first to render the map and enable the controls.
+              </p>
+            </div>
+          </div>
+
+          <div id="top-stat-grid" class="top-stat-grid"></div>
+
+          <div class="control-cluster">
+            <button
+              id="run-button"
+              class="control-button icon-control primary-control"
+              type="button"
+              title="Run"
+              aria-label="Run"
+            >
+              <svg class="control-icon play-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M8 6.5v11l9-5.5-9-5.5z"></path>
+              </svg>
+              <span class="sr-only">Run</span>
+            </button>
+            <button
+              id="pause-button"
+              class="control-button icon-control"
+              type="button"
+              title="Pause"
+              aria-label="Pause"
+            >
+              <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M8 6h3v12H8zM13 6h3v12h-3z"></path>
+              </svg>
+              <span class="sr-only">Pause</span>
+            </button>
+            <button
+              id="step-button"
+              class="control-button icon-control"
+              type="button"
+              title="Single step"
+              aria-label="Single step"
+            >
+              <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M9 7.5L14.5 12 9 16.5"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                ></path>
+              </svg>
+              <span class="sr-only">Single step</span>
+            </button>
+            <button
+              id="reset-session-button"
+              class="control-button icon-control warning-control"
+              type="button"
+              title="Reset to setup"
+              aria-label="Reset to setup"
+            >
+              <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M7 7.5H4V4.5"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.1"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                ></path>
+                <path
+                  d="M5.2 7.2a7 7 0 1 1-1.1 7.7"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.1"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                ></path>
+              </svg>
+              <span class="sr-only">Reset to setup</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="map-tools glass-card ui-layer">
+          <div class="tool-group">
+            <span class="tool-label">Layers</span>
+            <button
+              id="semantic-layer-button"
+              class="icon-button wide active"
+              type="button"
+              title="Toggle semantic cells"
+            >
+              Cells
+            </button>
+            <button
+              id="agent-layer-button"
+              class="icon-button wide active"
+              type="button"
+              title="Toggle agents"
+            >
+              AGV
+            </button>
+            <button
+              id="debug-layer-button"
+              class="icon-button wide active"
+              type="button"
+              title="Toggle planner overlay"
+            >
+              Debug
+            </button>
+          </div>
+        </div>
+
+        <aside class="left-stack ui-layer">
+          <section class="glass-card planner-card">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">Planning</p>
+                <h2>Planner Summary</h2>
+              </div>
+            </div>
+            <div id="planner-summary-grid" class="planner-summary-grid"></div>
+          </section>
+
+          <section class="glass-card roster-card">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">Fleet</p>
+                <h2>Agent Roster</h2>
+              </div>
+              <span id="fleet-summary" class="pill neutral">0 agents</span>
+            </div>
+            <div id="agent-roster-list" class="agent-roster-list"></div>
+          </section>
+        </aside>
+
+        <aside class="right-stack ui-layer">
+          <section class="glass-card telemetry-card">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">Telemetry</p>
+                <h2>Selected AGV</h2>
+              </div>
+            </div>
+            <div id="telemetry-content" class="telemetry-content"></div>
+          </section>
+
+          <section id="debug-card" class="glass-card debug-card">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">Developer</p>
+                <h2>Debug Snapshot</h2>
+              </div>
+              <div class="header-actions">
+                <button
+                  id="debug-toggle-button"
+                  class="ghost-button compact-button"
+                  type="button"
+                >
+                  Show
+                </button>
+                <button id="debug-button" class="ghost-button compact-button" type="button">
+                  Capture
+                </button>
+              </div>
+            </div>
+            <pre id="debug-output" class="debug-output hidden">
+No debug snapshot requested yet.</pre
+            >
+          </section>
+        </aside>
+
+        <div class="bottom-strip ui-layer">
+          <section class="glass-card tail-card">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">System Events</p>
+                <h2>Important Tail</h2>
+              </div>
+            </div>
+            <div id="logs-list" class="logs-list"></div>
+          </section>
+
+          <section class="glass-card diagnostics-card">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">Diagnostics</p>
+                <h2>Status Feed</h2>
+              </div>
+            </div>
+            <div id="status-list" class="status-list"></div>
+          </section>
+        </div>
+
+        <div class="scene-legend ui-layer">
+          <span class="legend-chip wall">Wall</span>
+          <span class="legend-chip lane">Lane</span>
+          <span class="legend-chip goal">Goal</span>
+          <span class="legend-chip home">Home</span>
+          <span class="legend-chip charger">Charger</span>
+          <span class="legend-chip agv">AGV</span>
+        </div>
+
+        <div class="floating-dock">
+          <button id="toggle-ui-button" class="dock-button" type="button">
+            Hide UI
+          </button>
+          <button id="open-metrics-button" class="dock-button" type="button">
+            Metrics
+          </button>
+          <button id="open-setup-button" class="dock-button primary-dock" type="button">
+            Launch Setup
+          </button>
+        </div>
+      </section>
+
+      <div id="setup-backdrop" class="overlay-backdrop hidden"></div>
+      <aside id="setup-drawer" class="setup-drawer">
+        <div class="drawer-header">
+          <div>
+            <p class="section-kicker">Session builder</p>
+            <h2>Launch Setup</h2>
+          </div>
+          <button id="close-setup-button" class="icon-button" type="button">×</button>
+        </div>
+
+        <div class="drawer-scroll">
+          <p class="drawer-copy">
+            Configure the scenario visually, clamp counts by map capacity, then
+            load one immutable session into the map view.
+          </p>
+
+          <form id="launch-form" class="launch-form">
+            <div class="launch-grid">
+              <label>
+                <span>Map</span>
+                <select name="mapId" id="map-id"></select>
+              </label>
+              <label>
+                <span>Algorithm</span>
+                <select name="algorithm" id="algorithm"></select>
+              </label>
+              <label>
+                <span>Mode</span>
+                <select name="mode" id="mode"></select>
+              </label>
+              <label>
+                <span>Seed</span>
+                <input name="seed" id="seed" type="number" min="0" value="7" />
+              </label>
+              <label>
+                <span>Capture</span>
+                <select name="captureLevel" id="capture-level"></select>
+              </label>
+              <label>
+                <span>Speed multiplier</span>
+                <input
+                  name="speedMultiplier"
+                  id="speed-multiplier"
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  value="0"
+                />
+              </label>
+            </div>
+
+            <p id="map-capacity-help" class="field-help"></p>
+            <div id="map-info-banner" class="info-banner"></div>
+
+            <div class="mode-group scenario-builder" data-mode="custom">
+              <div class="section-head">
+                <div>
+                  <p class="section-kicker">Scenario Builder</p>
+                  <h3>Custom phases</h3>
+                </div>
+                <span id="phase-count-badge" class="pill neutral">0 phases</span>
+              </div>
+
+              <p class="drawer-copy compact-copy">
+                Add each phase visually. Every row chooses a parking or exit
+                phase and the number of vehicles in that phase.
+              </p>
+
+              <div id="scenario-capacity-banner" class="capacity-banner"></div>
+              <div id="phase-summary" class="phase-summary"></div>
+              <div id="phase-list" class="phase-list"></div>
+
+              <div class="phase-actions">
+                <button id="add-park-phase" class="ghost-button" type="button">
+                  + Parking phase
+                </button>
+                <button id="add-exit-phase" class="ghost-button" type="button">
+                  + Exit phase
+                </button>
+                <button id="reset-phases" class="ghost-button" type="button">
+                  Reset scenario
+                </button>
+              </div>
+            </div>
+
+            <div class="mode-group realtime-builder hidden" data-mode="realtime">
+              <div class="section-head">
+                <div>
+                  <p class="section-kicker">Realtime Requests</p>
+                  <h3>Arrival mix</h3>
+                </div>
+              </div>
+              <p class="drawer-copy compact-copy">
+                Set the request probabilities for realtime generation. Keep the
+                combined park and exit chance under 100.
+              </p>
+              <div class="realtime-grid">
+                <label>
+                  <span>Realtime park chance</span>
+                  <input
+                    id="realtime-park"
+                    type="number"
+                    min="0"
+                    max="100"
+                    value="12"
+                  />
+                </label>
+                <label>
+                  <span>Realtime exit chance</span>
+                  <input
+                    id="realtime-exit"
+                    type="number"
+                    min="0"
+                    max="100"
+                    value="8"
+                  />
+                </label>
+              </div>
+            </div>
+          </form>
+
+          <section class="drawer-summary glass-subcard">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">Current Selection</p>
+                <h3>Launch summary</h3>
+              </div>
+            </div>
+            <div id="launch-summary-drawer" class="launch-summary"></div>
+          </section>
+        </div>
+
+        <div class="drawer-footer">
+          <button id="validate-button" class="ghost-button" type="button">
+            Validate
+          </button>
+          <button id="start-button" class="primary-button" type="button">
+            Load Session
+          </button>
+        </div>
+      </aside>
+
+      <div id="metrics-backdrop" class="overlay-backdrop hidden"></div>
+      <section id="metrics-modal" class="metrics-modal hidden">
+        <div class="metrics-modal-header">
+          <div>
+            <p class="section-kicker">Live metrics</p>
+            <h2>Operational Metrics</h2>
+          </div>
+          <button id="close-metrics-button" class="icon-button" type="button">×</button>
+        </div>
+
+        <div class="metrics-modal-body">
+          <section class="glass-subcard">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">Operations</p>
+                <h3>Operational summary</h3>
+              </div>
+            </div>
+            <div id="modal-summary-grid" class="modal-summary-grid"></div>
+          </section>
+
+          <section class="glass-subcard">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">System</p>
+                <h3>Planner and runtime metrics</h3>
+              </div>
+            </div>
+            <div id="metrics-grid" class="metrics-grid"></div>
+          </section>
+        </div>
+      </section>
+    </div>
+
+    <script src="./renderer.js"></script>
+  </body>
+</html>

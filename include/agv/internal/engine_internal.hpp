@@ -226,7 +226,6 @@ void simulation_set_speed_multiplier(Simulation* sim, double speed_multiplier);
 bool execute_headless_step(Simulation* sim, bool allow_sleep = true);
 bool run_simulation_to_completion(Simulation* sim);
 RunSummary collect_run_summary(const Simulation* sim);
-std::string build_render_frame_text(Simulation* sim, bool is_paused);
 std::vector<std::string> collect_recent_logs(const Logger* logger);
 std::vector<agv::core::StructuredLogEntry> collect_structured_logs(
     const Logger* logger,
@@ -271,5 +270,4 @@ void platform_sleep_for_ms(int ms);
 int console_read_key_blocking();
 std::optional<int> console_read_key_nonblocking();
 std::optional<ConsoleSize> console_current_size();
-int simulation_setup(Simulation* sim);
 void grid_map_load_scenario(GridMap* map, AgentManager* am, int scenario_id);

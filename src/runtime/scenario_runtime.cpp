@@ -1,15 +1,12 @@
 #define _CRT_SECURE_NO_WARNINGS
 
 #include <algorithm>
-#include <cctype>
-#include <iostream>
 #include <string>
 #include <string_view>
 #include <ctime>
 
 #include "agv/internal/engine_internal.hpp"
 
-void ui_clear_screen_optimized();
 void grid_map_load_scenario(GridMap* map, AgentManager* am, int scenario_id);
 Planner planner_from_pathalgo(PathAlgo algo);
 void agent_begin_task_park(Agent* ag, ScenarioManager* sc, Logger* lg);
@@ -100,14 +97,6 @@ void simulation_set_speed_multiplier(Simulation* sim, double speed_multiplier) {
 
 namespace {
 
-int simulation_setup_custom_scenario_local(Simulation* sim);
-int simulation_setup_realtime_local(ScenarioManager* scenario);
-int simulation_setup_speed_local(ScenarioManager* scenario);
-
-void do_ms_pause(int ms) {
-    platform_sleep_for_ms(ms);
-}
-
 constexpr int kMinMapId = 1;
 constexpr int kMaxMapId = 7;
 std::string_view phase_type_name(PhaseType type) {
@@ -141,211 +130,6 @@ void apply_custom_config(ScenarioManager& scenario, const SimulationConfig& cfg)
 void apply_realtime_config(ScenarioManager& scenario, const SimulationConfig& cfg) {
     scenario.park_chance = cfg.realtime_park_chance;
     scenario.exit_chance = cfg.realtime_exit_chance;
-}
-
-void apply_selected_algorithm(Simulation* sim, int algorithm_choice) {
-    sim->path_algo = (algorithm_choice == 2) ? PathAlgo::AStarSimple :
-        (algorithm_choice == 3) ? PathAlgo::DStarBasic : PathAlgo::Default;
-    const char* algorithm_name = (sim->path_algo == PathAlgo::AStarSimple)
-        ? "astar"
-        : ((sim->path_algo == PathAlgo::DStarBasic) ? "dstar" : "default");
-    logger_log_event(sim->logger, "Control", "Info", std::nullopt, std::nullopt,
-        "Algorithm selected: %s", algorithm_name);
-    sim->render_state.configureForAlgorithm(sim->path_algo);
-    sim->planner = planner_from_pathalgo(sim->path_algo);
-}
-
-bool run_mode_setup(Simulation* sim, char mode) {
-    ScenarioManager* const scenario = sim->scenario_manager;
-    switch (mode) {
-    case 'a':
-        scenario->mode = SimulationMode::Custom;
-        return simulation_setup_custom_scenario_local(sim) &&
-            simulation_setup_speed_local(scenario);
-    case 'b':
-        scenario->mode = SimulationMode::Realtime;
-        return simulation_setup_realtime_local(scenario) &&
-            simulation_setup_speed_local(scenario);
-    case 'q':
-        return false;
-    default:
-        return false;
-    }
-}
-
-char get_single_char_local() {
-    return static_cast<char>(console_read_key_blocking());
-}
-
-std::string_view trim_input(std::string_view input) {
-    std::size_t begin = 0;
-    while (begin < input.size() && std::isspace(static_cast<unsigned char>(input[begin]))) {
-        ++begin;
-    }
-
-    std::size_t end = input.size();
-    while (end > begin && std::isspace(static_cast<unsigned char>(input[end - 1]))) {
-        --end;
-    }
-
-    return input.substr(begin, end - begin);
-}
-
-bool try_parse_integer(std::string_view input, int& value) {
-    const std::string trimmed(trim_input(input));
-    if (trimmed.empty()) return false;
-
-    try {
-        std::size_t consumed = 0;
-        const int parsed = std::stoi(trimmed, &consumed, 10);
-        if (!trim_input(std::string_view(trimmed).substr(consumed)).empty()) {
-            return false;
-        }
-        value = parsed;
-        return true;
-    } catch (...) {
-        return false;
-    }
-}
-
-bool try_parse_float(std::string_view input, float& value) {
-    const std::string trimmed(trim_input(input));
-    if (trimmed.empty()) return false;
-
-    try {
-        std::size_t consumed = 0;
-        const float parsed = std::stof(trimmed, &consumed);
-        if (!trim_input(std::string_view(trimmed).substr(consumed)).empty()) {
-            return false;
-        }
-        value = parsed;
-        return true;
-    } catch (...) {
-        return false;
-    }
-}
-
-char get_char_input_local(std::string_view prompt, std::string_view valid) {
-    const std::string_view allowed_values = valid;
-    char value;
-    while (true) {
-        agv::internal::text::console_write(prompt);
-        value = (char)std::tolower(get_single_char_local());
-        agv::internal::text::console_print("%c\n", value);
-        if (allowed_values.find(value) != std::string_view::npos) return value;
-        agv::internal::text::console_print(std::string(C_B_RED) + "\nInvalid input. Allowed values: (%s)\n" + C_NRM, valid);
-    }
-}
-
-int get_integer_input_local(std::string_view prompt, int min, int max) {
-    std::string input;
-    int value = 0;
-    while (true) {
-        agv::internal::text::console_write(prompt);
-        if (std::getline(std::cin, input) &&
-            try_parse_integer(input, value) &&
-            value >= min && value <= max) {
-            return value;
-        }
-        if (!std::cin.good()) {
-            std::cin.clear();
-        }
-        agv::internal::text::console_print(std::string(C_B_RED) + "Invalid input. Enter an integer in the range %d~%d.\n" + C_NRM, min, max);
-    }
-}
-
-float get_float_input_local(std::string_view prompt, float min, float max) {
-    std::string input;
-    float value = 0.0f;
-    while (true) {
-        agv::internal::text::console_write(prompt);
-        if (std::getline(std::cin, input) &&
-            try_parse_float(input, value) &&
-            value >= min && value <= max) {
-            return value;
-        }
-        if (!std::cin.good()) {
-            std::cin.clear();
-        }
-        agv::internal::text::console_print(std::string(C_B_RED) + "Invalid input. Enter a value in the range %.1f~%.1f.\n" + C_NRM, min, max);
-    }
-}
-
-int simulation_setup_custom_scenario_local(Simulation* sim) {
-    ScenarioManager* scenario = sim->scenario_manager;
-
-    agv::internal::text::console_print(std::string(C_B_WHT) + "--- Custom Scenario Setup ---\n" + C_NRM);
-    const std::string phase_count_prompt = std::string(C_YEL) + "Enter phase count (1-20, 0=cancel): " + C_NRM;
-    scenario->num_phases = get_integer_input_local(phase_count_prompt.c_str(), 0, MAX_PHASES);
-    if (scenario->num_phases == 0) return 0;
-
-    int max_per_phase = (sim->map && sim->map->num_goals > 0) ? sim->map->num_goals : 100000;
-
-    for (int i = 0; i < scenario->num_phases; i++) {
-        agv::internal::text::console_print(std::string(C_B_CYN) + "\n--- Phase %d/%d ---\n" + C_NRM, i + 1, scenario->num_phases);
-        agv::internal::text::console_print("a. %sParking%s\n", C_YEL, C_NRM);
-        agv::internal::text::console_print("b. %sRetrieval%s\n", C_CYN, C_NRM);
-        char phase_kind = get_char_input_local("Select phase type: ", "ab");
-
-        const std::string prompt = agv::internal::text::printf_like("Phase task count (1~%d): ", max_per_phase);
-        const int task_count = get_integer_input_local(prompt.c_str(), 1, max_per_phase);
-        assign_dynamic_phase(
-            scenario->phases[i],
-            (phase_kind == 'a') ? PhaseType::Park : PhaseType::Exit,
-            task_count);
-
-        agv::internal::text::console_print(std::string(C_GRN) + "Phase %d configured: %s x %d.\n" + C_NRM,
-            i + 1, scenario->phases[i].type_name.c_str(), scenario->phases[i].task_count);
-    }
-
-    agv::internal::text::console_print(std::string(C_B_GRN) + "\n--- Custom scenario configuration complete. ---\n" + C_NRM);
-    do_ms_pause(1500);
-    return 1;
-}
-
-int simulation_setup_realtime_local(ScenarioManager* scenario) {
-    agv::internal::text::console_print(std::string(C_B_WHT) + "--- Real-Time Scenario Setup ---\n" + C_NRM);
-    while (true) {
-        scenario->park_chance = get_integer_input_local("\nParking request probability (0~100): ", 0, 100);
-        scenario->exit_chance = get_integer_input_local("Retrieval request probability (0~100): ", 0, 100);
-        if (scenario->park_chance + scenario->exit_chance <= 100) break;
-        agv::internal::text::console_print(std::string(C_B_RED) + "The total probability must not exceed 100.\n" + C_NRM);
-    }
-    agv::internal::text::console_print(std::string(C_B_GRN) + "\nReal-time configuration complete: parking=%d%%, retrieval=%d%%\n" + C_NRM,
-        scenario->park_chance, scenario->exit_chance);
-    do_ms_pause(1500);
-    return 1;
-}
-
-int simulation_setup_speed_local(ScenarioManager* scenario) {
-    agv::internal::text::console_print(std::string(C_B_WHT) + "\n--- Simulation Speed Setup ---\n" + C_NRM);
-
-    scenario->speed_multiplier = get_float_input_local(
-        "Enter speed multiplier (0.0=as fast as possible, up to 10000.0): ",
-        0.0f, MAX_SPEED_MULTIPLIER);
-    scenario->applySpeedMultiplier(scenario->speed_multiplier);
-
-    agv::internal::text::console_print(std::string(C_B_GRN) + "\n--- %.1fx simulation speed configured. ---\n" + C_NRM, scenario->speed_multiplier);
-    do_ms_pause(1500);
-    return 1;
-}
-
-int simulation_setup_map_local(Simulation* sim) {
-    agv::internal::text::console_print(std::string(C_B_WHT) + "--- Select Map (1~7) ---\n" + C_NRM);
-    agv::internal::text::console_print("1. %sCompact parking lot%s (baseline)\n", C_B_GRN, C_NRM);
-    agv::internal::text::console_print("2. %sMid-size lot with one retrieval target%s\n", C_YEL, C_NRM);
-    agv::internal::text::console_print("3. %s16 AGVs + 900 requests%s (A~P)\n", C_YEL, C_NRM);
-    agv::internal::text::console_print("4. %sDense lot with one retrieval target and four parking waves%s (up to 10 AGVs, A~J)\n", C_YEL, C_NRM);
-    agv::internal::text::console_print("5. %sCross intersection micro-map%s (4-way conflict and swap resolution)\n", C_YEL, C_NRM);
-    agv::internal::text::console_print("6. %sCorner-case gauntlet%s (single-lane loops, bridge bottleneck, dead-end bays, charger branches)\n", C_YEL, C_NRM);
-    agv::internal::text::console_print("7. %sReference split-room map%s (left start room, shared trunk, upper/lower parking rooms)\n\n", C_YEL, C_NRM);
-    int map_id = get_integer_input_local("Select map id (1~7): ", 1, 7);
-    sim->map_id = map_id;
-    grid_map_load_scenario(sim->map, sim->agent_manager, map_id);
-    logger_log_event(sim->logger, "Control", "Info", std::nullopt, std::nullopt,
-        "Map #%d loaded.", map_id);
-    do_ms_pause(800);
-    return 1;
 }
 
 int agv_clamp_map_id_local(int map_id) {
@@ -385,7 +169,6 @@ private:
             logger_log_event(logger, "Scenario", "Info", std::nullopt, scenario->current_phase_index,
                 "Phase %d start: %s %d.",
                 scenario->current_phase_index + 1, next_phase->type_name.c_str(), next_phase->task_count);
-            do_ms_pause(1500);
         }
         return false;
     }
@@ -473,27 +256,6 @@ private:
 const TaskDispatchService kTaskDispatchService{};
 
 }  // namespace
-
-int simulation_setup(Simulation* sim) {
-    ui_clear_screen_optimized();
-
-    if (!simulation_setup_map_local(sim)) return 0;
-
-    agv::internal::text::console_print(std::string(C_B_WHT) + "\n--- Select Path Planning Algorithm ---\n" + C_NRM);
-    agv::internal::text::console_print("1. %sDefault (WHCA* + D* Lite + WFG + CBS)%s\n", C_B_GRN, C_NRM);
-    agv::internal::text::console_print("2. %sA* (single-agent)%s - recomputes the path from scratch each step\n", C_YEL, C_NRM);
-    agv::internal::text::console_print("3. %sD* Lite (incremental)%s - reuses previous search when the map changes\n\n", C_YEL, C_NRM);
-    apply_selected_algorithm(sim, get_integer_input_local("Select algorithm (1~3): ", 1, 3));
-
-    agv::internal::text::console_print(std::string(C_B_WHT) + "\n--- Select Simulation Mode ---\n" + C_NRM);
-    agv::internal::text::console_print("a. %sCustom phased scenario%s\n", C_YEL, C_NRM);
-    agv::internal::text::console_print("b. %sReal-time random scenario%s\n", C_CYN, C_NRM);
-    agv::internal::text::console_print("q. %sQuit%s\n\n", C_RED, C_NRM);
-
-    const int ok = run_mode_setup(sim, get_char_input_local("Select mode: ", "abq")) ? 1 : 0;
-    if (ok) ui_clear_screen_optimized();
-    return ok;
-}
 
 SimulationConfig default_simulation_config() {
     SimulationConfig cfg{};

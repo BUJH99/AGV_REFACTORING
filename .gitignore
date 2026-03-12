@@ -8,6 +8,8 @@ tests/artifacts/
 tests/golden/
 build-codex/
 agv_debug_report_test.txt
+electron/node_modules/
+electron/out/
 
 # 가상환경 제외
 .venv/

@@ -700,7 +700,6 @@ struct RenderModelCache final {
     agv::core::RenderFrameSnapshot last_advanced_frame{};
     bool has_last_advanced_frame{false};
     std::deque<agv::core::RenderFrameDelta> recent_deltas{};
-    PlannerOverlayCapture planner_overlay{};
 
     void reset(std::uint64_t new_session_id) {
         session_id = new_session_id;
@@ -709,8 +708,13 @@ struct RenderModelCache final {
         last_advanced_frame = {};
         has_last_advanced_frame = false;
         recent_deltas.clear();
-        planner_overlay.clear();
     }
+};
+
+class ObservationSink {
+public:
+    virtual ~ObservationSink() = default;
+    virtual PlannerOverlayCapture* plannerOverlay() = 0;
 };
 
 struct PlanningContext final {
@@ -720,6 +724,7 @@ struct PlanningContext final {
     Logger* logger{nullptr};
     RuntimeTuningState* runtime_tuning{nullptr};
     PlannerMetricsState* planner_metrics{nullptr};
+    ObservationSink* observation{nullptr};
 
     int whcaHorizon() const {
         return runtime_tuning ? runtime_tuning->whca_horizon : MIN_WHCA_HORIZON;
@@ -787,13 +792,11 @@ public:
     void reseedRandom(unsigned int seed);
     int nextRandomInt(int exclusive_upper_bound);
     void resetRuntimeStats();
-    void reportRealtimeDashboard();
     void planStep(AgentNodeSlots& next_positions);
     void updateState();
     void executeOneStep(bool is_paused);
     bool isComplete() const;
     bool run();
-    void printPerformanceSummary() const;
 
     GridMap map_storage{};
     AgentManager agent_manager_storage{};
@@ -809,7 +812,9 @@ public:
     RendererFacade renderer{};
     RuntimeTuningState runtime_tuning{};
     RendererState render_state{};
+    agv::core::CaptureLevel capture_level{agv::core::CaptureLevel::None};
     RenderModelCache render_model{};
+    PlannerOverlayCapture planner_capture{};
     PlannerMetricsState planner_metrics{};
     DeadlockEventRecord last_deadlock_event{};
     AgentWorkloadSnapshot workload_snapshot{};

@@ -836,7 +836,16 @@ void WHCA_adjustHorizon(const PlanningContext& context, int wf_edges, int scc, L
     if (horizon > MAX_WHCA_HORIZON) horizon = MAX_WHCA_HORIZON;
 
     if (old_horizon != horizon) {
-        logger_log(logger, "[%sWHCA*%s] Horizon adjusted %d -> %d (score=%d)", "\x1b[1;36m", "\x1b[0m", old_horizon, horizon, conflict_score);
+        logger_log_event(
+            logger,
+            "Planner",
+            "Info",
+            std::nullopt,
+            std::nullopt,
+            "[WHCA] Horizon adjusted %d -> %d (score=%d)",
+            old_horizon,
+            horizon,
+            conflict_score);
     }
 
     tuning.conflict_score = conflict_score;
@@ -1004,7 +1013,15 @@ CbsSolveResult run_partial_CBS(
                     result.plans[agent_id][t] = current->plans[group_index][t];
                 }
             }
-            logger_log(logger, "[%sCBS%s] Partial CBS succeeded (group=%d agents, expansions=%d).", "\x1b[1;32m", "\x1b[0m", group_n, expansions);
+            logger_log_event(
+                logger,
+                "Planner",
+                "Info",
+                std::nullopt,
+                std::nullopt,
+                "[CBS] Partial CBS succeeded (group=%d agents, expansions=%d).",
+                group_n,
+                expansions);
             record_cbs_success(context, expansions);
             result.solved = true;
             result.expansions = expansions;
@@ -1085,7 +1102,14 @@ CbsSolveResult run_partial_CBS(
         }
     }
 
-    logger_log(logger, "[%sCBS%s] Partial CBS failed within the search budget (%d). Falling back to pull-over.", "\x1b[1;31m", "\x1b[0m", expansion_budget);
+    logger_log_event(
+        logger,
+        "Planner",
+        "Warn",
+        std::nullopt,
+        std::nullopt,
+        "[CBS] Partial CBS failed within the search budget (%d). Falling back to pull-over.",
+        expansion_budget);
     record_cbs_failure(context, expansions);
     result.expansions = expansions;
     return result;

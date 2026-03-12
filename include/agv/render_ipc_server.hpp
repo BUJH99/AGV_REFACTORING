@@ -25,6 +25,7 @@ private:
     bool shutting_down_{false};
     std::uint64_t current_session_id_{0};
     std::uint64_t next_event_id_{1};
+    core::CaptureLevel capture_level_{core::CaptureLevel::None};
 
     nlohmann::json buildFrameEvent();
 };

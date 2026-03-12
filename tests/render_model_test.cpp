@@ -37,6 +37,7 @@ void configure_engine(
     engine.loadMap(map_id);
     engine.setAlgorithm(algorithm);
     engine.configureScenario(scenario);
+    engine.setCaptureLevel(agv::core::CaptureLevel::Frame);
     engine.setSuppressOutput(true);
 }
 
@@ -185,6 +186,28 @@ TEST(RenderModelTest, PlannerOverlayProvidesCoordinateBasedPaths) {
         [](const auto& path) { return !path.cells.empty(); }));
 }
 
+TEST(RenderModelTest, CaptureLevelNoneSkipsDeltaHistoryUntilEnabled) {
+    agv::core::SimulationEngine engine;
+    engine.setSeed(7);
+    engine.loadMap(1);
+    engine.setAlgorithm(agv::core::PathAlgo::Default);
+    engine.configureScenario(make_single_phase_custom_scenario());
+    engine.setCaptureLevel(agv::core::CaptureLevel::None);
+    engine.setSuppressOutput(true);
+
+    const auto initial = engine.snapshotRenderFrame();
+    engine.step();
+    const auto delta = engine.snapshotRenderDelta(initial.frameId);
+
+    EXPECT_TRUE(delta.requiresFullResync);
+
+    engine.setCaptureLevel(agv::core::CaptureLevel::Frame);
+    const auto resume_base = engine.snapshotRenderFrame();
+    engine.step();
+    const auto resumed_delta = engine.snapshotRenderDelta(resume_base.frameId);
+    EXPECT_FALSE(resumed_delta.requiresFullResync);
+}
+
 TEST(RenderModelTest, StaleFrameRequestRequiresFullResyncAfterHistoryWindow) {
     agv::core::SimulationEngine engine;
     configure_engine(engine, agv::core::PathAlgo::Default, make_realtime_idle_scenario(), 1);
@@ -234,19 +257,18 @@ TEST(RenderModelTest, AgentAndHudSnapshotsExposeOperationalFields) {
     }
 }
 
-TEST(RenderModelTest, SnapshotFrameTextIncludesOperationalHudAndStructuredLogPrefixes) {
+TEST(RenderModelTest, RenderFrameExposesOperationalHudAndStructuredLogs) {
     agv::core::SimulationEngine engine;
     configure_engine(engine, agv::core::PathAlgo::Default, make_single_phase_custom_scenario(), 1);
 
     engine.step();
-    const auto frame = engine.snapshotFrame();
+    const auto frame = engine.snapshotRenderFrame();
 
-    EXPECT_NE(frame.text.find("Backlog/Completion"), std::string::npos);
-    EXPECT_NE(frame.text.find("Fleet Activity"), std::string::npos);
-    EXPECT_NE(frame.text.find("Planner Pipeline"), std::string::npos);
-    EXPECT_NE(frame.text.find("Task(age/d/t)"), std::string::npos);
-    EXPECT_NE(frame.text.find("[Control]"), std::string::npos);
-    EXPECT_NE(frame.text.find("paused)"), std::string::npos);
+    EXPECT_GE(frame.hud.outstandingTaskCount, 0);
+    EXPECT_GE(frame.hud.waitingAgentCount, 0);
+    EXPECT_GE(frame.hud.plannerWaitEdges, 0);
+    EXPECT_FALSE(frame.agents.empty());
+    EXPECT_FALSE(frame.logsTail.empty());
 }
 
 TEST(RenderModelTest, FullSnapshotPlusDeltaReplayReconstructsLatestState) {
@@ -279,16 +301,16 @@ TEST(RenderModelTest, FullSnapshotPlusDeltaReplayReconstructsLatestState) {
     }
 }
 
-TEST(RenderModelTest, IpcServerSupportsStaticSceneDeltaFlowWithMockClient) {
+TEST(RenderModelTest, IpcServerSupportsStaticSceneDeltaFlowWithImmutableSessionProtocol) {
     std::stringstream input;
     input
-        << R"({"protocolVersion":1,"requestId":"start","command":"startSession","launchConfig":{"seed":7,"mapId":1,"algorithm":"default","scenario":{"mode":"custom","speedMultiplier":0.0,"phases":[{"type":"park","taskCount":1}]}}})" << '\n'
-        << R"({"protocolVersion":1,"requestId":"subscribe","command":"subscribeFrameDelta","enabled":true})" << '\n'
-        << R"({"protocolVersion":1,"requestId":"scene","command":"getStaticScene","sessionId":1})" << '\n'
-        << R"({"protocolVersion":1,"requestId":"frame","command":"getFrame","sessionId":1})" << '\n'
-        << R"({"protocolVersion":1,"requestId":"burst","command":"runBurst","sessionId":1,"maxSteps":1,"maxDurationMs":10})" << '\n'
-        << R"({"protocolVersion":1,"requestId":"delta","command":"getDelta","sessionId":1,"sinceFrameId":0})" << '\n'
-        << R"({"protocolVersion":1,"requestId":"logs","command":"getLogs","sessionId":1,"sinceSeq":0})" << '\n';
+        << R"({"protocolVersion":2,"requestId":"start","command":"startSession","captureLevel":"frame","launchConfig":{"seed":7,"mapId":1,"algorithm":"default","scenario":{"mode":"custom","speedMultiplier":0.0,"phases":[{"type":"park","taskCount":1}]}}})" << '\n'
+        << R"({"protocolVersion":2,"requestId":"subscribe","command":"subscribeFrameDelta","enabled":true})" << '\n'
+        << R"({"protocolVersion":2,"requestId":"scene","command":"getStaticScene","sessionId":1})" << '\n'
+        << R"({"protocolVersion":2,"requestId":"frame","command":"getFrame","sessionId":1})" << '\n'
+        << R"({"protocolVersion":2,"requestId":"advance","command":"advance","sessionId":1,"steps":1,"maxDurationMs":10,"captureLevel":"frame"})" << '\n'
+        << R"({"protocolVersion":2,"requestId":"delta","command":"getDelta","sessionId":1,"sinceFrameId":0})" << '\n'
+        << R"({"protocolVersion":2,"requestId":"logs","command":"getLogs","sessionId":1,"sinceSeq":0})" << '\n';
 
     std::stringstream output;
     agv::ipc::RenderIpcServer server;

@@ -11,13 +11,24 @@
 
 #include "agv/internal/engine_internal.hpp"
 
-void simulation_display_status(Simulation* sim, bool is_paused);
 Planner planner_from_pathalgo(PathAlgo algo);
-RendererFacade renderer_create_facade(void);
 
 namespace {
 
-PlanningContext make_planning_context(Simulation* sim) {
+class SimulationObservationSink final : public ObservationSink {
+public:
+    explicit SimulationObservationSink(Simulation* simulation)
+        : simulation_(simulation) {}
+
+    PlannerOverlayCapture* plannerOverlay() override {
+        return simulation_ ? &simulation_->planner_capture : nullptr;
+    }
+
+private:
+    Simulation* simulation_{nullptr};
+};
+
+PlanningContext make_planning_context(Simulation* sim, ObservationSink* observation) {
     return PlanningContext{
         sim,
         sim ? sim->agent_manager : nullptr,
@@ -25,6 +36,7 @@ PlanningContext make_planning_context(Simulation* sim) {
         sim ? sim->logger : nullptr,
         sim ? &sim->runtime_tuning : nullptr,
         sim ? &sim->planner_metrics : nullptr,
+        observation,
     };
 }
 
@@ -116,9 +128,11 @@ void record_planner_step_results(
 void maybe_report_realtime_dashboard(Simulation* sim) {
     ScenarioManager* scenario = sim->scenario_manager;
     scenario->time_step++;
-    if (scenario->mode == SimulationMode::Realtime && (scenario->time_step % DASHBOARD_INTERVAL_STEPS) == 0) {
-        sim->reportRealtimeDashboard();
-    }
+}
+
+void print_completion_message_if_needed(const Simulation* sim, std::string_view message) {
+    if (!sim || sim->suppress_stdout) return;
+    agv::internal::text::console_print(std::string(C_B_GRN) + "\n%s\n" + C_NRM, message);
 }
 
 bool are_all_agents_idle(const AgentManager* agent_manager) {
@@ -127,11 +141,6 @@ bool are_all_agents_idle(const AgentManager* agent_manager) {
         if (agent_manager->agents[i].state != AgentState::Idle) return false;
     }
     return true;
-}
-
-void print_completion_message_if_needed(const Simulation* sim, std::string_view message) {
-    if (!sim || sim->suppress_stdout) return;
-    agv::internal::text::console_print(std::string(C_B_GRN) + "\n%s\n" + C_NRM, message);
 }
 
 bool is_custom_scenario_complete(const Simulation* sim) {
@@ -147,39 +156,6 @@ bool is_realtime_scenario_complete(const Simulation* sim) {
         scenario->time_step >= REALTIME_MODE_TIMELIMIT;
 }
 
-int read_control_key() {
-    return console_read_key_nonblocking().value_or(0);
-}
-
-void handle_control_input(
-    Simulation* sim,
-    int last_key,
-    bool& is_paused,
-    bool& quit_flag,
-    bool& return_to_menu) {
-    if (!last_key) return;
-    ui_handle_control_key(sim, last_key, is_paused, quit_flag, return_to_menu);
-    if (quit_flag || return_to_menu) {
-        return;
-    }
-    if (is_paused && std::tolower(last_key) == 's') {
-        sim->render_state.force_next_flush = true;
-        return;
-    }
-    sim->render_state.force_next_flush = true;
-    sim->renderer.drawFrame(sim, is_paused);
-}
-
-bool should_wait_while_paused(bool is_paused, int last_key) {
-    return is_paused && std::tolower(last_key) != 's';
-}
-
-void maybe_sleep_for_simulation_speed(const ScenarioManager* scenario) {
-    if (scenario && scenario->simulation_speed > 0) {
-        platform_sleep_for_ms(scenario->simulation_speed);
-    }
-}
-
 }  // namespace
 
 Simulation_::Simulation_() {
@@ -189,7 +165,6 @@ Simulation_::Simulation_() {
     display_buffer.reserve(DISPLAY_BUFFER_SIZE);
     logger->bindSimulation(this);
     planner = planner_from_pathalgo(path_algo);
-    renderer = renderer_create_facade();
     render_state.configureForAlgorithm(path_algo);
     planner_metrics.whca_h = runtime_tuning.whca_horizon;
     grid_map_load_scenario(map, agent_manager, map_id);
@@ -304,71 +279,14 @@ void Simulation_::resetRuntimeStats() {
     logger->setContext(0, render_model.frame_id, scenario_manager ? scenario_manager->current_phase_index : -1);
 }
 
-void Simulation_::reportRealtimeDashboard() {
-    ScenarioManager* scenario = scenario_manager;
-    int steps = (total_executed_steps > 0) ? total_executed_steps : (scenario ? scenario->time_step : 0);
-    if (steps <= 0) steps = 1;
-    const RunSummary summary = collect_run_summary(this);
-
-    const unsigned long long total_completed = tasks_completed_total;
-    int interval_steps = steps - last_report_step;
-    if (interval_steps <= 0) interval_steps = 1;
-    const unsigned long long delta_completed = total_completed - last_report_completed_tasks;
-
-    const double throughput_avg = (double)total_completed / (double)steps;
-    const double throughput_interval = (double)delta_completed / (double)interval_steps;
-
-    if (suppress_stdout) {
-        last_report_completed_tasks = total_completed;
-        last_report_step = steps;
-        return;
-    }
-
-    agv::internal::text::console_print("\n========== Real-Time Dashboard @ step %d ==========\n", steps);
-    agv::internal::text::console_print(" Total Physical Time Steps      : %d\n", steps);
-    agv::internal::text::console_print(" Operating AGVs                 : %d\n", summary.active_agents);
-    agv::internal::text::console_print(" Tasks Completed (total)        : %llu\n", total_completed);
-    agv::internal::text::console_print(" Throughput (total avg)         : %.4f tasks/step\n", throughput_avg);
-    agv::internal::text::console_print(" Throughput (last interval)     : %.4f tasks/step over %d steps\n", throughput_interval, interval_steps);
-    agv::internal::text::console_print(" Total Computation CPU Time     : %.2f ms\n", total_cpu_time_ms);
-    agv::internal::text::console_print(" Planning Time (avg/max/share)  : %.4f / %.4f ms / %.2f%%\n",
-        summary.avg_planning_time_ms, summary.max_planning_time_ms, summary.planning_cpu_share * 100.0);
-    agv::internal::text::console_print(" Total Task Completion Step     : %d\n", last_task_completion_step);
-    agv::internal::text::console_print(" Total Movement Cost            : %.2f cells\n", total_movement_cost);
-    agv::internal::text::console_print(" Movement / Stall Step Ratio    : %.2f%% / %.2f%%\n",
-        summary.movement_step_ratio * 100.0, summary.stall_step_ratio * 100.0);
-    agv::internal::text::console_print(" Outstanding / Queued / InFlight: %d / %d / %d\n",
-        summary.outstanding_task_count, summary.queued_task_count, summary.in_flight_task_count);
-    agv::internal::text::console_print(" Oldest Queued Request Age      : %d step(s) (peak %d)\n",
-        summary.oldest_queued_request_age, summary.peak_oldest_queued_request_age);
-    agv::internal::text::console_print(" Requests Created (total)       : %llu\n", requests_created_total);
-    agv::internal::text::console_print(" Request Wait Ticks (sum/avg)   : %llu / %.2f\n",
-        request_wait_ticks_sum, summary.avg_request_wait_ticks);
-    agv::internal::text::console_print(" Process Memory Usage Sum      : %.2f KB (avg %.2f KB / sample, peak %.2f KB)\n",
-        memory_usage_sum_kb, summary.avg_memory_usage_kb, memory_usage_peak_kb);
-    agv::internal::text::console_print(" Last Step Active/Waiting/Stuck : %d / %d / %d\n",
-        last_active_agent_count, last_waiting_agent_count, last_stuck_agent_count);
-    agv::internal::text::console_print(" Last Planner wait/scc/cbs_exp  : %d / %d / %d\n",
-        planner_metrics.wf_edges_last, planner_metrics.scc_last, planner_metrics.cbs_exp_last);
-    agv::internal::text::console_print(" Heap Moves (total/last)          : %llu / %llu\n", algo_heap_moves_total, algo_heap_moves_last_step);
-    agv::internal::text::console_print(" Generated Nodes (total/last)     : %llu / %llu\n", algo_generated_nodes_total, algo_generated_nodes_last_step);
-    agv::internal::text::console_print(" Valid Expansions (total/last)    : %llu / %llu\n", algo_valid_expansions_total, algo_valid_expansions_last_step);
-    const double dash_ratio_total = (algo_generated_nodes_total > 0) ? (double)algo_valid_expansions_total / (double)algo_generated_nodes_total : 0.0;
-    const double dash_ratio_last = (algo_generated_nodes_last_step > 0) ? (double)algo_valid_expansions_last_step / (double)algo_generated_nodes_last_step : 0.0;
-    agv::internal::text::console_print(" Valid Expansion Ratio (total/last): %.4f / %.4f\n", dash_ratio_total, dash_ratio_last);
-    agv::internal::text::console_print("===================================================\n");
-
-    last_report_completed_tasks = total_completed;
-    last_report_step = steps;
-}
-
 void Simulation_::planStep(AgentNodeSlots& next_positions) {
     Simulation* sim = this;
     const clock_t plan_start_cpu = clock();
 
     reset_planner_step_metrics(sim);
 
-    const PlanningContext context = make_planning_context(sim);
+    SimulationObservationSink observation_sink(sim);
+    const PlanningContext context = make_planning_context(sim, &observation_sink);
     sim->planner.planStep(context, next_positions);
 
     const PlannerMetricsState& metrics = sim->planner_metrics;
@@ -398,62 +316,19 @@ bool Simulation_::isComplete() const {
     return false;
 }
 
-bool Simulation_::run() {
-    Simulation* sim = this;
-    bool is_paused = false;
-    bool quit_flag = false;
-    bool return_to_menu = false;
-
-    sim->resetRuntimeStats();
-    sim->render_state.force_next_flush = true;
-    sim->renderer.drawFrame(sim, is_paused);
-
-    while (!quit_flag && !return_to_menu) {
-        const int last_key = read_control_key();
-        handle_control_input(sim, last_key, is_paused, quit_flag, return_to_menu);
-        if (quit_flag || return_to_menu) continue;
-        if (should_wait_while_paused(is_paused, last_key)) {
-            platform_sleep_for_ms(PAUSE_POLL_INTERVAL_MS);
-            continue;
-        }
-        sim->executeOneStep(is_paused);
-        if (sim->isComplete()) {
-            break;
-        }
-        maybe_report_realtime_dashboard(sim);
-        maybe_sleep_for_simulation_speed(sim->scenario_manager);
-    }
-
-    return return_to_menu;
-}
-
 bool execute_headless_step(Simulation* sim, bool allow_sleep) {
+    (void)allow_sleep;
     if (!sim) return true;
     if (sim->isComplete()) return true;
     sim->executeOneStep(false);
     if (sim->isComplete()) return true;
     maybe_report_realtime_dashboard(sim);
-    if (allow_sleep && sim->scenario_manager->simulation_speed > 0) {
-        platform_sleep_for_ms(sim->scenario_manager->simulation_speed);
-    }
     return false;
 }
 
 bool run_simulation_to_completion(Simulation* sim) {
     if (!sim) return false;
-    while (!execute_headless_step(sim, true)) {
+    while (!execute_headless_step(sim, false)) {
     }
     return true;
-}
-
-std::string build_render_frame_text(Simulation* sim, bool is_paused) {
-    if (!sim) {
-        return {};
-    }
-
-    const bool previous_suppress = sim->render_state.suppress_flush;
-    sim->render_state.suppress_flush = true;
-    simulation_display_status(sim, is_paused);
-    sim->render_state.suppress_flush = previous_suppress;
-    return sim->display_buffer;
 }

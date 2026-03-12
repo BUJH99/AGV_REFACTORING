@@ -159,34 +159,51 @@ TEST(LaunchWorkflowTest, ConsoleLaunchWizardCancelReturnsToStartMenuBeforeQuit) 
     std::filesystem::remove(last_used_path, error);
 }
 
-TEST(LaunchWorkflowTest, RenderIpcProtocolV1SupportsSessionFlowAndSessionErrors) {
+TEST(LaunchWorkflowTest, RenderIpcProtocolV2SupportsSessionFlowAndSessionErrors) {
     agv::ipc::RenderIpcServer server;
 
     const auto capabilities = server.processRequest(nlohmann::json{
-        {"protocolVersion", 1},
+        {"protocolVersion", 2},
         {"requestId", "cap"},
         {"command", "getCapabilities"},
     });
     ASSERT_EQ(capabilities.size(), 1u);
     EXPECT_TRUE(capabilities.front()["ok"].get<bool>());
-    EXPECT_EQ(capabilities.front()["protocolVersion"], 1);
+    EXPECT_EQ(capabilities.front()["protocolVersion"], 2);
     EXPECT_EQ(capabilities.front()["requestId"], "cap");
     ASSERT_TRUE(capabilities.front().contains("capabilities"));
     const auto& capability_payload = capabilities.front()["capabilities"];
     EXPECT_EQ(capability_payload["platform"], "windows");
-    EXPECT_TRUE(capability_payload["recommendedLaunchConfig"].is_object());
-    EXPECT_EQ(capability_payload["recommendedPreset"]["seedStrategy"], "timestamp_seconds");
-    EXPECT_TRUE(capability_payload["maps"].is_array());
     EXPECT_TRUE(capability_payload["algorithms"].is_array());
     EXPECT_TRUE(capability_payload["modes"].is_array());
-    EXPECT_TRUE(capability_payload["wizardSteps"].is_array());
-    EXPECT_EQ(capability_payload["wizardSteps"].front()["id"], "map");
-    EXPECT_EQ(capability_payload["launchSchema"]["customPhases"]["taskCountCapacityField"], "maps[].capacity");
+    EXPECT_TRUE(capability_payload["captureLevels"].is_array());
+    EXPECT_EQ(capability_payload["launchSchema"]["seed"]["defaultStrategy"], "timestamp_seconds");
+    EXPECT_EQ(capability_payload["launchSchema"]["advance"]["captureLevel"]["type"], "enum");
+
+    const auto validation = server.processRequest(nlohmann::json{
+        {"protocolVersion", 2},
+        {"requestId", "validate"},
+        {"command", "validateConfig"},
+        {"launchConfig", {
+            {"seed", 7},
+            {"mapId", 1},
+            {"algorithm", "default"},
+            {"scenario", {
+                {"mode", "custom"},
+                {"speedMultiplier", 0.0},
+                {"phases", nlohmann::json::array({{{"type", "park"}, {"taskCount", 1}}})},
+            }},
+        }},
+    });
+    ASSERT_EQ(validation.size(), 1u);
+    EXPECT_TRUE(validation.front()["ok"].get<bool>());
+    EXPECT_TRUE(validation.front()["normalizedConfig"].is_object());
 
     const auto start = server.processRequest(nlohmann::json{
-        {"protocolVersion", 1},
+        {"protocolVersion", 2},
         {"requestId", "start-1"},
         {"command", "startSession"},
+        {"captureLevel", "frame"},
         {"launchConfig", {
             {"seed", 7},
             {"mapId", 1},
@@ -204,7 +221,7 @@ TEST(LaunchWorkflowTest, RenderIpcProtocolV1SupportsSessionFlowAndSessionErrors)
     EXPECT_GT(first_session_id, 0u);
 
     const auto scene = server.processRequest(nlohmann::json{
-        {"protocolVersion", 1},
+        {"protocolVersion", 2},
         {"requestId", "scene"},
         {"command", "getStaticScene"},
         {"sessionId", first_session_id},
@@ -212,7 +229,7 @@ TEST(LaunchWorkflowTest, RenderIpcProtocolV1SupportsSessionFlowAndSessionErrors)
     EXPECT_EQ(scene.front()["scene"]["width"], 82);
 
     const auto frame = server.processRequest(nlohmann::json{
-        {"protocolVersion", 1},
+        {"protocolVersion", 2},
         {"requestId", "frame"},
         {"command", "getFrame"},
         {"sessionId", first_session_id},
@@ -220,12 +237,13 @@ TEST(LaunchWorkflowTest, RenderIpcProtocolV1SupportsSessionFlowAndSessionErrors)
     const auto initial_frame_id = frame.front()["frame"]["frameId"].get<std::uint64_t>();
 
     const auto burst = server.processRequest(nlohmann::json{
-        {"protocolVersion", 1},
-        {"requestId", "burst"},
-        {"command", "runBurst"},
+        {"protocolVersion", 2},
+        {"requestId", "advance"},
+        {"command", "advance"},
         {"sessionId", first_session_id},
-        {"maxSteps", 4},
+        {"steps", 4},
         {"maxDurationMs", 10},
+        {"captureLevel", "frame"},
     });
     ASSERT_EQ(burst.size(), 1u);
     EXPECT_TRUE(burst.front()["ok"].get<bool>());
@@ -233,7 +251,7 @@ TEST(LaunchWorkflowTest, RenderIpcProtocolV1SupportsSessionFlowAndSessionErrors)
     EXPECT_GE(burst.front()["frameId"].get<std::uint64_t>(), initial_frame_id);
 
     const auto delta = server.processRequest(nlohmann::json{
-        {"protocolVersion", 1},
+        {"protocolVersion", 2},
         {"requestId", "delta"},
         {"command", "getDelta"},
         {"sessionId", first_session_id},
@@ -242,7 +260,7 @@ TEST(LaunchWorkflowTest, RenderIpcProtocolV1SupportsSessionFlowAndSessionErrors)
     EXPECT_FALSE(delta.front()["delta"]["requiresFullResync"].get<bool>());
 
     const auto set_paused = server.processRequest(nlohmann::json{
-        {"protocolVersion", 1},
+        {"protocolVersion", 2},
         {"requestId", "pause"},
         {"command", "setPaused"},
         {"sessionId", first_session_id},
@@ -251,27 +269,19 @@ TEST(LaunchWorkflowTest, RenderIpcProtocolV1SupportsSessionFlowAndSessionErrors)
     EXPECT_TRUE(set_paused.front()["paused"].get<bool>());
 
     const auto paused_burst = server.processRequest(nlohmann::json{
-        {"protocolVersion", 1},
+        {"protocolVersion", 2},
         {"requestId", "paused-burst"},
-        {"command", "runBurst"},
+        {"command", "advance"},
         {"sessionId", first_session_id},
-        {"maxSteps", 4},
+        {"steps", 4},
         {"maxDurationMs", 10},
+        {"captureLevel", "frame"},
     });
     EXPECT_EQ(paused_burst.front()["executedSteps"].get<int>(), 0);
     EXPECT_TRUE(paused_burst.front()["paused"].get<bool>());
 
-    const auto speed = server.processRequest(nlohmann::json{
-        {"protocolVersion", 1},
-        {"requestId", "speed"},
-        {"command", "setSpeedMultiplier"},
-        {"sessionId", first_session_id},
-        {"speedMultiplier", 2.0},
-    });
-    EXPECT_DOUBLE_EQ(speed.front()["speedMultiplier"].get<double>(), 2.0);
-
     const auto resume = server.processRequest(nlohmann::json{
-        {"protocolVersion", 1},
+        {"protocolVersion", 2},
         {"requestId", "resume"},
         {"command", "setPaused"},
         {"sessionId", first_session_id},
@@ -280,7 +290,7 @@ TEST(LaunchWorkflowTest, RenderIpcProtocolV1SupportsSessionFlowAndSessionErrors)
     EXPECT_FALSE(resume.front()["paused"].get<bool>());
 
     const auto metrics = server.processRequest(nlohmann::json{
-        {"protocolVersion", 1},
+        {"protocolVersion", 2},
         {"requestId", "metrics"},
         {"command", "getMetrics"},
         {"sessionId", first_session_id},
@@ -288,15 +298,16 @@ TEST(LaunchWorkflowTest, RenderIpcProtocolV1SupportsSessionFlowAndSessionErrors)
     EXPECT_TRUE(metrics.front().contains("metrics"));
 
     const auto debug = server.processRequest(nlohmann::json{
-        {"protocolVersion", 1},
+        {"protocolVersion", 2},
         {"requestId", "debug"},
         {"command", "getDebugSnapshot"},
         {"sessionId", first_session_id},
     });
     EXPECT_TRUE(debug.front().contains("snapshot"));
+    EXPECT_TRUE(debug.front()["snapshot"]["frame"].is_object());
 
     const auto logs = server.processRequest(nlohmann::json{
-        {"protocolVersion", 1},
+        {"protocolVersion", 2},
         {"requestId", "logs"},
         {"command", "getLogs"},
         {"sessionId", first_session_id},
@@ -307,9 +318,10 @@ TEST(LaunchWorkflowTest, RenderIpcProtocolV1SupportsSessionFlowAndSessionErrors)
     agv::ipc::RenderIpcServer history_server;
 
     const auto history_start = history_server.processRequest(nlohmann::json{
-        {"protocolVersion", 1},
+        {"protocolVersion", 2},
         {"requestId", "history-start"},
         {"command", "startSession"},
+        {"captureLevel", "frame"},
         {"launchConfig", {
             {"seed", 7},
             {"mapId", 1},
@@ -324,7 +336,7 @@ TEST(LaunchWorkflowTest, RenderIpcProtocolV1SupportsSessionFlowAndSessionErrors)
     });
     const auto history_session_id = history_start.front()["session"]["sessionId"].get<std::uint64_t>();
     const auto history_frame = history_server.processRequest(nlohmann::json{
-        {"protocolVersion", 1},
+        {"protocolVersion", 2},
         {"requestId", "history-frame"},
         {"command", "getFrame"},
         {"sessionId", history_session_id},
@@ -333,17 +345,18 @@ TEST(LaunchWorkflowTest, RenderIpcProtocolV1SupportsSessionFlowAndSessionErrors)
 
     for (int i = 0; i < 300; ++i) {
         history_server.processRequest(nlohmann::json{
-            {"protocolVersion", 1},
-            {"requestId", std::string("burst-") + std::to_string(i)},
-            {"command", "runBurst"},
+            {"protocolVersion", 2},
+            {"requestId", std::string("advance-") + std::to_string(i)},
+            {"command", "advance"},
             {"sessionId", history_session_id},
-            {"maxSteps", 1},
+            {"steps", 1},
             {"maxDurationMs", 10},
+            {"captureLevel", "frame"},
         });
     }
 
     const auto stale_delta = history_server.processRequest(nlohmann::json{
-        {"protocolVersion", 1},
+        {"protocolVersion", 2},
         {"requestId", "stale-delta"},
         {"command", "getDelta"},
         {"sessionId", history_session_id},
@@ -352,9 +365,10 @@ TEST(LaunchWorkflowTest, RenderIpcProtocolV1SupportsSessionFlowAndSessionErrors)
     EXPECT_TRUE(stale_delta.front()["delta"]["requiresFullResync"].get<bool>());
 
     const auto second_start = history_server.processRequest(nlohmann::json{
-        {"protocolVersion", 1},
+        {"protocolVersion", 2},
         {"requestId", "start-2"},
         {"command", "startSession"},
+        {"captureLevel", "frame"},
         {"launchConfig", {
             {"seed", 7},
             {"mapId", 1},
@@ -371,7 +385,7 @@ TEST(LaunchWorkflowTest, RenderIpcProtocolV1SupportsSessionFlowAndSessionErrors)
 
     std::stringstream input;
     input << nlohmann::json{
-        {"protocolVersion", 1},
+        {"protocolVersion", 2},
         {"requestId", "stale-session"},
         {"command", "getFrame"},
         {"sessionId", history_session_id},
@@ -386,7 +400,7 @@ TEST(LaunchWorkflowTest, RenderIpcProtocolV1SupportsSessionFlowAndSessionErrors)
     EXPECT_EQ(stale_response["errorCode"], "session_stale");
 
     const auto shutdown = server.processRequest(nlohmann::json{
-        {"protocolVersion", 1},
+        {"protocolVersion", 2},
         {"requestId", "shutdown"},
         {"command", "shutdown"},
     });

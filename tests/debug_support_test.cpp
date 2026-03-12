@@ -1,3 +1,4 @@
+#include "agv/console_shell.hpp"
 #include "agv/simulation_engine.hpp"
 #include "agv/internal/engine_internal.hpp"
 
@@ -67,7 +68,8 @@ TEST(DebugSupportTest, PublicDebugSnapshotCapturesLogsAgentsAndFrame) {
 
     EXPECT_GE(snapshot.metrics.recordedSteps, 1);
     EXPECT_GE(snapshot.metrics.tasksCompletedTotal, 1u);
-    EXPECT_FALSE(snapshot.frame.text.empty());
+    EXPECT_GE(snapshot.frame.hud.step, 1);
+    EXPECT_FALSE(snapshot.frame.agents.empty());
     EXPECT_FALSE(snapshot.recentLogs.empty());
     EXPECT_LE(snapshot.recentLogs.size(), static_cast<std::size_t>(LOG_BUFFER_LINES));
     EXPECT_FALSE(snapshot.agents.empty());
@@ -96,7 +98,7 @@ TEST(DebugSupportTest, DebugReportCanBeWrittenToDisk) {
     std::error_code cleanup_error;
     std::filesystem::remove(report_path, cleanup_error);
 
-    ASSERT_TRUE(engine.writeDebugReport(report_path.string(), true));
+    ASSERT_TRUE(agv::console::writeDebugReport(engine, report_path.string(), true));
     ASSERT_TRUE(std::filesystem::exists(report_path));
 
     std::ifstream input(report_path);

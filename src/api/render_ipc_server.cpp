@@ -1,9 +1,8 @@
 #include "agv/render_ipc_server.hpp"
 #include "agv/internal/engine_internal.hpp"
-#include "agv/internal/launch_ui_metadata.hpp"
 
 #include <algorithm>
-#include <chrono>
+#include <array>
 #include <istream>
 #include <ostream>
 #include <stdexcept>
@@ -16,7 +15,14 @@ namespace {
 
 using nlohmann::json;
 
-constexpr int kProtocolVersion = 1;
+constexpr int kProtocolVersion = 2;
+
+struct IpcMapOption {
+    int id{1};
+    const char* key{""};
+    const char* label{""};
+    const char* description{""};
+};
 
 class ProtocolError final : public std::runtime_error {
 public:
@@ -94,6 +100,40 @@ std::string to_string(core::AgentWaitReason reason) {
         default:
             return "none";
     }
+}
+
+std::string to_string(core::CaptureLevel level) {
+    switch (level) {
+        case core::CaptureLevel::Metrics:
+            return "metrics";
+        case core::CaptureLevel::Frame:
+            return "frame";
+        case core::CaptureLevel::Debug:
+            return "debug";
+        case core::CaptureLevel::None:
+        default:
+            return "none";
+    }
+}
+
+int compute_map_capacity(int map_id) {
+    GridMap map{};
+    AgentManager agents{};
+    grid_map_load_scenario(&map, &agents, map_id);
+    return std::max(map.num_goals, 1);
+}
+
+const std::array<IpcMapOption, 7>& ipc_map_options() {
+    static const std::array<IpcMapOption, 7> options{{
+        {1, "map1", "Compact parking lot", "Baseline map for quick validation runs."},
+        {2, "map2", "Mid-size lot", "Mid-size lot with one retrieval target."},
+        {3, "map3", "16 AGVs + 900 requests", "Stress map with A~P agents and heavy traffic."},
+        {4, "map4", "Dense lot", "Dense lot with one retrieval target and four parking waves."},
+        {5, "map5", "Cross intersection micro-map", "Four-way conflict and swap resolution micro-map."},
+        {6, "map6", "Corner-case gauntlet", "Single-lane loops, bridge bottleneck, bays, and charger branches."},
+        {7, "map7", "Reference split-room map", "Split-room reference map with shared trunk."},
+    }};
+    return options;
 }
 
 json request_id_or_null(const json& request) {
@@ -207,6 +247,24 @@ core::RenderQueryOptions parse_render_options(const json& request, bool paused) 
     return options;
 }
 
+core::CaptureLevel parse_capture_level(const json& value) {
+    if (!value.is_string()) {
+        return core::CaptureLevel::None;
+    }
+
+    const std::string raw = value.get<std::string>();
+    if (raw == "metrics") {
+        return core::CaptureLevel::Metrics;
+    }
+    if (raw == "frame") {
+        return core::CaptureLevel::Frame;
+    }
+    if (raw == "debug") {
+        return core::CaptureLevel::Debug;
+    }
+    return core::CaptureLevel::None;
+}
+
 json to_json_value(const core::LaunchConfig& config) {
     json phases = json::array();
     for (const auto& phase : config.scenario.phases) {
@@ -235,40 +293,6 @@ json to_json_value(const core::ValidationIssue& issue) {
         {"field", issue.field},
         {"code", issue.code},
         {"message", issue.message},
-    };
-}
-
-json to_json_value(const agv::internal::launch_ui::MapOption& option) {
-    return json{
-        {"id", option.id},
-        {"key", option.key},
-        {"label", option.label},
-        {"description", option.description},
-        {"capacity", option.capacity},
-    };
-}
-
-json to_json_value(const agv::internal::launch_ui::AlgorithmOption& option) {
-    return json{
-        {"id", option.key},
-        {"label", option.label},
-        {"description", option.description},
-    };
-}
-
-json to_json_value(const agv::internal::launch_ui::ModeOption& option) {
-    return json{
-        {"id", option.key},
-        {"label", option.label},
-        {"description", option.description},
-    };
-}
-
-json to_json_value(const agv::internal::launch_ui::WizardStepOption& option) {
-    return json{
-        {"id", option.key},
-        {"title", option.title},
-        {"description", option.description},
     };
 }
 
@@ -755,7 +779,7 @@ json to_json_value(const core::DebugSnapshot& snapshot) {
     return json{
         {"metrics", to_json_value(snapshot.metrics)},
         {"runtime", to_json_value(snapshot.runtime)},
-        {"frameText", snapshot.frame.text},
+        {"frame", to_json_value(snapshot.frame)},
         {"recentLogs", snapshot.recentLogs},
         {"agents", std::move(agents)},
         {"deadlock", to_json_value(snapshot.deadlock)},
@@ -786,6 +810,7 @@ json base_error_response(const json& request, std::string error_code, std::strin
 
 RenderIpcServer::RenderIpcServer() {
     engine_.setTerminalOutputEnabled(false);
+    engine_.setCaptureLevel(capture_level_);
 }
 
 std::vector<json> RenderIpcServer::processRequest(const json& request) {
@@ -808,104 +833,109 @@ std::vector<json> RenderIpcServer::processRequest(const json& request) {
     };
 
     if (command == "getCapabilities") {
-        json maps = json::array();
-        for (const auto& option : agv::internal::launch_ui::map_options()) {
-            maps.push_back(to_json_value(option));
+        json map_options = json::array();
+        for (const auto& option : ipc_map_options()) {
+            map_options.push_back({
+                {"id", option.id},
+                {"key", option.key},
+                {"label", option.label},
+                {"description", option.description},
+                {"capacity", compute_map_capacity(option.id)},
+            });
         }
 
-        json algorithms = json::array();
-        for (const auto& option : agv::internal::launch_ui::algorithm_options()) {
-            algorithms.push_back(to_json_value(option));
-        }
-
-        json modes = json::array();
-        for (const auto& option : agv::internal::launch_ui::mode_options()) {
-            modes.push_back(to_json_value(option));
-        }
-
-        json wizard_steps = json::array();
-        for (const auto& option : agv::internal::launch_ui::wizard_steps()) {
-            wizard_steps.push_back(to_json_value(option));
-        }
-
-        const auto now = std::chrono::system_clock::now();
-        const auto seed = static_cast<std::uint32_t>(std::chrono::system_clock::to_time_t(now));
-        const core::LaunchConfig recommended = agv::internal::launch_ui::recommended_launch_config(seed);
         json response = base_response(request, command, true);
         response["capabilities"] = {
             {"platform", "windows"},
             {"protocolVersion", kProtocolVersion},
             {"commands", json::array({
                 "getCapabilities",
+                "validateConfig",
                 "startSession",
+                "advance",
                 "getStaticScene",
-                "getFrame",
                 "getDelta",
                 "getLogs",
-                "runBurst",
-                "setPaused",
-                "setSpeedMultiplier",
                 "getMetrics",
+                "getFrame",
                 "getDebugSnapshot",
-                "subscribeFrameDelta",
                 "shutdown",
-                "loadMap",
-                "setAlgorithm",
-                "configureScenario",
-                "step",
-                "run",
-                "pause",
-                "resume",
+                "subscribeFrameDelta",
             })},
             {"mapIdRange", {{"min", 1}, {"max", 7}}},
-            {"recommendedLaunchConfig", to_json_value(recommended)},
-            {"recommendedPreset", {
-                {"id", "recommended"},
-                {"label", "Recommended"},
-                {"description", "Balanced starter setup for quick validation runs."},
-                {"seedStrategy", "timestamp_seconds"},
-            }},
-            {"wizardFlow", json::array({"map", "algorithm", "mode", "scenario", "speed", "seed", "summary"})},
-            {"wizardSteps", std::move(wizard_steps)},
-            {"maps", std::move(maps)},
-            {"algorithms", std::move(algorithms)},
-            {"modes", std::move(modes)},
+            {"mapOptions", std::move(map_options)},
+            {"algorithms", json::array({"default", "astar", "dstar"})},
+            {"modes", json::array({"custom", "realtime"})},
+            {"captureLevels", json::array({"none", "metrics", "frame", "debug"})},
             {"launchSchema", {
                 {"seed", {
                     {"type", "uint32"},
                     {"min", 0},
                     {"max", 4294967295ull},
-                    {"note", "Same seed and config reproduce the same random run."},
                     {"defaultStrategy", "timestamp_seconds"},
+                }},
+                {"mapId", {
+                    {"type", "int"},
+                    {"min", 1},
+                    {"max", 7},
+                }},
+                {"algorithm", {
+                    {"type", "enum"},
+                    {"values", json::array({"default", "astar", "dstar"})},
+                }},
+                {"mode", {
+                    {"type", "enum"},
+                    {"values", json::array({"custom", "realtime"})},
                 }},
                 {"speedMultiplier", {
                     {"type", "double"},
                     {"min", 0.0},
                     {"max", static_cast<double>(MAX_SPEED_MULTIPLIER)},
                     {"default", 0.0},
-                    {"note", "0.0 keeps the simulation at full speed without deliberate sleep."},
                 }},
                 {"customPhases", {
                     {"minCount", 0},
                     {"maxCount", MAX_PHASES},
                     {"emptyBehavior", "normalize_to_single_park_x1"},
-                    {"taskCountUsesSelectedMapCapacity", true},
-                    {"taskCountCapacityField", "maps[].capacity"},
                 }},
                 {"realtimeChances", {
                     {"min", 0},
                     {"max", 100},
                     {"sumMax", 100},
                 }},
-                {"persistence", {
-                    {"lastUsedVersion", 1},
-                    {"pathHint", "%LOCALAPPDATA%\\\\AGVRefactor\\\\last_launch.json"},
+                {"advance", {
+                    {"steps", {{"type", "int"}, {"min", 0}}},
+                    {"maxDurationMs", {{"type", "int"}, {"min", 0}}},
+                    {"captureLevel", {{"type", "enum"}, {"values", json::array({"none", "metrics", "frame", "debug"})}}},
                 }},
             }},
             {"maxSpeedMultiplier", static_cast<double>(MAX_SPEED_MULTIPLIER)},
             {"supportsFrameDeltaEvent", true},
             {"supportsStructuredLogs", true},
         };
+        responses.push_back(std::move(response));
+        return responses;
+    }
+
+    if (command == "validateConfig") {
+        if (!request.contains("launchConfig")) {
+            throw ProtocolError("invalid_request", "Missing launchConfig.");
+        }
+        const core::LaunchConfig launch_config = parse_launch_config(request.at("launchConfig"));
+        const core::ValidationResult validation = core::validateLaunchConfig(launch_config);
+
+        json response = base_response(request, command, validation.ok());
+        response["normalizedConfig"] = to_json_value(validation.normalizedConfig);
+        json errors = json::array();
+        for (const auto& issue : validation.errors) {
+            errors.push_back(to_json_value(issue));
+        }
+        json warnings = json::array();
+        for (const auto& issue : validation.warnings) {
+            warnings.push_back(to_json_value(issue));
+        }
+        response["errors"] = std::move(errors);
+        response["warnings"] = std::move(warnings);
         responses.push_back(std::move(response));
         return responses;
     }
@@ -928,6 +958,10 @@ std::vector<json> RenderIpcServer::processRequest(const json& request) {
         }
 
         engine_.setTerminalOutputEnabled(false);
+        capture_level_ = request.contains("captureLevel")
+            ? parse_capture_level(request.at("captureLevel"))
+            : core::CaptureLevel::None;
+        engine_.setCaptureLevel(capture_level_);
         engine_.configureLaunch(validation.normalizedConfig);
         const core::SessionDescriptor session = engine_.startConfiguredSession();
         current_session_id_ = session.sessionId;
@@ -935,6 +969,7 @@ std::vector<json> RenderIpcServer::processRequest(const json& request) {
 
         json response = base_response(request, command, true);
         response["session"] = to_json_value(session);
+        response["captureLevel"] = to_string(capture_level_);
         if (!validation.warnings.empty()) {
             json warnings = json::array();
             for (const auto& issue : validation.warnings) {
@@ -946,25 +981,42 @@ std::vector<json> RenderIpcServer::processRequest(const json& request) {
         return responses;
     }
 
-    if (command == "loadMap") {
-        engine_.loadMap(request.at("mapId").get<int>());
-        current_session_id_ = 0;
-        paused_ = false;
-        responses.push_back(base_response(request, command, true));
-        return responses;
-    }
-    if (command == "setAlgorithm") {
-        engine_.setAlgorithm(parse_algorithm(request.at("algorithm")));
-        current_session_id_ = 0;
-        paused_ = false;
-        responses.push_back(base_response(request, command, true));
-        return responses;
-    }
-    if (command == "configureScenario") {
-        engine_.configureScenario(parse_scenario(request.at("scenario")));
-        current_session_id_ = 0;
-        paused_ = false;
-        responses.push_back(base_response(request, command, true));
+    if (command == "advance") {
+        require_session();
+        const int max_steps = request.value("steps", 0);
+        const int max_duration_ms = request.value("maxDurationMs", 0);
+        if (max_steps <= 0 && max_duration_ms <= 0) {
+            throw ProtocolError("invalid_request", "advance requires a positive steps or maxDurationMs.");
+        }
+
+        if (request.contains("captureLevel")) {
+            capture_level_ = parse_capture_level(request.at("captureLevel"));
+        }
+        engine_.setCaptureLevel(capture_level_);
+
+        json response = base_response(request, command, true);
+        response["sessionId"] = current_session_id_;
+        response["paused"] = paused_;
+        response["captureLevel"] = to_string(capture_level_);
+        if (paused_) {
+            const auto frame = engine_.snapshotRenderFrame(core::RenderQueryOptions{paused_, false, 0, false});
+            response["executedSteps"] = 0;
+            response["complete"] = engine_.isComplete();
+            response["frameId"] = frame.frameId;
+            response["lastLogSeq"] = frame.lastLogSeq;
+            responses.push_back(std::move(response));
+            return responses;
+        }
+
+        const core::BurstRunResult burst = engine_.runBurst(max_steps, max_duration_ms);
+        response["executedSteps"] = burst.executedSteps;
+        response["complete"] = burst.complete;
+        response["frameId"] = burst.frameId;
+        response["lastLogSeq"] = burst.lastLogSeq;
+        responses.push_back(std::move(response));
+        if (subscribed_ && burst.executedSteps > 0) {
+            responses.push_back(buildFrameEvent());
+        }
         return responses;
     }
 
@@ -976,32 +1028,11 @@ std::vector<json> RenderIpcServer::processRequest(const json& request) {
         return responses;
     }
 
-    if (command == "setPaused" || command == "pause" || command == "resume") {
+    if (command == "setPaused") {
         require_session();
-        if (command == "pause") {
-            paused_ = true;
-        } else if (command == "resume") {
-            paused_ = false;
-        } else {
-            paused_ = request.value("paused", false);
-        }
+        paused_ = request.value("paused", false);
         json response = base_response(request, command, true);
         response["paused"] = paused_;
-        responses.push_back(std::move(response));
-        return responses;
-    }
-
-    if (command == "setSpeedMultiplier") {
-        require_session();
-        const double multiplier = request.at("speedMultiplier").get<double>();
-        try {
-            engine_.setSpeedMultiplier(multiplier);
-        } catch (const std::invalid_argument& error) {
-            throw ProtocolError("validation_failed", error.what());
-        }
-        json response = base_response(request, command, true);
-        response["sessionId"] = current_session_id_;
-        response["speedMultiplier"] = multiplier;
         responses.push_back(std::move(response));
         return responses;
     }
@@ -1062,86 +1093,6 @@ std::vector<json> RenderIpcServer::processRequest(const json& request) {
         json response = base_response(request, command, true);
         response["snapshot"] = to_json_value(engine_.snapshotDebugState(paused_));
         responses.push_back(std::move(response));
-        return responses;
-    }
-
-    if (command == "step") {
-        if (current_session_id_ == 0) {
-            current_session_id_ = engine_.startConfiguredSession().sessionId;
-        } else {
-            require_session();
-        }
-        engine_.step();
-        const core::RenderFrameSnapshot frame = engine_.snapshotRenderFrame(core::RenderQueryOptions{paused_, false, 0, false});
-        json response = base_response(request, command, true);
-        response["sessionId"] = frame.sessionId;
-        response["complete"] = engine_.isComplete();
-        response["frameId"] = frame.frameId;
-        response["lastLogSeq"] = frame.lastLogSeq;
-        responses.push_back(std::move(response));
-        if (subscribed_) {
-            responses.push_back(buildFrameEvent());
-        }
-        return responses;
-    }
-
-    if (command == "runBurst") {
-        require_session();
-        const int max_steps = request.value("maxSteps", 0);
-        const int max_duration_ms = request.value("maxDurationMs", 0);
-        if (max_steps <= 0 && max_duration_ms <= 0) {
-            throw ProtocolError("invalid_request", "runBurst requires a positive maxSteps or maxDurationMs.");
-        }
-
-        json response = base_response(request, command, true);
-        response["sessionId"] = current_session_id_;
-        response["paused"] = paused_;
-        if (paused_) {
-            const auto frame = engine_.snapshotRenderFrame(core::RenderQueryOptions{paused_, false, 0, false});
-            response["executedSteps"] = 0;
-            response["complete"] = engine_.isComplete();
-            response["frameId"] = frame.frameId;
-            response["lastLogSeq"] = frame.lastLogSeq;
-            responses.push_back(std::move(response));
-            return responses;
-        }
-
-        const core::BurstRunResult burst = engine_.runBurst(max_steps, max_duration_ms);
-        response["executedSteps"] = burst.executedSteps;
-        response["complete"] = burst.complete;
-        response["frameId"] = burst.frameId;
-        response["lastLogSeq"] = burst.lastLogSeq;
-        responses.push_back(std::move(response));
-        if (subscribed_ && burst.executedSteps > 0) {
-            responses.push_back(buildFrameEvent());
-        }
-        return responses;
-    }
-
-    if (command == "run") {
-        if (current_session_id_ == 0) {
-            current_session_id_ = engine_.startConfiguredSession().sessionId;
-        } else {
-            require_session();
-        }
-        const int max_steps = request.value("maxSteps", -1);
-        int executed = 0;
-        while (!paused_ && !engine_.isComplete() && (max_steps < 0 || executed < max_steps)) {
-            engine_.step();
-            ++executed;
-        }
-        const auto frame = engine_.snapshotRenderFrame(core::RenderQueryOptions{paused_, false, 0, false});
-        json response = base_response(request, command, true);
-        response["sessionId"] = frame.sessionId;
-        response["executedSteps"] = executed;
-        response["complete"] = engine_.isComplete();
-        response["frameId"] = frame.frameId;
-        response["lastLogSeq"] = frame.lastLogSeq;
-        response["paused"] = paused_;
-        responses.push_back(std::move(response));
-        if (subscribed_ && executed > 0) {
-            responses.push_back(buildFrameEvent());
-        }
         return responses;
     }
 

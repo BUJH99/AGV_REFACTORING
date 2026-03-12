@@ -79,6 +79,12 @@ int node_flat_index(const Node* node) {
     return node ? (node->y * GRID_WIDTH + node->x) : -1;
 }
 
+bool is_deadlock_leader_candidate(const Agent* agent) {
+    return agent &&
+        agent->state != AgentState::GoingToCharge &&
+        agent->state != AgentState::ReturningHomeMaintenance;
+}
+
 }  // namespace
 
 OrderedMoveCandidates OrderedMoveRankingPolicy::rank(Pathfinder* pf, GridMap* map, const AgentManager* manager,
@@ -195,6 +201,25 @@ void sort_agents_by_priority(AgentManager* manager, AgentOrder& order) {
 int best_in_mask(const AgentManager* manager, int mask) {
     int best = -1;
     int best_score = -999999;
+    bool found_preferred_candidate = false;
+    for (int i = 0; i < MAX_AGENTS; ++i) {
+        if ((mask & (1 << i)) == 0) continue;
+        const Agent* agent = &manager->agents[i];
+        if (!is_deadlock_leader_candidate(agent)) {
+            continue;
+        }
+        found_preferred_candidate = true;
+        const int score = priority_score(agent);
+        if (score > best_score) {
+            best_score = score;
+            best = i;
+        }
+    }
+
+    if (found_preferred_candidate) {
+        return best;
+    }
+
     for (int i = 0; i < MAX_AGENTS; ++i) {
         if ((mask & (1 << i)) == 0) continue;
         const int score = priority_score(&manager->agents[i]);

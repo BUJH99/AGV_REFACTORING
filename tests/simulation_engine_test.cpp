@@ -1,3 +1,4 @@
+#include "agv/console_shell.hpp"
 #include "agv/simulation_engine.hpp"
 #include "agv/internal/engine_internal.hpp"
 #include "../src/planning/collision_planner_support.hpp"
@@ -5,6 +6,7 @@
 
 #include <array>
 #include <initializer_list>
+#include <memory>
 
 #include <gtest/gtest.h>
 
@@ -136,8 +138,9 @@ TEST(SimulationEngineTest, HeadlessCustomScenarioProducesMetricsAndFrame) {
     EXPECT_LE(metrics.idleStepsPerAgentSpread.minMaxRatio, 1.0);
     EXPECT_GE(metrics.planningCpuShare, 0.0);
 
-    const auto frame = engine.snapshotFrame();
-    EXPECT_FALSE(frame.text.empty());
+    const auto frame = engine.snapshotRenderFrame();
+    EXPECT_GE(frame.hud.step, 1);
+    EXPECT_FALSE(frame.agents.empty());
 }
 
 TEST(SimulationEngineTest, DifferentAlgorithmsRemainExecutableThroughPublicApi) {
@@ -153,8 +156,9 @@ TEST(SimulationEngineTest, DifferentAlgorithmsRemainExecutableThroughPublicApi) 
         EXPECT_GT(metrics.recordedSteps, 0) << static_cast<int>(algorithm);
         EXPECT_GE(metrics.tasksCompletedTotal, 1u) << static_cast<int>(algorithm);
 
-        const auto frame = engine.snapshotFrame();
-        EXPECT_FALSE(frame.text.empty()) << static_cast<int>(algorithm);
+        const auto frame = engine.snapshotRenderFrame();
+        EXPECT_GE(frame.hud.step, 1) << static_cast<int>(algorithm);
+        EXPECT_FALSE(frame.agents.empty()) << static_cast<int>(algorithm);
     }
 }
 
@@ -233,7 +237,7 @@ TEST(SimulationEngineTest, PublicMap7DefaultAlgorithmCompletesMaximumParkingThen
 
     constexpr int kMaxSteps = 12000;
     const auto metrics = run_bounded_steps(engine, kMaxSteps);
-    const std::string debug_report = engine.buildDebugReport(true);
+    const std::string debug_report = agv::console::buildDebugReport(engine, true);
 
     EXPECT_TRUE(engine.isComplete()) << debug_report;
     EXPECT_EQ(metrics.mapId, 7);
@@ -248,10 +252,10 @@ TEST(SimulationEngineTest, StepAdvancesSimulationIncrementally) {
 
     engine.step();
     const auto first_metrics = engine.snapshotMetrics();
-    const auto first_frame = engine.snapshotFrame();
+    const auto first_frame = engine.snapshotRenderFrame();
 
     EXPECT_GE(first_metrics.recordedSteps, 1);
-    EXPECT_FALSE(first_frame.text.empty());
+    EXPECT_GE(first_frame.frameId, 1u);
     EXPECT_FALSE(engine.isComplete());
 
     engine.step();
@@ -270,7 +274,9 @@ TEST(SimulationEngineTest, RealtimeScenarioCanBeSteppedThroughPublicApi) {
     const auto metrics = engine.snapshotMetrics();
     EXPECT_EQ(metrics.mode, agv::core::SimulationMode::Realtime);
     EXPECT_GE(metrics.recordedSteps, 5);
-    EXPECT_FALSE(engine.snapshotFrame().text.empty());
+    const auto frame = engine.snapshotRenderFrame();
+    EXPECT_GE(frame.hud.step, 5);
+    EXPECT_FALSE(frame.agents.empty());
 }
 
 TEST(SimulationEngineTest, RealtimeScenarioRemainsDeterministicForSameSeed) {
@@ -540,7 +546,9 @@ TEST(SimulationEngineTest, SequentialEnginesStayIndependentAcrossAlgorithmsAndMo
     third.runUntilComplete();
     const auto third_metrics = third.snapshotMetrics();
     EXPECT_GE(third_metrics.tasksCompletedTotal, 1u);
-    EXPECT_FALSE(third.snapshotFrame().text.empty());
+    const auto third_frame = third.snapshotRenderFrame();
+    EXPECT_GE(third_frame.hud.step, 1);
+    EXPECT_FALSE(third_frame.agents.empty());
 }
 
 TEST(SimulationEngineTest, InternalPathfinderReinitializeAndUpdateStartRemainStable) {
@@ -652,15 +660,15 @@ TEST(SimulationEngineTest, InternalReservationTableTouchedClearRemainsStable) {
 }
 
 TEST(SimulationEngineTest, InternalPartialCbsResolvesCrossingConflictWithGroupLocalPlans) {
-    GridMap map;
+    GridMap map{};
     initialize_empty_map(&map);
 
-    AgentManager manager;
-    Logger logger;
-    RuntimeTuningState tuning;
-    PlannerMetricsState metrics;
-    DefaultPlannerScratch scratch;
-    ReservationTable table;
+    AgentManager manager{};
+    Logger logger{};
+    RuntimeTuningState tuning{};
+    PlannerMetricsState metrics{};
+    auto scratch = std::make_unique<DefaultPlannerScratch>();
+    ReservationTable table{};
 
     tuning.whca_horizon = 4;
 
@@ -670,6 +678,7 @@ TEST(SimulationEngineTest, InternalPartialCbsResolvesCrossingConflictWithGroupLo
     first->pos = &map.grid[1][1];
     first->goal = &map.grid[1][3];
     first->heading = AgentDir::None;
+    first->state = AgentState::GoingToCollect;
 
     Agent* second = &manager.agents[1];
     second->id = 1;
@@ -677,8 +686,9 @@ TEST(SimulationEngineTest, InternalPartialCbsResolvesCrossingConflictWithGroupLo
     second->pos = &map.grid[1][3];
     second->goal = &map.grid[1][1];
     second->heading = AgentDir::None;
+    second->state = AgentState::GoingToCollect;
 
-    PlanningContext context;
+    PlanningContext context{};
     context.agents = &manager;
     context.map = &map;
     context.logger = &logger;
@@ -690,7 +700,7 @@ TEST(SimulationEngineTest, InternalPartialCbsResolvesCrossingConflictWithGroupLo
     group_ids[0] = first->id;
     group_ids[1] = second->id;
 
-    const CbsSolveResult result = run_partial_CBS(context, group_ids, 2, table, scratch);
+    const CbsSolveResult result = run_partial_CBS(context, group_ids, 2, table, *scratch);
     ASSERT_TRUE(result.solved);
     EXPECT_GT(result.expansions, 0);
     EXPECT_FALSE(plans_have_spacetime_conflict(result.plans[first->id], result.plans[second->id], tuning.whca_horizon));
@@ -767,6 +777,18 @@ TEST(SimulationEngineTest, InternalFallbackDecisionTracksYieldingAgents) {
     decision.yield_agents.set(2);
     EXPECT_TRUE(decision.hasAction());
     EXPECT_TRUE(decision.yield_agents.contains(2));
+}
+
+TEST(SimulationEngineTest, InternalDeadlockLeaderPrefersTaskAgentOverChargingAgent) {
+    AgentManager manager{};
+    manager.agents[0].id = 0;
+    manager.agents[1].id = 1;
+    manager.agents[0].state = AgentState::GoingToCharge;
+    manager.agents[0].stuck_steps = 900;
+    manager.agents[1].state = AgentState::ReturningWithCar;
+    manager.agents[1].stuck_steps = 0;
+
+    EXPECT_EQ(best_in_mask(&manager, (1 << 0) | (1 << 1)), 1);
 }
 
 TEST(SimulationEngineTest, InternalPlannerStepResetClearsLastConflictFlags) {

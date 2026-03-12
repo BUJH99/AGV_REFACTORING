@@ -440,6 +440,7 @@ void record_deadlock_event_local(
 }
 
 void force_idle_cleanup_local(AgentManager* manager, Simulation* sim, Logger* logger) {
+    (void)sim;
     if (!manager) return;
     int changed = 0;
     for (int i = 0; i < MAX_AGENTS; i++) {
@@ -655,6 +656,7 @@ private:
     }
 
     void finalize_frame(Simulation* sim, const StepExecutionFrame& frame, bool moved_this_step, bool is_paused) const {
+        (void)is_paused;
         clock_t step_end_cpu = clock();
         double step_time_ms = ((double)(step_end_cpu - frame.step_start_cpu) * 1000.0) / CLOCKS_PER_SEC;
         sim->last_step_cpu_time_ms = step_time_ms;
@@ -674,12 +676,11 @@ private:
         }
         sim->total_executed_steps = frame.step_label;
         sim->render_model.frame_id = static_cast<std::uint64_t>(frame.step_label);
-        render_model_capture_advanced_frame(sim);
+        if (sim->capture_level >= agv::core::CaptureLevel::Frame) {
+            render_model_capture_advanced_frame(sim);
+        }
         if (sim->logger) {
             sim->logger->setContext(frame.step_label, sim->render_model.frame_id, frame.phase_idx_for_step);
-        }
-        if (!sim->render_state.suppress_flush) {
-            sim->renderer.drawFrame(sim, is_paused);
         }
     }
 };

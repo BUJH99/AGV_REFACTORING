@@ -18,6 +18,10 @@ PlannerMetricsState& planner_metrics(const PlanningContext& context) {
     return *context.planner_metrics;
 }
 
+PlannerOverlayCapture* planner_overlay(const PlanningContext& context) {
+    return context.observation ? context.observation->plannerOverlay() : nullptr;
+}
+
 void accumulate_whca_dstar_metrics(const PlanningContext& context, const Pathfinder& pathfinder) {
     const PathfinderRunMetrics& metrics_snapshot = pathfinder.lastRunMetrics();
     PlannerMetricsState& metrics = planner_metrics(context);
@@ -83,10 +87,11 @@ void reserve_goal_tail(
 }
 
 void capture_planned_path(const PlanningContext& context, int agent_id, const TimedNodePlan& plan) {
-    if (!context.sim) {
+    PlannerOverlayCapture* overlay = planner_overlay(context);
+    if (!overlay) {
         return;
     }
-    context.sim->render_model.planner_overlay.planned_paths[agent_id] = plan;
+    overlay->planned_paths[agent_id] = plan;
 }
 
 void sort_deadlock_agents_by_priority(const AgentManager* manager, AgentOrder& order) {
@@ -493,22 +498,31 @@ private:
         }
 
         if (!cbs_solution_has_first_step_progress(context_.agents, group_ids, group_size, result)) {
-            logger_log(
+            logger_log_event(
                 context_.logger,
-                "[%sCBS%s] Ignoring zero-progress CBS result (group=%d); escalating deadlock escape.",
-                C_B_CYN,
-                C_NRM,
+                "Planner",
+                "Warn",
+                std::nullopt,
+                std::nullopt,
+                "[CBS] Ignoring zero-progress CBS result (group=%d); escalating deadlock escape.",
                 group_size);
             return false;
         }
 
         applyCbsSolution(group_ids, group_size, result);
         decision.used_cbs = true;
-        if (context_.sim) {
-            context_.sim->render_model.planner_overlay.cbs_paths = result.plans;
+        if (PlannerOverlayCapture* overlay = planner_overlay(context_)) {
+            overlay->cbs_paths = result.plans;
         }
         if (success_log_message) {
-            logger_log(context_.logger, success_log_message, C_B_CYN, C_NRM, group_size);
+            logger_log_event(
+                context_.logger,
+                "Planner",
+                "Info",
+                std::nullopt,
+                std::nullopt,
+                success_log_message,
+                group_size);
         }
         return true;
     }
@@ -561,8 +575,15 @@ private:
         if (active_count > MAX_CBS_GROUP) {
             const int leader = applyPullOverFallbackForMask(participants, decision);
             if (leader >= 0) {
-                logger_log(context_.logger, "[%sWFG%s] Large SCC detected (%d agents): leader=%c commits, others pull over.",
-                    C_B_YEL, C_NRM, active_count, context_.agents->agents[leader].symbol);
+                logger_log_event(
+                    context_.logger,
+                    "Planner",
+                    "Warn",
+                    leader,
+                    std::nullopt,
+                    "[WFG] Large SCC detected (%d agents): leader=%c commits, others pull over.",
+                    active_count,
+                    context_.agents->agents[leader].symbol);
             }
             return;
         }
@@ -577,12 +598,19 @@ private:
 
         const int leader = applyPullOverFallbackForMask(participants, decision);
         if (leader >= 0) {
-            logger_log(context_.logger, "[%sWFG%s] SCC detected: leader=%c commits, others pull over.",
-                C_B_YEL, C_NRM, context_.agents->agents[leader].symbol);
+            logger_log_event(
+                context_.logger,
+                "Planner",
+                "Warn",
+                leader,
+                std::nullopt,
+                "[WFG] SCC detected: leader=%c commits, others pull over.",
+                context_.agents->agents[leader].symbol);
         }
     }
 
     void breakStandstill(AgentMask mask, FallbackDecision& decision, const char* log_message) {
+        (void)log_message;
         const AgentMask participants = collect_deadlock_participant_mask(context_.agents, mask);
         const int active_count = count_agents_in_mask(context_.agents, participants);
         if (active_count < 2) return;
@@ -590,7 +618,15 @@ private:
         if (active_count > MAX_CBS_GROUP) {
             const int leader = applyPullOverFallbackForMask(participants, decision);
             if (leader >= 0) {
-                logger_log(context_.logger, log_message, C_B_YEL, C_NRM, active_count, context_.agents->agents[leader].symbol);
+                logger_log_event(
+                    context_.logger,
+                    "Planner",
+                    "Warn",
+                    leader,
+                    std::nullopt,
+                    "[WFG] Standstill fallback engaged (%d agents): leader=%c commits.",
+                    active_count,
+                    context_.agents->agents[leader].symbol);
             }
             return;
         }
@@ -604,13 +640,21 @@ private:
                 group_n,
                 result,
                 decision,
-                "[%sCBS%s] Deadlock fallback CBS engaged (group=%d).")) {
+                "[CBS] Deadlock fallback CBS engaged (group=%d).")) {
             return;
         }
 
         const int leader = applyPullOverFallbackForMask(participants, decision);
         if (leader >= 0) {
-            logger_log(context_.logger, log_message, C_B_YEL, C_NRM, active_count, context_.agents->agents[leader].symbol);
+            logger_log_event(
+                context_.logger,
+                "Planner",
+                "Warn",
+                leader,
+                std::nullopt,
+                "[WFG] Standstill fallback engaged (%d agents): leader=%c commits.",
+                active_count,
+                context_.agents->agents[leader].symbol);
         }
     }
 
@@ -674,17 +718,44 @@ public:
 
 private:
     void keepLeaderMove(int winner, int loser, const char* message) {
-        logger_log(logger_, message, C_B_RED, C_NRM, manager_->agents[winner].symbol);
+        logger_log_event(
+            logger_,
+            "Planner",
+            "Warn",
+            winner,
+            std::nullopt,
+            message,
+            C_B_RED,
+            C_NRM,
+            manager_->agents[winner].symbol);
         next_positions_[loser] = manager_->agents[loser].pos;
     }
 
     void yieldAgent(int agent_id, const char* message) {
-        logger_log(logger_, message, C_B_RED, C_NRM, manager_->agents[agent_id].symbol);
+        logger_log_event(
+            logger_,
+            "Planner",
+            "Warn",
+            agent_id,
+            std::nullopt,
+            message,
+            C_B_RED,
+            C_NRM,
+            manager_->agents[agent_id].symbol);
         next_positions_[agent_id] = manager_->agents[agent_id].pos;
     }
 
     void holdSwapPair(int preferred_agent_id, int other_agent_id, const char* message) {
-        logger_log(logger_, message, C_B_RED, C_NRM, manager_->agents[preferred_agent_id].symbol);
+        logger_log_event(
+            logger_,
+            "Planner",
+            "Warn",
+            preferred_agent_id,
+            std::nullopt,
+            message,
+            C_B_RED,
+            C_NRM,
+            manager_->agents[preferred_agent_id].symbol);
         next_positions_[preferred_agent_id] = manager_->agents[preferred_agent_id].pos;
         next_positions_[other_agent_id] = manager_->agents[other_agent_id].pos;
     }
@@ -813,11 +884,11 @@ void DefaultPlannerSession::execute() {
     scratch_.clear();
     table_.clear();
     table_.seedCurrent(context_.agents);
-    if (context_.sim) {
-        context_.sim->render_model.planner_overlay.clear();
-        context_.sim->render_model.planner_overlay.valid = true;
-        context_.sim->render_model.planner_overlay.algorithm = PathAlgo::Default;
-        context_.sim->render_model.planner_overlay.horizon = context_.whcaHorizon();
+    if (PlannerOverlayCapture* overlay = planner_overlay(context_)) {
+        overlay->clear();
+        overlay->valid = true;
+        overlay->algorithm = PathAlgo::Default;
+        overlay->horizon = context_.whcaHorizon();
     }
 
     WhcaPlanner whca_planner(context_, next_positions_, scratch_, table_);
@@ -829,15 +900,14 @@ void DefaultPlannerSession::execute() {
 
     CbsFallbackResolver fallback_resolver(context_, next_positions_, scratch_, table_);
     const FallbackDecision decision = fallback_resolver.resolve(summary_);
-    if (context_.sim) {
-        PlannerOverlayCapture& overlay = context_.sim->render_model.planner_overlay;
-        overlay.wait_edges = scratch_.wait_edges;
-        overlay.wait_edge_count = summary_.wait_edge_count;
-        overlay.scc_agents = summary_.scc_agents;
-        overlay.leader_agent_id = decision.leader;
-        overlay.used_cbs = decision.used_cbs;
-        overlay.yield_agents = decision.yield_agents;
-        overlay.pull_over_agents = decision.pull_over_agents;
+    if (PlannerOverlayCapture* overlay = planner_overlay(context_)) {
+        overlay->wait_edges = scratch_.wait_edges;
+        overlay->wait_edge_count = summary_.wait_edge_count;
+        overlay->scc_agents = summary_.scc_agents;
+        overlay->leader_agent_id = decision.leader;
+        overlay->used_cbs = decision.used_cbs;
+        overlay->yield_agents = decision.yield_agents;
+        overlay->pull_over_agents = decision.pull_over_agents;
     }
 
     FirstStepConflictResolver conflict_resolver(context_.agents, context_.logger, next_positions_);
@@ -846,12 +916,11 @@ void DefaultPlannerSession::execute() {
     FallbackDecision post_conflict_decision{};
     fallback_resolver.handlePostConflictStandstill(post_conflict_decision);
     if (post_conflict_decision.hasAction()) {
-        if (context_.sim) {
-            PlannerOverlayCapture& overlay = context_.sim->render_model.planner_overlay;
-            overlay.leader_agent_id = post_conflict_decision.leader;
-            overlay.used_cbs = post_conflict_decision.used_cbs;
-            overlay.yield_agents = post_conflict_decision.yield_agents;
-            overlay.pull_over_agents = post_conflict_decision.pull_over_agents;
+        if (PlannerOverlayCapture* overlay = planner_overlay(context_)) {
+            overlay->leader_agent_id = post_conflict_decision.leader;
+            overlay->used_cbs = post_conflict_decision.used_cbs;
+            overlay->yield_agents = post_conflict_decision.yield_agents;
+            overlay->pull_over_agents = post_conflict_decision.pull_over_agents;
         }
         conflict_resolver.resolve(post_conflict_decision);
     }

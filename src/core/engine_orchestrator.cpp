@@ -3,6 +3,7 @@
 #include "agv/internal/engine_internal.hpp"
 
 bool grid_is_node_blocked(const GridMap* map, const AgentManager* am, const Node* node, const Agent* agent) {
+    (void)map;
     constexpr int kReturnHomeBayEscapeStuckSteps = 6;
     if (node->is_obstacle || node->is_parked || node->is_temp) return true;
 
@@ -20,23 +21,3 @@ bool grid_is_node_blocked(const GridMap* map, const AgentManager* am, const Node
     }
     return false;
 }
-
-#ifndef AGV_NO_MAIN
-int main() {
-    agv_prepare_console();
-    Simulation sim;
-
-    if (simulation_setup(&sim)) {
-        ui_enter_alt_screen();
-        sim.run();
-        ui_leave_alt_screen();
-        sim.printPerformanceSummary();
-        agv::internal::text::console_print("\nPress any key to exit...\n");
-        (void)console_read_key_blocking();
-    } else {
-        agv::internal::text::console_print("\nSimulation setup was cancelled. Exiting.\n");
-    }
-
-    return 0;
-}
-#endif

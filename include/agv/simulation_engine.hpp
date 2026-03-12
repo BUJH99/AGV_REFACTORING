@@ -7,6 +7,10 @@
 #include <string>
 #include <vector>
 
+namespace agv::internal {
+struct SimulationEngineAccess;
+}
+
 namespace agv::core {
 
 enum class PathAlgo {
@@ -29,6 +33,13 @@ enum class AgentState {
 enum class SimulationMode {
     Custom = 0,
     Realtime = 1,
+};
+
+enum class CaptureLevel {
+    None = 0,
+    Metrics = 1,
+    Frame = 2,
+    Debug = 3,
 };
 
 enum class PhaseType {
@@ -381,10 +392,6 @@ struct RenderFrameDelta {
     PlannerOverlaySnapshot plannerOverlay{};
 };
 
-struct RenderFrame {
-    std::string text;
-};
-
 struct AgentDebugSnapshot {
     int id{0};
     char symbol{0};
@@ -480,7 +487,7 @@ struct RuntimeDebugSnapshot {
 struct DebugSnapshot {
     MetricsSnapshot metrics;
     RuntimeDebugSnapshot runtime;
-    RenderFrame frame;
+    RenderFrameSnapshot frame;
     std::vector<std::string> recentLogs;
     std::vector<AgentDebugSnapshot> agents;
     DeadlockSnapshot deadlock;
@@ -500,6 +507,7 @@ public:
 
     void configureLaunch(const LaunchConfig& config);
     SessionDescriptor startConfiguredSession();
+    void setCaptureLevel(CaptureLevel level);
     void setTerminalOutputEnabled(bool enabled);
     void setSpeedMultiplier(double multiplier);
 
@@ -508,11 +516,6 @@ public:
     void setAlgorithm(PathAlgo algorithm);
     void configureScenario(const ScenarioConfig& config);
     void setSuppressOutput(bool suppress);
-
-    void prepareConsole();
-    bool interactiveSetup();
-    bool runInteractiveConsole();
-    void printPerformanceSummary() const;
 
     void step();
     BurstRunResult runBurst(int maxSteps, int maxDurationMs);
@@ -525,15 +528,14 @@ public:
     std::vector<StructuredLogEntry> snapshotStructuredLogs(
         std::uint64_t sinceSeq = 0,
         std::size_t maxEntries = 256);
-    RenderFrame snapshotFrame(bool paused = false);
     std::vector<std::string> snapshotRecentLogs();
     DebugSnapshot snapshotDebugState(bool paused = false);
-    std::string buildDebugReport(bool paused = false);
-    bool writeDebugReport(const std::string& path, bool paused = false);
 
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+
+    friend struct agv::internal::SimulationEngineAccess;
 };
 
 }  // namespace agv::core

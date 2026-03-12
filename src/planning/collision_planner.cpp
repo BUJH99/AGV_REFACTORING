@@ -10,6 +10,10 @@ PlannerMetricsState& planner_metrics(const PlanningContext& context) {
     return *context.planner_metrics;
 }
 
+PlannerOverlayCapture* planner_overlay(const PlanningContext& context) {
+    return context.observation ? context.observation->plannerOverlay() : nullptr;
+}
+
 void accumulate_ordered_planning_metrics(
     const PlanningContext& context,
     OrderedPlanningMetric metric_kind,
@@ -68,17 +72,20 @@ void capture_ordered_overlay(
         return;
     }
 
-    PlannerOverlayCapture& overlay = context.sim->render_model.planner_overlay;
-    overlay.clear();
-    overlay.valid = true;
-    overlay.algorithm = (metric_kind == OrderedPlanningMetric::AStar)
+    PlannerOverlayCapture* overlay = planner_overlay(context);
+    if (!overlay) {
+        return;
+    }
+    overlay->clear();
+    overlay->valid = true;
+    overlay->algorithm = (metric_kind == OrderedPlanningMetric::AStar)
         ? PathAlgo::AStarSimple
         : PathAlgo::DStarBasic;
-    overlay.horizon = 1;
+    overlay->horizon = 1;
 
     for (int agent_id = 0; agent_id < MAX_AGENTS; ++agent_id) {
         const Agent& agent = context.agents->agents[agent_id];
-        TimedNodePlan& plan = overlay.planned_paths[agent_id];
+        TimedNodePlan& plan = overlay->planned_paths[agent_id];
         plan.fill(nullptr);
         plan[0] = agent.pos;
         plan[1] = next_positions[agent_id];
