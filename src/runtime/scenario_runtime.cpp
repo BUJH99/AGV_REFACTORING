@@ -91,7 +91,7 @@ void do_ms_pause(int ms) {
 }
 
 constexpr int kMinMapId = 1;
-constexpr int kMaxMapId = 5;
+constexpr int kMaxMapId = 7;
 std::string_view phase_type_name(PhaseType type) {
     return (type == PhaseType::Park) ? "park" : "exit";
 }
@@ -309,13 +309,15 @@ int simulation_setup_speed_local(ScenarioManager* scenario) {
 }
 
 int simulation_setup_map_local(Simulation* sim) {
-    agv::internal::text::console_print(std::string(C_B_WHT) + "--- Select Map (1~5) ---\n" + C_NRM);
+    agv::internal::text::console_print(std::string(C_B_WHT) + "--- Select Map (1~7) ---\n" + C_NRM);
     agv::internal::text::console_print("1. %sCompact parking lot%s (baseline)\n", C_B_GRN, C_NRM);
     agv::internal::text::console_print("2. %sMid-size lot with one retrieval target%s\n", C_YEL, C_NRM);
     agv::internal::text::console_print("3. %s16 AGVs + 900 requests%s (A~P)\n", C_YEL, C_NRM);
     agv::internal::text::console_print("4. %sDense lot with one retrieval target and four parking waves%s (up to 10 AGVs, A~J)\n", C_YEL, C_NRM);
-    agv::internal::text::console_print("5. %sCharging-stress map%s (extra chargers, longer aisles, and heavy parking load)\n\n", C_YEL, C_NRM);
-    int map_id = get_integer_input_local("Select map id (1~5): ", 1, 5);
+    agv::internal::text::console_print("5. %sCross intersection micro-map%s (4-way conflict and swap resolution)\n", C_YEL, C_NRM);
+    agv::internal::text::console_print("6. %sCorner-case gauntlet%s (single-lane loops, bridge bottleneck, dead-end bays, charger branches)\n", C_YEL, C_NRM);
+    agv::internal::text::console_print("7. %sReference split-room map%s (left start room, shared trunk, upper/lower parking rooms)\n\n", C_YEL, C_NRM);
+    int map_id = get_integer_input_local("Select map id (1~7): ", 1, 7);
     sim->map_id = map_id;
     grid_map_load_scenario(sim->map, sim->agent_manager, map_id);
     logger_log(sim->logger, "[%sMap%s] Map #%d loaded.", C_B_CYN, C_NRM, map_id);

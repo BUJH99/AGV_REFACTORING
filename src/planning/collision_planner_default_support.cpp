@@ -145,6 +145,29 @@ bool all_active_agents_waiting(const AgentManager* manager, const AgentNodeSlots
     return all_agents_in_mask_waiting(manager, AgentMask::all(), next_positions);
 }
 
+bool cbs_solution_has_first_step_progress(
+    const AgentManager* manager,
+    const std::array<int, MAX_CBS_GROUP>& group_ids,
+    int group_size,
+    const CbsSolveResult& result) {
+    if (!manager || !result.solved) return false;
+
+    for (int group_index = 0; group_index < group_size; ++group_index) {
+        const int agent_id = group_ids[group_index];
+        if (agent_id < 0) continue;
+
+        const Agent* agent = &manager->agents[agent_id];
+        if (!default_planner_agent_participates_in_deadlock(agent)) continue;
+
+        Node* first_step = result.plans[agent_id][1];
+        if (first_step && first_step != agent->pos) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 bool is_return_home_escape_move(const Agent* agent, Node* next) {
     return agent &&
         next &&
@@ -448,6 +471,34 @@ private:
         }
     }
 
+    bool tryAcceptCbsSolution(
+        const std::array<int, MAX_CBS_GROUP>& group_ids,
+        int group_size,
+        const CbsSolveResult& result,
+        FallbackDecision& decision,
+        const char* success_log_message = nullptr) {
+        if (!result.solved) {
+            return false;
+        }
+
+        if (!cbs_solution_has_first_step_progress(context_.agents, group_ids, group_size, result)) {
+            logger_log(
+                context_.logger,
+                "[%sCBS%s] Ignoring zero-progress CBS result (group=%d); escalating deadlock escape.",
+                C_B_CYN,
+                C_NRM,
+                group_size);
+            return false;
+        }
+
+        applyCbsSolution(group_ids, group_size, result);
+        decision.used_cbs = true;
+        if (success_log_message) {
+            logger_log(context_.logger, success_log_message, C_B_CYN, C_NRM, group_size);
+        }
+        return true;
+    }
+
     int applyPullOverFallbackForMask(AgentMask mask, FallbackDecision& decision) {
         const AgentMask participants = collect_deadlock_participant_mask(context_.agents, mask);
         const int leader = best_in_mask(context_.agents, participants.raw());
@@ -506,9 +557,7 @@ private:
         if (group_n < 2) return;
 
         const CbsSolveResult result = run_partial_CBS(context_, scratch_.masked_group_ids, group_n, table_, scratch_);
-        if (result.solved) {
-            applyCbsSolution(scratch_.masked_group_ids, group_n, result);
-            decision.used_cbs = true;
+        if (tryAcceptCbsSolution(scratch_.masked_group_ids, group_n, result, decision)) {
             return;
         }
 
@@ -536,10 +585,12 @@ private:
         if (group_n < 2) return;
 
         const CbsSolveResult result = run_partial_CBS(context_, scratch_.fallback_group_ids, group_n, table_, scratch_);
-        if (result.solved) {
-            applyCbsSolution(scratch_.fallback_group_ids, group_n, result);
-            decision.used_cbs = true;
-            logger_log(context_.logger, "[%sCBS%s] Deadlock fallback CBS engaged (group=%d).", C_B_CYN, C_NRM, group_n);
+        if (tryAcceptCbsSolution(
+                scratch_.fallback_group_ids,
+                group_n,
+                result,
+                decision,
+                "[%sCBS%s] Deadlock fallback CBS engaged (group=%d).")) {
             return;
         }
 

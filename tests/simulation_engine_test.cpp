@@ -30,9 +30,10 @@ agv::core::ScenarioConfig make_realtime_scenario() {
 void configure_engine(
     agv::core::SimulationEngine& engine,
     agv::core::PathAlgo algorithm,
-    const agv::core::ScenarioConfig& scenario) {
+    const agv::core::ScenarioConfig& scenario,
+    int map_id = 1) {
     engine.setSeed(7);
-    engine.loadMap(1);
+    engine.loadMap(map_id);
     engine.setAlgorithm(algorithm);
     engine.configureScenario(scenario);
     engine.setSuppressOutput(true);
@@ -40,11 +41,29 @@ void configure_engine(
 
 agv::core::MetricsSnapshot run_headless_custom_once(
     agv::core::SimulationEngine& engine,
-    agv::core::PathAlgo algorithm) {
+    agv::core::PathAlgo algorithm,
+    int map_id = 1) {
     const auto scenario = make_single_phase_custom_scenario();
 
-    configure_engine(engine, algorithm, scenario);
+    configure_engine(engine, algorithm, scenario, map_id);
     engine.runUntilComplete();
+    return engine.snapshotMetrics();
+}
+
+agv::core::MetricsSnapshot run_bounded_steps(
+    agv::core::SimulationEngine& engine,
+    int max_steps) {
+    agv::core::MetricsSnapshot metrics = engine.snapshotMetrics();
+    for (int step = 0; step < max_steps && !engine.isComplete(); ++step) {
+        engine.step();
+        if ((step % 64) == 63 || engine.isComplete()) {
+            metrics = engine.snapshotMetrics();
+            if (metrics.deadlockCount > 0u) {
+                break;
+            }
+        }
+    }
+
     return engine.snapshotMetrics();
 }
 
@@ -74,6 +93,90 @@ TEST(SimulationEngineTest, DifferentAlgorithmsRemainExecutableThroughPublicApi) 
         const auto frame = engine.snapshotFrame();
         EXPECT_FALSE(frame.text.empty()) << static_cast<int>(algorithm);
     }
+}
+
+TEST(SimulationEngineTest, PublicMap6CornerCaseGauntletSupportsAllAlgorithmsOnShortScenario) {
+    const std::array<agv::core::PathAlgo, 3> algorithms = {
+        agv::core::PathAlgo::Default,
+        agv::core::PathAlgo::AStarSimple,
+        agv::core::PathAlgo::DStarBasic,
+    };
+
+    agv::core::ScenarioConfig scenario;
+    scenario.mode = agv::core::SimulationMode::Custom;
+    scenario.speedMultiplier = 0.0;
+    scenario.phases = {
+        {agv::core::PhaseType::Park, 6},
+        {agv::core::PhaseType::Exit, 6},
+    };
+
+    for (const auto algorithm : algorithms) {
+        agv::core::SimulationEngine engine;
+        configure_engine(engine, algorithm, scenario, 6);
+        engine.runUntilComplete();
+
+        const auto metrics = engine.snapshotMetrics();
+        EXPECT_TRUE(engine.isComplete()) << static_cast<int>(algorithm);
+        EXPECT_EQ(metrics.mapId, 6) << static_cast<int>(algorithm);
+        EXPECT_EQ(metrics.tasksCompletedTotal, 12u) << static_cast<int>(algorithm);
+        EXPECT_EQ(metrics.deadlockCount, 0u) << static_cast<int>(algorithm);
+    }
+}
+
+TEST(SimulationEngineTest, PublicMap7ReferenceSplitRoomSupportsAllAlgorithmsOnShortScenario) {
+    const std::array<agv::core::PathAlgo, 3> algorithms = {
+        agv::core::PathAlgo::Default,
+        agv::core::PathAlgo::AStarSimple,
+        agv::core::PathAlgo::DStarBasic,
+    };
+
+    agv::core::ScenarioConfig scenario;
+    scenario.mode = agv::core::SimulationMode::Custom;
+    scenario.speedMultiplier = 0.0;
+    scenario.phases = {
+        {agv::core::PhaseType::Park, 12},
+        {agv::core::PhaseType::Exit, 12},
+    };
+
+    for (const auto algorithm : algorithms) {
+        agv::core::SimulationEngine engine;
+        configure_engine(engine, algorithm, scenario, 7);
+        engine.runUntilComplete();
+
+        const auto metrics = engine.snapshotMetrics();
+        EXPECT_TRUE(engine.isComplete()) << static_cast<int>(algorithm);
+        EXPECT_EQ(metrics.mapId, 7) << static_cast<int>(algorithm);
+        EXPECT_EQ(metrics.tasksCompletedTotal, 24u) << static_cast<int>(algorithm);
+        EXPECT_EQ(metrics.deadlockCount, 0u) << static_cast<int>(algorithm);
+    }
+}
+
+TEST(SimulationEngineTest, PublicMap7DefaultAlgorithmCompletesMaximumParkingThenExitWithoutDeadlock) {
+    agv::core::SimulationEngine engine;
+
+    agv::core::ScenarioConfig scenario;
+    scenario.mode = agv::core::SimulationMode::Custom;
+    scenario.speedMultiplier = 0.0;
+    scenario.phases = {
+        {agv::core::PhaseType::Park, 132},
+        {agv::core::PhaseType::Exit, 132},
+    };
+
+    engine.setSeed(1);
+    engine.loadMap(7);
+    engine.setAlgorithm(agv::core::PathAlgo::Default);
+    engine.configureScenario(scenario);
+    engine.setSuppressOutput(true);
+
+    constexpr int kMaxSteps = 12000;
+    const auto metrics = run_bounded_steps(engine, kMaxSteps);
+    const std::string debug_report = engine.buildDebugReport(true);
+
+    EXPECT_TRUE(engine.isComplete()) << debug_report;
+    EXPECT_EQ(metrics.mapId, 7);
+    EXPECT_EQ(metrics.algorithm, agv::core::PathAlgo::Default);
+    EXPECT_EQ(metrics.tasksCompletedTotal, 264u) << debug_report;
+    EXPECT_EQ(metrics.deadlockCount, 0u) << debug_report;
 }
 
 TEST(SimulationEngineTest, StepAdvancesSimulationIncrementally) {
@@ -186,6 +289,23 @@ int count_agents_with_position(const Simulation& sim) {
     return count;
 }
 
+int count_walkable_neighbors(const GridMap& map, int x, int y) {
+    int count = 0;
+    constexpr std::array<int, 4> kStepX = {1, -1, 0, 0};
+    constexpr std::array<int, 4> kStepY = {0, 0, 1, -1};
+    for (int index = 0; index < 4; ++index) {
+        const int next_x = x + kStepX[index];
+        const int next_y = y + kStepY[index];
+        if (!grid_is_valid_coord(next_x, next_y)) {
+            continue;
+        }
+        if (!map.grid[next_y][next_x].is_obstacle) {
+            count++;
+        }
+    }
+    return count;
+}
+
 bool is_charge_station_goal(const Simulation& sim, const Node* node) {
     if (!node) {
         return false;
@@ -196,6 +316,75 @@ bool is_charge_station_goal(const Simulation& sim, const Node* node) {
         }
     }
     return false;
+}
+
+TEST(SimulationEngineTest, InternalMap6BuildsCornerCaseGauntletLayout) {
+    Simulation sim;
+    SimulationConfig config = make_internal_custom_config({ConfigPhase{PhaseType::Park, 1}});
+    config.map_id = 6;
+    ASSERT_TRUE(apply_simulation_config(&sim, config));
+
+    EXPECT_EQ(count_agents_with_position(sim), 16);
+    EXPECT_GE(sim.map->num_goals, 50);
+    EXPECT_GE(sim.map->num_charge_stations, 3);
+
+    const Node& upper_dead_end_goal = sim.map->grid[6][28];
+    EXPECT_TRUE(upper_dead_end_goal.is_goal);
+    EXPECT_EQ(count_walkable_neighbors(*sim.map, upper_dead_end_goal.x, upper_dead_end_goal.y), 1);
+
+    const Node& lower_dead_end_goal = sim.map->grid[36][70];
+    EXPECT_TRUE(lower_dead_end_goal.is_goal);
+    EXPECT_EQ(count_walkable_neighbors(*sim.map, lower_dead_end_goal.x, lower_dead_end_goal.y), 1);
+
+    const Node& right_side_goal = sim.map->grid[31][77];
+    EXPECT_TRUE(right_side_goal.is_goal);
+    EXPECT_EQ(count_walkable_neighbors(*sim.map, right_side_goal.x, right_side_goal.y), 1);
+
+    EXPECT_FALSE(sim.map->grid[21][54].is_obstacle);
+    EXPECT_FALSE(sim.map->grid[21][53].is_obstacle);
+    EXPECT_FALSE(sim.map->grid[21][55].is_obstacle);
+
+    EXPECT_TRUE(is_charge_station_goal(sim, &sim.map->grid[21][32]));
+    EXPECT_TRUE(is_charge_station_goal(sim, &sim.map->grid[13][64]));
+    EXPECT_TRUE(is_charge_station_goal(sim, &sim.map->grid[29][64]));
+}
+
+TEST(SimulationEngineTest, InternalMap7BuildsReferenceSplitRoomLayout) {
+    Simulation sim;
+    SimulationConfig config = make_internal_custom_config({ConfigPhase{PhaseType::Park, 1}});
+    config.map_id = 7;
+    ASSERT_TRUE(apply_simulation_config(&sim, config));
+
+    EXPECT_EQ(count_agents_with_position(sim), 16);
+    EXPECT_GE(sim.map->num_goals, 120);
+    EXPECT_EQ(sim.map->num_charge_stations, 4);
+
+    EXPECT_TRUE(is_charge_station_goal(sim, &sim.map->grid[12][6]));
+    EXPECT_TRUE(is_charge_station_goal(sim, &sim.map->grid[12][8]));
+    EXPECT_TRUE(is_charge_station_goal(sim, &sim.map->grid[26][6]));
+    EXPECT_TRUE(is_charge_station_goal(sim, &sim.map->grid[26][8]));
+
+    EXPECT_FALSE(sim.map->grid[19][25].is_obstacle);
+    EXPECT_FALSE(sim.map->grid[19][34].is_obstacle);
+    EXPECT_FALSE(sim.map->grid[11][36].is_obstacle);
+    EXPECT_FALSE(sim.map->grid[26][36].is_obstacle);
+    EXPECT_TRUE(sim.map->grid[10][40].is_obstacle);
+    EXPECT_FALSE(sim.map->grid[11][40].is_obstacle);
+    EXPECT_TRUE(sim.map->grid[12][40].is_obstacle);
+    EXPECT_TRUE(sim.map->grid[25][40].is_obstacle);
+    EXPECT_FALSE(sim.map->grid[26][40].is_obstacle);
+    EXPECT_TRUE(sim.map->grid[27][40].is_obstacle);
+
+    EXPECT_TRUE(sim.map->grid[17][25].is_obstacle);
+    EXPECT_TRUE(sim.map->grid[21][25].is_obstacle);
+
+    EXPECT_TRUE(sim.map->grid[5][45].is_goal);
+    EXPECT_TRUE(sim.map->grid[3][45].is_goal);
+    EXPECT_TRUE(sim.map->grid[13][65].is_goal);
+    EXPECT_TRUE(sim.map->grid[15][65].is_goal);
+    EXPECT_TRUE(sim.map->grid[24][46].is_goal);
+    EXPECT_TRUE(sim.map->grid[28][46].is_goal);
+    EXPECT_TRUE(sim.map->grid[36][66].is_goal);
 }
 
 bool plans_have_spacetime_conflict(const TimedNodePlan& lhs, const TimedNodePlan& rhs, int horizon) {

@@ -70,6 +70,19 @@ static void map_open_column(GridMap* map, int x, int y_begin = 1, int y_end = GR
     }
 }
 
+static void map_open_rect(GridMap* map, int x_begin, int y_begin, int x_end, int y_end) {
+    if (!map) return;
+    const int clamped_x_begin = std::max(0, x_begin);
+    const int clamped_x_end = std::min(GRID_WIDTH - 1, x_end);
+    const int clamped_y_begin = std::max(0, y_begin);
+    const int clamped_y_end = std::min(GRID_HEIGHT - 1, y_end);
+    for (int y = clamped_y_begin; y <= clamped_y_end; ++y) {
+        for (int x = clamped_x_begin; x <= clamped_x_end; ++x) {
+            map_open_cell(map, x, y);
+        }
+    }
+}
+
 static void map_clear_goal_rect(GridMap* map, int x_begin, int y_begin, int x_end, int y_end) {
     if (!map) return;
     const int clamped_x_begin = std::max(0, x_begin);
@@ -109,6 +122,22 @@ static void map_place_charge(GridMap* m, int x, int y) {
 static void map_open_charge(GridMap* map, int x, int y) {
     map_open_cell(map, x, y);
     map_place_charge(map, x, y);
+}
+
+static void map_add_vertical_goal_bay(GridMap* map, int x, int lane_y, int direction, int depth) {
+    if (!map || depth <= 0 || direction == 0) return;
+    for (int step = 1; step < depth; ++step) {
+        map_open_cell(map, x, lane_y + direction * step);
+    }
+    map_open_goal(map, x, lane_y + direction * depth);
+}
+
+static void map_add_horizontal_goal_bay(GridMap* map, int lane_x, int y, int direction, int depth) {
+    if (!map || depth <= 0 || direction == 0) return;
+    for (int step = 1; step < depth; ++step) {
+        map_open_cell(map, lane_x + direction * step, y);
+    }
+    map_open_goal(map, lane_x + direction * depth, y);
 }
 
 static void map_place_agent_at(AgentManager* am, GridMap* m, int idx, int x, int y) {
@@ -581,8 +610,6 @@ static void map_build_biggrid_onegoal(GridMap* m, AgentManager* am) {
 }
 
 static void map_build_cross_4agents(GridMap* m, AgentManager* am) {
-    int x, y;
-
     map_all_free(m);
     map_add_border_walls(m);
 
@@ -605,6 +632,143 @@ static void map_build_cross_4agents(GridMap* m, AgentManager* am) {
     map_place_goal(m, CX, GRID_HEIGHT - 2 - 4);
 
     map_open_charge(m, CX, CY);
+}
+
+static void map_build_cornercase_gauntlet(GridMap* m, AgentManager* am) {
+    map_all_free(m);
+    map_add_border_walls(m);
+    map_fill_interior(m, true);
+
+    const int sx0 = 2;
+    const int sy0 = 2;
+    const int start_w = 16;
+    const int start_h = 6;
+    map_reserve_area_as_start(m, sx0, sy0, start_w, start_h);
+
+    for (int i = 0; i < MAX_AGENTS; ++i) {
+        const int row = i / 8;
+        const int col = i % 8;
+        map_place_agent_at(am, m, i, sx0 + col * 2, sy0 + row * 2);
+    }
+
+    map_open_row(m, 3, 17, 23);
+    map_open_row(m, 5, 17, 23);
+    map_open_column(m, 22, 3, 25);
+    map_open_column(m, 23, 3, 25);
+    map_open_rect(m, 22, 18, 29, 24);
+
+    map_open_row(m, 9, 23, 74);
+    map_open_column(m, 34, 9, 17);
+    map_open_column(m, 74, 9, 17);
+    map_open_row(m, 17, 34, 74);
+    map_open_row(m, 13, 46, 60);
+    map_open_column(m, 46, 9, 17);
+    map_open_column(m, 60, 9, 17);
+
+    map_open_row(m, 25, 23, 74);
+    map_open_column(m, 34, 25, 33);
+    map_open_column(m, 74, 25, 33);
+    map_open_row(m, 33, 34, 74);
+    map_open_row(m, 29, 46, 60);
+    map_open_column(m, 46, 25, 33);
+    map_open_column(m, 60, 25, 33);
+
+    map_open_column(m, 54, 17, 25);
+    map_open_cell(m, 53, 21);
+    map_open_cell(m, 55, 21);
+
+    map_open_row(m, 21, 29, 32);
+    map_open_charge(m, 32, 21);
+    map_open_row(m, 13, 61, 64);
+    map_open_charge(m, 64, 13);
+    map_open_row(m, 29, 61, 64);
+    map_open_charge(m, 64, 29);
+
+    const int upper_top_bays[] = { 28, 32, 38, 42, 48, 52, 58, 64, 70 };
+    for (int x : upper_top_bays) {
+        map_add_vertical_goal_bay(m, x, 9, -1, 3);
+    }
+
+    const int upper_bottom_bays[] = { 36, 40, 44, 48, 60, 64, 68, 72 };
+    for (int x : upper_bottom_bays) {
+        map_add_vertical_goal_bay(m, x, 17, 1, 2);
+    }
+
+    const int lower_top_bays[] = { 36, 40, 44, 48, 60, 64, 68, 72 };
+    for (int x : lower_top_bays) {
+        map_add_vertical_goal_bay(m, x, 25, -1, 2);
+    }
+
+    const int lower_bottom_bays[] = { 28, 32, 38, 42, 48, 52, 58, 64, 70 };
+    for (int x : lower_bottom_bays) {
+        map_add_vertical_goal_bay(m, x, 33, 1, 3);
+    }
+
+    const int side_bay_rows[] = { 11, 15, 27, 31 };
+    for (int y : side_bay_rows) {
+        map_add_horizontal_goal_bay(m, 34, y, -1, 3);
+        map_add_horizontal_goal_bay(m, 74, y, 1, 3);
+    }
+
+    const int pocket_columns[] = { 49, 53, 57 };
+    for (int x : pocket_columns) {
+        map_open_goal(m, x, 12);
+        map_open_goal(m, x, 14);
+        map_open_goal(m, x, 28);
+        map_open_goal(m, x, 30);
+    }
+
+    map_rebuild_goal_index(m);
+}
+
+static void map_build_split_room_reference(GridMap* m, AgentManager* am) {
+    map_all_free(m);
+    map_add_border_walls(m);
+    map_fill_interior(m, true);
+
+    // Left start room with two charging pockets, matching the reference sketch.
+    map_open_rect(m, 4, 10, 24, 28);
+
+    const int start_cols[] = { 7, 9, 11, 13 };
+    const int start_rows[] = { 15, 17, 19, 21 };
+    int agent_index = 0;
+    for (int y : start_rows) {
+        for (int x : start_cols) {
+            if (agent_index >= MAX_AGENTS) break;
+            map_place_agent_at(am, m, agent_index++, x, y);
+        }
+    }
+
+    map_open_charge(m, 6, 12);
+    map_open_charge(m, 8, 12);
+    map_open_charge(m, 6, 26);
+    map_open_charge(m, 8, 26);
+
+    // Narrow connector from the start room to the shared vertical trunk.
+    map_open_rect(m, 25, 18, 33, 20);
+    map_open_rect(m, 34, 6, 35, 32);
+
+    // Upper parking room.
+    map_open_rect(m, 43, 2, 67, 15);
+    map_open_row(m, 11, 35, 43);
+    const int upper_goal_rows[] = { 3, 5, 7, 9, 13, 15 };
+    for (int y : upper_goal_rows) {
+        for (int x = 45; x <= 65; x += 2) {
+            map_place_goal(m, x, y);
+        }
+    }
+
+    // Lower parking room.
+    map_open_rect(m, 44, 24, 68, 37);
+    map_open_row(m, 26, 35, 44);
+    const int lower_goal_rows[] = { 24, 28, 30, 32, 34, 36 };
+    for (int y : lower_goal_rows) {
+        for (int x = 46; x <= 66; x += 2) {
+            map_place_goal(m, x, y);
+        }
+    }
+
+    map_rebuild_goal_index(m);
 }
 
 void grid_map_load_scenario(GridMap* map, AgentManager* am, int scenario_id) {
@@ -640,6 +804,12 @@ void grid_map_load_scenario(GridMap* map, AgentManager* am, int scenario_id) {
         break;
     case 5:
         map_build_cross_4agents(map, am);
+        break;
+    case 6:
+        map_build_cornercase_gauntlet(map, am);
+        break;
+    case 7:
+        map_build_split_room_reference(map, am);
         break;
     default:
         map_build_hypermart(map, am);

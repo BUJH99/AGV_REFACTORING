@@ -108,7 +108,7 @@ void printUsage() {
         << "  agv_console --headless [options]\n\n"
         << "Headless options:\n"
         << "  --seed <n>\n"
-        << "  --map <1-5>\n"
+        << "  --map <1-7>\n"
         << "  --algo <default|astar|dstar|1|2|3>\n"
         << "  --mode <custom|realtime>\n"
         << "  --speed <multiplier>\n"
