@@ -613,6 +613,85 @@ TEST(SimulationEngineTest, PublicMap3DefaultAlgorithmCompletes900ParkingRequests
     EXPECT_EQ(metrics.deadlockCount, 0u);
 }
 
+TEST(SimulationEngineTest, InternalDeadlockCounterIgnoresGoalActionTimerStalls) {
+    Simulation sim;
+    ASSERT_TRUE(apply_simulation_config(&sim, make_internal_custom_config({ConfigPhase{PhaseType::Park, 1}})));
+    Agent* agent = find_first_agent_with_home(sim);
+    ASSERT_NE(agent, nullptr);
+    ASSERT_GT(sim.map->num_goals, 0);
+
+    agent->state = AgentState::GoingToPark;
+    agent->goal = sim.map->goals[0];
+    agent->action_timer = 3;
+
+    AgentNodeSlots next_positions{};
+    next_positions[agent->id] = agent->pos;
+
+    for (int step = 0; step < (DEADLOCK_THRESHOLD + 2); ++step) {
+        agv_update_deadlock_counter(&sim, next_positions, false, true);
+    }
+
+    EXPECT_EQ(sim.deadlock_count, 0u);
+}
+
+TEST(SimulationEngineTest, InternalDeadlockCounterRequiresSustainedStallBeforeCounting) {
+    Simulation sim;
+    ASSERT_TRUE(apply_simulation_config(&sim, make_internal_custom_config({ConfigPhase{PhaseType::Park, 1}})));
+    Agent* agent = find_first_agent_with_home(sim);
+    ASSERT_NE(agent, nullptr);
+    ASSERT_GT(sim.map->num_goals, 0);
+
+    agent->state = AgentState::GoingToPark;
+    agent->goal = sim.map->goals[0];
+
+    AgentNodeSlots next_positions{};
+    next_positions[agent->id] = agent->pos;
+
+    for (int step = 0; step < (DEADLOCK_THRESHOLD - 1); ++step) {
+        agv_update_deadlock_counter(&sim, next_positions, false, true);
+    }
+    EXPECT_EQ(sim.deadlock_count, 0u);
+
+    agv_update_deadlock_counter(&sim, next_positions, false, true);
+    EXPECT_EQ(sim.deadlock_count, 1u);
+
+    agv_update_deadlock_counter(&sim, next_positions, false, true);
+    EXPECT_EQ(sim.deadlock_count, 1u);
+
+    agv_update_deadlock_counter(&sim, next_positions, true, true);
+    for (int step = 0; step < DEADLOCK_THRESHOLD; ++step) {
+        agv_update_deadlock_counter(&sim, next_positions, false, true);
+    }
+    EXPECT_EQ(sim.deadlock_count, 2u);
+}
+
+TEST(SimulationEngineTest, PublicMap3AStarAlgorithmCompletes900ParkingThen900ExitWithoutDeadlock) {
+    agv::core::SimulationEngine engine;
+
+    agv::core::ScenarioConfig scenario;
+    scenario.mode = agv::core::SimulationMode::Custom;
+    scenario.speedMultiplier = 0.0;
+    scenario.phases = {
+        {agv::core::PhaseType::Park, 900},
+        {agv::core::PhaseType::Exit, 900},
+    };
+
+    engine.setSeed(1);
+    engine.loadMap(3);
+    engine.setAlgorithm(agv::core::PathAlgo::AStarSimple);
+    engine.configureScenario(scenario);
+    engine.setSuppressOutput(true);
+
+    engine.runUntilComplete();
+
+    const auto metrics = engine.snapshotMetrics();
+    EXPECT_TRUE(engine.isComplete());
+    EXPECT_EQ(metrics.mapId, 3);
+    EXPECT_EQ(metrics.algorithm, agv::core::PathAlgo::AStarSimple);
+    EXPECT_EQ(metrics.tasksCompletedTotal, 1800u);
+    EXPECT_EQ(metrics.deadlockCount, 0u);
+}
+
 TEST(SimulationEngineTest, InternalGoalCompletionTransitionsRemainStable) {
     Simulation park_sim;
     ASSERT_TRUE(apply_simulation_config(&park_sim, make_internal_custom_config({ConfigPhase{PhaseType::Park, 1}})));
@@ -788,6 +867,52 @@ TEST(SimulationEngineTest, InternalReturningHomeMaintenanceUsesHoldingGoalWithou
     EXPECT_EQ(agent->state, AgentState::ReturningHomeMaintenance);
     EXPECT_EQ(agent->goal, nullptr);
     EXPECT_EQ(agent->stuck_steps, 0);
+}
+
+TEST(SimulationEngineTest, InternalReturningHomeEmptyRestoresHomeGoalInsteadOfKeepingTemporaryParkingGoal) {
+    Simulation sim;
+    ASSERT_TRUE(apply_simulation_config(&sim, make_internal_custom_config({ConfigPhase{PhaseType::Park, 1}})));
+    Agent* agent = find_first_agent_with_home(sim);
+    ASSERT_NE(agent, nullptr);
+    ASSERT_GT(sim.map->num_goals, 0);
+
+    Node* holding_goal = sim.map->goals[0];
+    ASSERT_NE(holding_goal, nullptr);
+    ASSERT_NE(holding_goal, agent->home_base);
+
+    agent->state = AgentState::ReturningHomeEmpty;
+    agent->goal = holding_goal;
+    agent->stuck_steps = 12;
+    holding_goal->reserved_by_agent = agent->id;
+
+    agv_set_goal_if_needed(agent, sim.map, sim.agent_manager, sim.logger);
+
+    EXPECT_EQ(holding_goal->reserved_by_agent, -1);
+    ASSERT_EQ(agent->goal, agent->home_base);
+    EXPECT_EQ(agent->goal->reserved_by_agent, agent->id);
+}
+
+TEST(SimulationEngineTest, InternalReturningHomeEmptyKeepsHomeGoalWhenStuck) {
+    Simulation sim;
+    ASSERT_TRUE(apply_simulation_config(&sim, make_internal_custom_config({ConfigPhase{PhaseType::Park, 1}})));
+    Agent* agent = find_first_agent_with_home(sim);
+    ASSERT_NE(agent, nullptr);
+    ASSERT_GT(sim.map->num_goals, 0);
+
+    Node* holding_goal = sim.map->goals[0];
+    ASSERT_NE(holding_goal, nullptr);
+    ASSERT_NE(holding_goal, agent->home_base);
+
+    agent->state = AgentState::ReturningHomeEmpty;
+    agent->goal = agent->home_base;
+    agent->stuck_steps = 12;
+    agent->home_base->reserved_by_agent = agent->id;
+
+    agv_set_goal_if_needed(agent, sim.map, sim.agent_manager, sim.logger);
+
+    EXPECT_EQ(agent->goal, agent->home_base);
+    EXPECT_EQ(agent->goal->reserved_by_agent, agent->id);
+    EXPECT_EQ(holding_goal->reserved_by_agent, -1);
 }
 
 }  // namespace

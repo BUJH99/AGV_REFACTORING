@@ -728,6 +728,7 @@ public:
     unsigned long long algorithm_operation_count{0};
     double total_movement_cost{0.0};
     unsigned long long deadlock_count{0};
+    int no_movement_streak{0};
     double memory_usage_sum_kb{0.0};
     double memory_usage_peak_kb{0.0};
     int memory_samples{0};

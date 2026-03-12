@@ -11,8 +11,7 @@ namespace {
 constexpr int kReturnHomeHoldingGoalStuckSteps = 6;
 
 bool can_use_temporary_holding_goal_local(AgentState state) {
-    return state == AgentState::ReturningHomeEmpty ||
-        state == AgentState::ReturningHomeMaintenance;
+    return state == AgentState::ReturningHomeMaintenance;
 }
 
 enum class GoalTypeLocal {
@@ -283,10 +282,34 @@ void release_current_goal_reservation_local(Agent* agent) {
 }
 
 void maybe_request_temporary_holding_goal_local(Agent* agent, Logger* logger) {
-    if (!agent ||
-        !can_use_temporary_holding_goal_local(agent->state) ||
-        agent->stuck_steps < kReturnHomeHoldingGoalStuckSteps ||
-        !agent->goal ||
+    if (!agent || !agent->goal) {
+        return;
+    }
+
+    if (agent->state == AgentState::ReturningHomeEmpty &&
+        agent->home_base &&
+        agent->goal != agent->home_base) {
+        logger_log(logger, "[%sPlan%s] Agent %c is returning home with a stale temporary holding goal (%d,%d). Restoring the home goal.",
+            C_CYN, C_NRM, agent->symbol, agent->goal->x, agent->goal->y);
+        release_current_goal_reservation_local(agent);
+        agent->pf.reset();
+        return;
+    }
+
+    if (agent->stuck_steps < kReturnHomeHoldingGoalStuckSteps) {
+        return;
+    }
+
+    if (agent->state == AgentState::ReturningHomeEmpty &&
+        agent->home_base &&
+        agent->goal == agent->home_base) {
+        logger_log(logger, "[%sPlan%s] Agent %c is stuck while returning home. Keeping the home goal and replanning with temporary bay traversal enabled.",
+            C_CYN, C_NRM, agent->symbol);
+        agent->pf.reset();
+        return;
+    }
+
+    if (!can_use_temporary_holding_goal_local(agent->state) ||
         agent->goal != agent->home_base) {
         return;
     }

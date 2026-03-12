@@ -119,6 +119,27 @@ bool agent_is_active_for_deadlock_local(const Agent* agent) {
         agent->state != AgentState::Charging;
 }
 
+bool agent_has_goal_action_in_progress_local(const Agent* agent) {
+    return agent &&
+        agent->action_timer > 0 &&
+        (agent->state == AgentState::GoingToPark ||
+            agent->state == AgentState::GoingToCollect);
+}
+
+bool any_goal_action_in_progress_local(const AgentManager* manager) {
+    if (!manager) {
+        return false;
+    }
+
+    for (int index = 0; index < MAX_AGENTS; ++index) {
+        if (agent_has_goal_action_in_progress_local(&manager->agents[index])) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void append_unique_agent_id_local(std::array<int, MAX_AGENTS>& ids, int& count, int agent_id) {
     if (count >= MAX_AGENTS) {
         return;
@@ -547,7 +568,10 @@ bool agv_apply_moves_and_update_stuck(Simulation* sim, AgentNodeSlots& next_posi
 
 void agv_update_deadlock_counter(Simulation* sim, const AgentNodeSlots& next_positions, bool moved_this_step, bool is_custom_mode) {
     ScenarioManager* scenario = sim->scenario_manager;
-    if (moved_this_step) return;
+    if (moved_this_step) {
+        sim->no_movement_streak = 0;
+        return;
+    }
     int unresolved = 0;
     if (is_custom_mode) {
         if (scenario->current_phase_index < scenario->num_phases) {
@@ -557,7 +581,18 @@ void agv_update_deadlock_counter(Simulation* sim, const AgentNodeSlots& next_pos
     } else if (scenario->mode == SimulationMode::Realtime) {
         if (scenario->task_count > 0) unresolved = 1;
     }
-    if (unresolved) {
+    if (!unresolved) {
+        sim->no_movement_streak = 0;
+        return;
+    }
+
+    if (any_goal_action_in_progress_local(sim->agent_manager)) {
+        sim->no_movement_streak = 0;
+        return;
+    }
+
+    sim->no_movement_streak++;
+    if (sim->no_movement_streak == DEADLOCK_THRESHOLD) {
         sim->deadlock_count++;
         record_deadlock_event_local(sim, next_positions, is_custom_mode);
     }

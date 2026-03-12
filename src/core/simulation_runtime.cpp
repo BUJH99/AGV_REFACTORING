@@ -239,6 +239,7 @@ void Simulation_::resetRuntimeStats() {
     algorithm_operation_count = 0;
     total_movement_cost = 0.0;
     deadlock_count = 0;
+    no_movement_streak = 0;
     memory_usage_sum_kb = 0.0;
     memory_usage_peak_kb = 0.0;
     memory_samples = 0;
