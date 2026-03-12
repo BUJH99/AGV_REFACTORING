@@ -10,7 +10,7 @@ namespace {
 
 constexpr double kCollisionInf = 1e18;
 constexpr int kCbsBaseExpansions = 128;
-constexpr int kCbsMaxExpansionsCap = 768;
+constexpr int kCbsMaxExpansionsCap = 1536;
 constexpr int kTurn90Wait = 2;
 constexpr int kDir5X[5] = {0, 1, -1, 0, 0};
 constexpr int kDir5Y[5] = {0, 0, 0, 1, -1};
@@ -510,7 +510,7 @@ bool st_astar_plan_single(
     return true;
 }
 
-double cbs_cost_sum_adv(const int ids[], int count, Node* const plans[MAX_AGENTS][MAX_WHCA_HORIZON + 1], Node* goals[MAX_AGENTS], int horizon) {
+double cbs_cost_sum_adv(const int ids[], int count, const CBSNode& node, Node* goals[MAX_AGENTS], int horizon) {
     constexpr double alpha = 1.0;
     constexpr double beta = 0.5;
     constexpr double gamma = 0.1;
@@ -520,7 +520,11 @@ double cbs_cost_sum_adv(const int ids[], int count, Node* const plans[MAX_AGENTS
         int moves = 0;
         int waits = 0;
         for (int t = 1; t <= horizon; ++t) {
-            if (plans[id][t] != plans[id][t - 1]) {
+            if (!node.plans[index][t] || !node.plans[index][t - 1]) {
+                waits += horizon;
+                break;
+            }
+            if (node.plans[index][t] != node.plans[index][t - 1]) {
                 moves++;
             } else {
                 waits++;
@@ -528,24 +532,29 @@ double cbs_cost_sum_adv(const int ids[], int count, Node* const plans[MAX_AGENTS
         }
         double heuristic_residual = 0.0;
         if (goals[id]) {
-            Node* last = plans[id][horizon];
-            heuristic_residual = manhattan_xy(last->x, last->y, goals[id]->x, goals[id]->y);
+            Node* last = node.plans[index][horizon];
+            if (last) {
+                heuristic_residual = manhattan_xy(last->x, last->y, goals[id]->x, goals[id]->y);
+            }
         }
         sum += alpha * moves + beta * waits + gamma * heuristic_residual;
     }
     return sum;
 }
 
-bool detect_first_conflict(Node* const plans[MAX_AGENTS][MAX_WHCA_HORIZON + 1], const int ids[], int count, CBSConflict* out, int horizon) {
+bool detect_first_conflict(const CBSNode& node, const int ids[], int count, CBSConflict* out, int horizon) {
     for (int t = 1; t <= horizon; ++t) {
         for (int lhs_index = 0; lhs_index < count; ++lhs_index) {
             for (int rhs_index = lhs_index + 1; rhs_index < count; ++rhs_index) {
                 const int lhs = ids[lhs_index];
                 const int rhs = ids[rhs_index];
-                Node* lhs_t = plans[lhs][t];
-                Node* rhs_t = plans[rhs][t];
-                Node* lhs_prev = plans[lhs][t - 1];
-                Node* rhs_prev = plans[rhs][t - 1];
+                Node* lhs_t = node.plans[lhs_index][t];
+                Node* rhs_t = node.plans[rhs_index][t];
+                Node* lhs_prev = node.plans[lhs_index][t - 1];
+                Node* rhs_prev = node.plans[rhs_index][t - 1];
+                if (!lhs_t || !rhs_t || !lhs_prev || !rhs_prev) {
+                    continue;
+                }
 
                 if (lhs_t == rhs_t) {
                     out->a = lhs;
@@ -584,6 +593,30 @@ bool detect_first_conflict(Node* const plans[MAX_AGENTS][MAX_WHCA_HORIZON + 1], 
     return false;
 }
 
+void copy_cbs_node_for_group(const CBSNode& source, int group_n, int horizon, CBSNode* destination) {
+    if (!destination) return;
+
+    destination->ncons = source.ncons;
+    destination->cost = source.cost;
+    for (int index = 0; index < source.ncons; ++index) {
+        destination->cons[index] = source.cons[index];
+    }
+    for (int group_index = 0; group_index < group_n; ++group_index) {
+        for (int t = 0; t <= horizon; ++t) {
+            destination->plans[group_index][t] = source.plans[group_index][t];
+        }
+    }
+}
+
+int find_group_index(const std::array<int, MAX_CBS_GROUP>& group_ids, int group_n, int agent_id) {
+    for (int group_index = 0; group_index < group_n; ++group_index) {
+        if (group_ids[group_index] == agent_id) {
+            return group_index;
+        }
+    }
+    return -1;
+}
+
 void copy_ext_occ_without_group(
     const PlanningContext& context,
     const ReservationTable& base,
@@ -599,35 +632,63 @@ void copy_ext_occ_without_group(
     }
 }
 
-void cbs_heap_push(CBSNode* heap, int* size, const CBSNode* node) {
-    if (*size >= MAX_CBS_NODES) return;
-    heap[*size] = *node;
+bool cbs_heap_push(
+    std::array<CBSNode, MAX_CBS_NODES>& nodes,
+    int* next_unused_index,
+    int* free_indices,
+    int* free_count,
+    int* heap,
+    int* size,
+    const CBSNode& node) {
+    if (*size >= MAX_CBS_NODES) return false;
+
+    int node_index = -1;
+    if (*free_count > 0) {
+        node_index = free_indices[--(*free_count)];
+    } else if (*next_unused_index < MAX_CBS_NODES) {
+        node_index = (*next_unused_index)++;
+    }
+    if (node_index < 0) return false;
+
+    nodes[node_index] = node;
+    heap[*size] = node_index;
     int index = *size;
     (*size)++;
     while (index > 0) {
         const int parent = (index - 1) / 2;
-        if (heap[parent].cost <= heap[index].cost) break;
+        if (nodes[heap[parent]].cost <= nodes[heap[index]].cost) break;
         std::swap(heap[parent], heap[index]);
         index = parent;
     }
+    return true;
 }
 
-CBSNode cbs_heap_pop(CBSNode* heap, int* size) {
-    const CBSNode result = heap[0];
+int cbs_heap_pop(std::array<CBSNode, MAX_CBS_NODES>& nodes, int* heap, int* size) {
+    if (*size <= 0) return -1;
+    const int root_index = heap[0];
     *size = *size - 1;
-    heap[0] = heap[*size];
-    int index = 0;
-    while (true) {
-        const int left = 2 * index + 1;
-        const int right = 2 * index + 2;
-        int smallest = index;
-        if (left < *size && heap[left].cost < heap[smallest].cost) smallest = left;
-        if (right < *size && heap[right].cost < heap[smallest].cost) smallest = right;
-        if (smallest == index) break;
-        std::swap(heap[smallest], heap[index]);
-        index = smallest;
+    if (*size > 0) {
+        heap[0] = heap[*size];
+        int index = 0;
+        while (true) {
+            const int left = 2 * index + 1;
+            const int right = 2 * index + 2;
+            int smallest = index;
+            if (left < *size && nodes[heap[left]].cost < nodes[heap[smallest]].cost) smallest = left;
+            if (right < *size && nodes[heap[right]].cost < nodes[heap[smallest]].cost) smallest = right;
+            if (smallest == index) break;
+            std::swap(heap[smallest], heap[index]);
+            index = smallest;
+        }
     }
-    return result;
+    return root_index;
+}
+
+void cbs_release_node_index(int node_index, int* free_indices, int* free_count) {
+    if (node_index < 0 || *free_count >= MAX_CBS_NODES) {
+        return;
+    }
+    free_indices[(*free_count)++] = node_index;
 }
 
 bool cbs_plan_agent_with_metrics(
@@ -868,7 +929,6 @@ CbsSolveResult run_partial_CBS(
     const ReservationTable& base_rt,
     DefaultPlannerScratch& scratch) {
     CbsSolveResult result{};
-    result.plans.clear();
     if (group_n <= 1) return result;
 
     AgentManager* manager = context.agents;
@@ -884,12 +944,15 @@ CbsSolveResult run_partial_CBS(
     copy_ext_occ_without_group(context, base_rt, group_mask, scratch.ext_occ);
 
     int heap_size = 0;
+    int next_node_index = 0;
+    std::array<int, MAX_CBS_NODES> free_node_indices{};
+    int free_node_count = 0;
     int expansions = 0;
     const int expansion_budget = cbs_expansion_budget(group_n);
 
     CBSNode root{};
-    for (int index = 0; index < group_n; ++index) {
-        const int agent_id = group_ids[index];
+    for (int group_index = 0; group_index < group_n; ++group_index) {
+        const int agent_id = group_ids[group_index];
         Node* plan[MAX_WHCA_HORIZON + 1];
         if (!cbs_plan_agent_with_metrics(
                 context,
@@ -905,7 +968,7 @@ CbsSolveResult run_partial_CBS(
             return result;
         }
         for (int t = 0; t <= horizon; ++t) {
-            root.plans[agent_id][t] = plan[t];
+            root.plans[group_index][t] = plan[t];
         }
     }
 
@@ -913,20 +976,32 @@ CbsSolveResult run_partial_CBS(
     for (int index = 0; index < group_n; ++index) {
         goals[group_ids[index]] = manager->agents[group_ids[index]].goal;
     }
-    root.cost = cbs_cost_sum_adv(group_ids.data(), group_n, root.plans, goals, horizon);
-    cbs_heap_push(scratch.cbs_heap.data(), &heap_size, &root);
+    root.cost = cbs_cost_sum_adv(group_ids.data(), group_n, root, goals, horizon);
+    if (!cbs_heap_push(
+            scratch.cbs_nodes,
+            &next_node_index,
+            free_node_indices.data(),
+            &free_node_count,
+            scratch.cbs_heap_indices.data(),
+            &heap_size,
+            root)) {
+        record_cbs_failure(context, expansions);
+        return result;
+    }
 
     while (heap_size > 0 && expansions < expansion_budget) {
-        const CBSNode current = cbs_heap_pop(scratch.cbs_heap.data(), &heap_size);
+        const int current_index = cbs_heap_pop(scratch.cbs_nodes, scratch.cbs_heap_indices.data(), &heap_size);
+        if (current_index < 0) break;
+        CBSNode* current = &scratch.cbs_nodes[current_index];
         expansions++;
         if (expansions > expansion_budget) break;
 
         CBSConflict conflict{};
-        if (!detect_first_conflict(current.plans, group_ids.data(), group_n, &conflict, horizon)) {
-            for (int index = 0; index < group_n; ++index) {
-                const int agent_id = group_ids[index];
+        if (!detect_first_conflict(*current, group_ids.data(), group_n, &conflict, horizon)) {
+            for (int group_index = 0; group_index < group_n; ++group_index) {
+                const int agent_id = group_ids[group_index];
                 for (int t = 0; t <= horizon; ++t) {
-                    result.plans[agent_id][t] = current.plans[agent_id][t];
+                    result.plans[agent_id][t] = current->plans[group_index][t];
                 }
             }
             logger_log(logger, "[%sCBS%s] Partial CBS succeeded (group=%d agents, expansions=%d).", "\x1b[1;32m", "\x1b[0m", group_n, expansions);
@@ -936,10 +1011,11 @@ CbsSolveResult run_partial_CBS(
             return result;
         }
 
+        std::array<CBSNode, 2> pending_children{};
+        int pending_children_count = 0;
         for (int branch = 0; branch < 2; ++branch) {
-            if (heap_size >= MAX_CBS_NODES) break;
-
-            CBSNode child = current;
+            CBSNode child{};
+            copy_cbs_node_for_group(*current, group_n, horizon, &child);
             if (child.ncons >= MAX_CBS_CONS) continue;
 
             CBSConstraint constraint{};
@@ -966,34 +1042,46 @@ CbsSolveResult run_partial_CBS(
             }
             child.cons[child.ncons++] = constraint;
 
-            bool ok = true;
-            for (int index = 0; index < group_n; ++index) {
-                const int agent_id = group_ids[index];
-                Node* plan[MAX_WHCA_HORIZON + 1];
-                if (!cbs_plan_agent_with_metrics(
-                        context,
-                        manager,
-                        map,
-                        agent_id,
-                        scratch.ext_occ,
-                        scratch.cbs_search,
-                        child.cons,
-                        child.ncons,
-                        plan)) {
-                    ok = false;
-                    break;
-                }
-                for (int t = 0; t <= horizon; ++t) {
-                    child.plans[agent_id][t] = plan[t];
-                }
+            const int constrained_group_index = find_group_index(group_ids, group_n, constraint.agent);
+            if (constrained_group_index < 0) {
+                continue;
             }
-            if (!ok) continue;
 
-            for (int index = 0; index < group_n; ++index) {
-                goals[group_ids[index]] = manager->agents[group_ids[index]].goal;
+            Node* plan[MAX_WHCA_HORIZON + 1];
+            if (!cbs_plan_agent_with_metrics(
+                    context,
+                    manager,
+                    map,
+                    constraint.agent,
+                    scratch.ext_occ,
+                    scratch.cbs_search,
+                    child.cons,
+                    child.ncons,
+                    plan)) {
+                continue;
             }
-            child.cost = cbs_cost_sum_adv(group_ids.data(), group_n, child.plans, goals, horizon);
-            cbs_heap_push(scratch.cbs_heap.data(), &heap_size, &child);
+            for (int t = 0; t <= horizon; ++t) {
+                child.plans[constrained_group_index][t] = plan[t];
+            }
+
+            child.cost = cbs_cost_sum_adv(group_ids.data(), group_n, child, goals, horizon);
+            if (pending_children_count < static_cast<int>(pending_children.size())) {
+                pending_children[pending_children_count++] = child;
+            }
+        }
+
+        cbs_release_node_index(current_index, free_node_indices.data(), &free_node_count);
+        for (int child_index = 0; child_index < pending_children_count; ++child_index) {
+            if (!cbs_heap_push(
+                    scratch.cbs_nodes,
+                    &next_node_index,
+                    free_node_indices.data(),
+                    &free_node_count,
+                    scratch.cbs_heap_indices.data(),
+                    &heap_size,
+                    pending_children[child_index])) {
+                break;
+            }
         }
     }
 

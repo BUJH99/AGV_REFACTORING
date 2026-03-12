@@ -1,0 +1,6 @@
+Running main() from C:\Users\tbdk5\Desktop\MAIN\0_Working\AGV_REFACOTR\AGV_REFACTORING\build-codex\_deps\googletest-src\googletest\src\gtest_main.cc
+Note: Google Test filter = SimulationEngineTest.InternalPartialCbsResolvesCrossingConflictWithGroupLocalPlans
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from SimulationEngineTest
+[ RUN      ] SimulationEngineTest.InternalPartialCbsResolvesCrossingConflictWithGroupLocalPlans

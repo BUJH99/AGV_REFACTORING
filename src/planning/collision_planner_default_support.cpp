@@ -2,12 +2,15 @@
 
 #include "collision_planner_default_support.hpp"
 
+#include <algorithm>
+#include <numeric>
+
 #include "collision_planner_support.hpp"
 #include "collision_planner_whca_support.hpp"
 
 namespace {
 
-constexpr int kReturnHomeEscapePriorityStuck = 20;
+constexpr int kReturnHomeEscapePriorityStuck = 10;
 constexpr int kReturnHomeEscapeBoost = 250;
 constexpr int kReturnHomeBayMoveBoost = 1000;
 
@@ -36,9 +39,33 @@ bool default_planner_agent_is_busy_at_goal(const Agent* agent) {
         agent->pos == agent->goal;
 }
 
+bool default_planner_agent_participates_in_deadlock(const Agent* agent) {
+    return default_planner_agent_is_active(agent) && !default_planner_agent_is_busy_at_goal(agent);
+}
+
 void seed_next_positions_from_current(AgentManager* manager, AgentNodeSlots& next_positions) {
     for (int index = 0; index < MAX_AGENTS; ++index) {
         next_positions[index] = manager->agents[index].pos;
+    }
+}
+
+void apply_first_step_rotation(AgentManager* manager, AgentNodeSlots& next_positions) {
+    if (!manager) return;
+
+    const OrderedRotationPolicy rotation_policy{};
+    for (int agent_id = 0; agent_id < MAX_AGENTS; ++agent_id) {
+        Agent* agent = &manager->agents[agent_id];
+        if (!default_planner_agent_is_active(agent) || !agent->pos || !next_positions[agent_id]) {
+            continue;
+        }
+        if (agent->rotation_wait > 0) {
+            next_positions[agent_id] = agent->pos;
+            continue;
+        }
+
+        Node* rotated_next = agent->pos;
+        rotation_policy.apply(agent, agent->pos, next_positions[agent_id], &rotated_next);
+        next_positions[agent_id] = rotated_next;
     }
 }
 
@@ -55,37 +82,67 @@ void reserve_goal_tail(
     }
 }
 
-int collect_fallback_group(const AgentManager* manager, const AgentOrder& order, std::array<int, MAX_CBS_GROUP>& group_ids) {
+void sort_deadlock_agents_by_priority(const AgentManager* manager, AgentOrder& order) {
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(),
+        [manager](int lhs, int rhs) {
+            return priority_score(&manager->agents[lhs]) > priority_score(&manager->agents[rhs]);
+        });
+}
+
+int collect_masked_group_by_priority(const AgentManager* manager, AgentMask mask, std::array<int, MAX_CBS_GROUP>& group_ids) {
     group_ids.fill(-1);
+    AgentOrder order{};
+    sort_deadlock_agents_by_priority(manager, order);
     int group_size = 0;
     for (int order_index = 0; order_index < MAX_AGENTS && group_size < MAX_CBS_GROUP; ++order_index) {
         const int agent_id = order[order_index];
         const Agent* agent = &manager->agents[agent_id];
-        if (!default_planner_agent_is_active(agent) || default_planner_agent_is_busy_at_goal(agent)) continue;
-        group_ids[group_size++] = agent_id;
-    }
-    return group_size;
-}
-
-int collect_masked_group(const AgentManager* manager, AgentMask mask, std::array<int, MAX_CBS_GROUP>& group_ids) {
-    group_ids.fill(-1);
-    int group_size = 0;
-    for (int agent_id = 0; agent_id < MAX_AGENTS && group_size < MAX_CBS_GROUP; ++agent_id) {
-        const Agent* agent = &manager->agents[agent_id];
         if (!mask.contains(agent_id)) continue;
-        if (!default_planner_agent_is_active(agent) || default_planner_agent_is_busy_at_goal(agent)) continue;
+        if (!default_planner_agent_participates_in_deadlock(agent)) continue;
         group_ids[group_size++] = agent_id;
     }
     return group_size;
 }
 
-bool all_active_agents_waiting(const AgentManager* manager, const AgentNodeSlots& next_positions) {
+AgentMask collect_deadlock_participant_mask(const AgentManager* manager, AgentMask mask = AgentMask::all()) {
+    AgentMask participants{};
+    if (!manager) return participants;
+
     for (int agent_id = 0; agent_id < MAX_AGENTS; ++agent_id) {
+        if (!mask.contains(agent_id)) continue;
+        if (default_planner_agent_participates_in_deadlock(&manager->agents[agent_id])) {
+            participants.set(agent_id);
+        }
+    }
+    return participants;
+}
+
+int count_agents_in_mask(const AgentManager* manager, AgentMask mask) {
+    int count = 0;
+    if (!manager) return count;
+    for (int agent_id = 0; agent_id < MAX_AGENTS; ++agent_id) {
+        if (mask.contains(agent_id) && default_planner_agent_participates_in_deadlock(&manager->agents[agent_id])) {
+            count++;
+        }
+    }
+    return count;
+}
+
+bool all_agents_in_mask_waiting(const AgentManager* manager, AgentMask mask, const AgentNodeSlots& next_positions) {
+    const AgentMask participants = collect_deadlock_participant_mask(manager, mask);
+    if (participants.empty()) return false;
+
+    for (int agent_id = 0; agent_id < MAX_AGENTS; ++agent_id) {
+        if (!participants.contains(agent_id)) continue;
         const Agent* agent = &manager->agents[agent_id];
-        if (!default_planner_agent_is_active(agent)) continue;
         if (next_positions[agent_id] != agent->pos) return false;
     }
     return true;
+}
+
+bool all_active_agents_waiting(const AgentManager* manager, const AgentNodeSlots& next_positions) {
+    return all_agents_in_mask_waiting(manager, AgentMask::all(), next_positions);
 }
 
 bool is_return_home_escape_move(const Agent* agent, Node* next) {
@@ -111,6 +168,68 @@ int conflict_priority(const Agent* agent, Node* next) {
     return score;
 }
 
+Node* replan_deadlock_leader_first_step(
+    const PlanningContext& context,
+    ReservationTable& table,
+    Agent& agent) {
+    if (!agent.pos || !agent.goal) return agent.pos;
+
+    OrderedPlannerToolkit toolkit(OrderedPlanningMetric::DStar);
+    toolkit.preparePathfinder(&agent);
+    TemporaryGoalStateScope goal_scope(&agent, agent.pf.get(), context.map, context.agents);
+
+    if (!agent.pf) return agent.pos;
+
+    agent.pf->updateStart(agent.pos);
+    agent.pf->computeShortestPath(context.map, context.agents);
+    accumulate_whca_dstar_metrics(context, *agent.pf);
+
+    TimedNodePlan plan{};
+    plan.fill(agent.pos);
+    Node* current = agent.pos;
+
+    for (int step = 1; step <= context.whcaHorizon(); ++step) {
+        const OrderedMoveCandidates candidates = toolkit.rankCandidates(agent.pf.get(), context.map, context.agents, current, agent.goal);
+        Node* chosen = current;
+
+        for (int candidate_index = 0; candidate_index < candidates.count; ++candidate_index) {
+            Node* candidate = candidates.nodes[candidate_index];
+            if (table.isOccupied(step, candidate, context.whcaHorizon())) continue;
+
+            const int previous_occupant = table.occupantAt(step - 1, candidate, context.whcaHorizon());
+            const int occupant_into_current = table.occupantAt(step, current, context.whcaHorizon());
+            if (previous_occupant != -1 && previous_occupant == occupant_into_current) continue;
+
+            chosen = candidate;
+            break;
+        }
+
+        plan[step] = chosen;
+        table.setOccupant(step, chosen, agent.id, context.whcaHorizon());
+        current = chosen;
+
+        if (current == agent.goal) {
+            reserve_goal_tail(context, table, step + 1, current, agent.id, plan);
+            break;
+        }
+    }
+
+    return plan[1] ? plan[1] : agent.pos;
+}
+
+void prepare_return_home_deadlock_escape(Agent* agent) {
+    if (!agent || !agent->goal) return;
+    if (agent->state != AgentState::ReturningHomeEmpty &&
+        agent->state != AgentState::ReturningHomeMaintenance) {
+        return;
+    }
+    if (agent->goal != agent->home_base) return;
+
+    agent->goal->reserved_by_agent = -1;
+    agent->goal = nullptr;
+    agent->pf.reset();
+}
+
 class WhcaPlanner final {
 public:
     WhcaPlanner(
@@ -129,6 +248,12 @@ public:
 
         for (int order_index = 0; order_index < MAX_AGENTS; ++order_index) {
             Agent* agent = &context_.agents->agents[order_[order_index]];
+            if (!agent->pos) continue;
+            if (agent->rotation_wait > 0) {
+                reserveWaitingAgentPath(*agent);
+                agent->rotation_wait--;
+                continue;
+            }
             if (!default_planner_agent_is_active(agent)) continue;
 
             if (default_planner_agent_is_busy_at_goal(agent)) {
@@ -289,9 +414,24 @@ public:
 
     FallbackDecision resolve(const ConflictGraphSummary& summary) {
         FallbackDecision decision{};
+        if (all_active_agents_waiting(context_.agents, next_positions_)) {
+            breakStandstill(AgentMask::all(), decision,
+                "[%sWFG%s] Global standstill: %d agents blocked, leader=%c commits.");
+            if (decision.hasAction()) {
+                return decision;
+            }
+        }
+
         if (summary.hasCycle()) {
             handleSccMask(summary.scc_agents, decision);
-        } else {
+            if (!decision.hasAction() &&
+                all_agents_in_mask_waiting(context_.agents, summary.scc_agents, next_positions_)) {
+                breakStandstill(summary.scc_agents, decision,
+                    "[%sWFG%s] SCC standstill: %d agents blocked, leader=%c commits.");
+            }
+        }
+
+        if (!decision.hasAction()) {
             handleWaitingDeadlock(decision);
         }
         return decision;
@@ -308,38 +448,61 @@ private:
         }
     }
 
-    int applyPullOverFallback(
-        const std::array<int, MAX_CBS_GROUP>& group_ids,
-        int group_size,
-        AgentMask leader_mask,
-        FallbackDecision& decision) {
-        const int leader = best_in_mask(context_.agents, leader_mask.raw());
+    int applyPullOverFallbackForMask(AgentMask mask, FallbackDecision& decision) {
+        const AgentMask participants = collect_deadlock_participant_mask(context_.agents, mask);
+        const int leader = best_in_mask(context_.agents, participants.raw());
+        if (leader < 0) return -1;
 
-        for (int group_index = 0; group_index < group_size; ++group_index) {
-            const int agent_id = group_ids[group_index];
-            if (agent_id < 0 || agent_id == leader) continue;
+        AgentOrder order{};
+        sort_deadlock_agents_by_priority(context_.agents, order);
+
+        table_.clearAgent(leader, context_.whcaHorizon());
+
+        for (int order_index = 0; order_index < MAX_AGENTS; ++order_index) {
+            const int agent_id = order[order_index];
+            if (!participants.contains(agent_id) || agent_id == leader) continue;
             table_.clearAgent(agent_id, context_.whcaHorizon());
         }
 
-        for (int group_index = 0; group_index < group_size; ++group_index) {
-            const int agent_id = group_ids[group_index];
-            if (agent_id < 0 || agent_id == leader) continue;
+        for (int order_index = 0; order_index < MAX_AGENTS; ++order_index) {
+            const int agent_id = order[order_index];
+            if (!participants.contains(agent_id) || agent_id == leader) continue;
+            decision.yield_agents.set(agent_id);
+
             Node* pull_over = try_pull_over(context_, table_, &context_.agents->agents[agent_id], scratch_);
-            if (pull_over) {
-                next_positions_[agent_id] = pull_over;
-                table_.setOccupant(1, pull_over, agent_id, context_.whcaHorizon());
-                if (pull_over != context_.agents->agents[agent_id].pos) {
-                    decision.pull_over_agents.set(agent_id);
-                }
+            if (!pull_over) {
+                pull_over = context_.agents->agents[agent_id].pos;
+            }
+
+            next_positions_[agent_id] = pull_over;
+            table_.setOccupant(1, pull_over, agent_id, context_.whcaHorizon());
+            if (pull_over != context_.agents->agents[agent_id].pos) {
+                decision.pull_over_agents.set(agent_id);
+            } else {
+                prepare_return_home_deadlock_escape(&context_.agents->agents[agent_id]);
             }
         }
 
+        next_positions_[leader] = replan_deadlock_leader_first_step(context_, table_, context_.agents->agents[leader]);
         decision.leader = leader;
         return leader;
     }
 
     void handleSccMask(AgentMask scc_agents, FallbackDecision& decision) {
-        const int group_n = collect_masked_group(context_.agents, scc_agents, scratch_.masked_group_ids);
+        const AgentMask participants = collect_deadlock_participant_mask(context_.agents, scc_agents);
+        const int active_count = count_agents_in_mask(context_.agents, participants);
+        if (active_count < 2) return;
+
+        if (active_count > MAX_CBS_GROUP) {
+            const int leader = applyPullOverFallbackForMask(participants, decision);
+            if (leader >= 0) {
+                logger_log(context_.logger, "[%sWFG%s] Large SCC detected (%d agents): leader=%c commits, others pull over.",
+                    C_B_YEL, C_NRM, active_count, context_.agents->agents[leader].symbol);
+            }
+            return;
+        }
+
+        const int group_n = collect_masked_group_by_priority(context_.agents, participants, scratch_.masked_group_ids);
         if (group_n < 2) return;
 
         const CbsSolveResult result = run_partial_CBS(context_, scratch_.masked_group_ids, group_n, table_, scratch_);
@@ -349,27 +512,27 @@ private:
             return;
         }
 
-        const int leader = applyPullOverFallback(scratch_.masked_group_ids, group_n, scc_agents, decision);
+        const int leader = applyPullOverFallbackForMask(participants, decision);
         if (leader >= 0) {
             logger_log(context_.logger, "[%sWFG%s] SCC detected: leader=%c commits, others pull over.",
                 C_B_YEL, C_NRM, context_.agents->agents[leader].symbol);
         }
     }
 
-    void handleWaitingDeadlock(FallbackDecision& decision) {
-        if (!all_active_agents_waiting(context_.agents, next_positions_)) return;
-
-        int active_count = 0;
-        for (int index = 0; index < MAX_AGENTS; ++index) {
-            if (default_planner_agent_is_active(&context_.agents->agents[index])) {
-                active_count++;
-            }
-        }
+    void breakStandstill(AgentMask mask, FallbackDecision& decision, const char* log_message) {
+        const AgentMask participants = collect_deadlock_participant_mask(context_.agents, mask);
+        const int active_count = count_agents_in_mask(context_.agents, participants);
         if (active_count < 2) return;
 
-        AgentOrder fallback_order{};
-        sort_agents_by_priority(context_.agents, fallback_order);
-        const int group_n = collect_fallback_group(context_.agents, fallback_order, scratch_.fallback_group_ids);
+        if (active_count > MAX_CBS_GROUP) {
+            const int leader = applyPullOverFallbackForMask(participants, decision);
+            if (leader >= 0) {
+                logger_log(context_.logger, log_message, C_B_YEL, C_NRM, active_count, context_.agents->agents[leader].symbol);
+            }
+            return;
+        }
+
+        const int group_n = collect_masked_group_by_priority(context_.agents, participants, scratch_.fallback_group_ids);
         if (group_n < 2) return;
 
         const CbsSolveResult result = run_partial_CBS(context_, scratch_.fallback_group_ids, group_n, table_, scratch_);
@@ -380,10 +543,24 @@ private:
             return;
         }
 
-        applyPullOverFallback(scratch_.fallback_group_ids, group_n, AgentMask::all(), decision);
-        logger_log(context_.logger, "[%sWFG%s] Deadlock fallback: leader-only move, others pull-over.", C_B_YEL, C_NRM);
+        const int leader = applyPullOverFallbackForMask(participants, decision);
+        if (leader >= 0) {
+            logger_log(context_.logger, log_message, C_B_YEL, C_NRM, active_count, context_.agents->agents[leader].symbol);
+        }
     }
 
+public:
+    void handleWaitingDeadlock(FallbackDecision& decision) {
+        if (!all_active_agents_waiting(context_.agents, next_positions_)) return;
+        breakStandstill(AgentMask::all(), decision, "[%sWFG%s] Deadlock fallback: large standstill (%d agents), leader=%c commits.");
+    }
+
+    void handlePostConflictStandstill(FallbackDecision& decision) {
+        if (!all_active_agents_waiting(context_.agents, next_positions_)) return;
+        breakStandstill(AgentMask::all(), decision, "[%sWFG%s] Post-conflict standstill: %d agents blocked, leader=%c commits.");
+    }
+
+private:
     const PlanningContext& context_;
     AgentNodeSlots& next_positions_;
     DefaultPlannerScratch& scratch_;
@@ -410,6 +587,8 @@ public:
 
                 const bool lhs_pull_over = decision.pull_over_agents.contains(lhs);
                 const bool rhs_pull_over = decision.pull_over_agents.contains(rhs);
+                const bool lhs_yield = decision.yield_agents.contains(lhs);
+                const bool rhs_yield = decision.yield_agents.contains(rhs);
                 const bool lhs_is_leader = lhs == decision.leader;
                 const bool rhs_is_leader = rhs == decision.leader;
                 const bool lhs_escape_move = is_return_home_escape_move(&manager_->agents[lhs], next_positions_[lhs]);
@@ -418,10 +597,10 @@ public:
                 const int priority_rhs = conflict_priority(&manager_->agents[rhs], next_positions_[rhs]);
 
                 if (next_positions_[lhs] == next_positions_[rhs]) {
-                    resolveVertexConflict(lhs, rhs, lhs_pull_over, rhs_pull_over, lhs_is_leader, rhs_is_leader,
+                    resolveVertexConflict(lhs, rhs, lhs_pull_over, rhs_pull_over, lhs_yield, rhs_yield, lhs_is_leader, rhs_is_leader,
                         lhs_escape_move, rhs_escape_move, priority_lhs, priority_rhs);
                 } else if (next_positions_[lhs] == manager_->agents[rhs].pos && next_positions_[rhs] == manager_->agents[lhs].pos) {
-                    resolveSwapConflict(lhs, rhs, lhs_pull_over, rhs_pull_over, lhs_is_leader, rhs_is_leader,
+                    resolveSwapConflict(lhs, rhs, lhs_pull_over, rhs_pull_over, lhs_yield, rhs_yield, lhs_is_leader, rhs_is_leader,
                         lhs_escape_move, rhs_escape_move, priority_lhs, priority_rhs);
                 }
             }
@@ -437,6 +616,12 @@ private:
     void yieldAgent(int agent_id, const char* message) {
         logger_log(logger_, message, C_B_RED, C_NRM, manager_->agents[agent_id].symbol);
         next_positions_[agent_id] = manager_->agents[agent_id].pos;
+    }
+
+    void holdSwapPair(int preferred_agent_id, int other_agent_id, const char* message) {
+        logger_log(logger_, message, C_B_RED, C_NRM, manager_->agents[preferred_agent_id].symbol);
+        next_positions_[preferred_agent_id] = manager_->agents[preferred_agent_id].pos;
+        next_positions_[other_agent_id] = manager_->agents[other_agent_id].pos;
     }
 
     void resolveParkingVsReturnConflict(int lhs, int rhs, int priority_lhs, int priority_rhs, const char* wait_message, const char* starvation_message) {
@@ -456,6 +641,8 @@ private:
         int rhs,
         bool lhs_pull_over,
         bool rhs_pull_over,
+        bool lhs_yield,
+        bool rhs_yield,
         bool lhs_is_leader,
         bool rhs_is_leader,
         bool lhs_escape_move,
@@ -470,6 +657,11 @@ private:
 
         if (lhs_pull_over != rhs_pull_over) {
             yieldAgent(lhs_pull_over ? rhs : lhs, "[%sAvoid%s] Pull-over escape: Agent %c yields.");
+            return;
+        }
+
+        if (lhs_yield != rhs_yield) {
+            yieldAgent(lhs_yield ? lhs : rhs, "[%sAvoid%s] Deadlock fallback: Agent %c yields.");
             return;
         }
 
@@ -494,6 +686,8 @@ private:
         int rhs,
         bool lhs_pull_over,
         bool rhs_pull_over,
+        bool lhs_yield,
+        bool rhs_yield,
         bool lhs_is_leader,
         bool rhs_is_leader,
         bool lhs_escape_move,
@@ -501,30 +695,38 @@ private:
         int priority_lhs,
         int priority_rhs) {
         if (lhs_is_leader != rhs_is_leader) {
-            keepLeaderMove(lhs_is_leader ? lhs : rhs, lhs_is_leader ? rhs : lhs,
-                "[%sAvoid%s] Deadlock leader Agent %c keeps the swap.");
+            holdSwapPair(lhs_is_leader ? lhs : rhs, lhs_is_leader ? rhs : lhs,
+                "[%sAvoid%s] Swap conflict: Agent %c keeps priority, but both wait this step.");
             return;
         }
 
         if (lhs_pull_over != rhs_pull_over) {
-            yieldAgent(lhs_pull_over ? rhs : lhs, "[%sAvoid%s] Pull-over escape: Agent %c yields the swap.");
+            holdSwapPair(lhs_pull_over ? lhs : rhs, lhs_pull_over ? rhs : lhs,
+                "[%sAvoid%s] Swap conflict: pull-over priority assigned to Agent %c, but both wait this step.");
+            return;
+        }
+
+        if (lhs_yield != rhs_yield) {
+            holdSwapPair(lhs_yield ? rhs : lhs, lhs_yield ? lhs : rhs,
+                "[%sAvoid%s] Swap conflict: fallback priority assigned to Agent %c, but both wait this step.");
             return;
         }
 
         if (lhs_escape_move != rhs_escape_move) {
-            yieldAgent(lhs_escape_move ? rhs : lhs, "[%sAvoid%s] Escape move: Agent %c yields the swap.");
+            holdSwapPair(lhs_escape_move ? lhs : rhs, lhs_escape_move ? rhs : lhs,
+                "[%sAvoid%s] Swap conflict: escape priority assigned to Agent %c, but both wait this step.");
             return;
         }
 
         if ((manager_->agents[lhs].state == AgentState::GoingToPark && manager_->agents[rhs].state == AgentState::ReturningHomeEmpty) ||
             (manager_->agents[rhs].state == AgentState::GoingToPark && manager_->agents[lhs].state == AgentState::ReturningHomeEmpty)) {
-            resolveParkingVsReturnConflict(lhs, rhs, priority_lhs, priority_rhs,
-                "[%sAvoid%s] Swap conflict: parking flow has priority, Agent %c waits.",
-                "[%sAvoid%s] Swap conflict: starvation escape gives Agent %c priority.");
+            holdSwapPair(priority_lhs >= priority_rhs ? lhs : rhs, priority_lhs >= priority_rhs ? rhs : lhs,
+                "[%sAvoid%s] Swap conflict: parking flow keeps priority for Agent %c, but both wait this step.");
             return;
         }
 
-        yieldAgent(priority_lhs >= priority_rhs ? rhs : lhs, "[%sAvoid%s] Swap conflict: Agent %c yields.");
+        holdSwapPair(priority_lhs >= priority_rhs ? lhs : rhs, priority_lhs >= priority_rhs ? rhs : lhs,
+            "[%sAvoid%s] Swap conflict: Agent %c keeps priority, but both wait this step.");
     }
 
     AgentManager* manager_{nullptr};
@@ -549,6 +751,7 @@ void DefaultPlannerSession::execute() {
 
     WhcaPlanner whca_planner(context_, next_positions_, scratch_, table_);
     whca_planner.plan();
+    apply_first_step_rotation(context_.agents, next_positions_);
 
     ConflictGraphAnalyzer graph_analyzer(context_.agents, next_positions_, scratch_.wait_edges);
     summary_ = graph_analyzer.analyze();
@@ -558,6 +761,12 @@ void DefaultPlannerSession::execute() {
 
     FirstStepConflictResolver conflict_resolver(context_.agents, context_.logger, next_positions_);
     conflict_resolver.resolve(decision);
+
+    FallbackDecision post_conflict_decision{};
+    fallback_resolver.handlePostConflictStandstill(post_conflict_decision);
+    if (post_conflict_decision.hasAction()) {
+        conflict_resolver.resolve(post_conflict_decision);
+    }
 
     WHCA_adjustHorizon(context_, summary_.wait_edge_count, summary_.hasCycle() ? 1 : 0, context_.logger);
 }

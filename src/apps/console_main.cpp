@@ -2,7 +2,9 @@
 #include "agv/internal/engine_internal.hpp"
 
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -25,6 +27,9 @@ struct CliOptions {
     ScenarioConfig scenario{};
     bool suppressOutput{true};
     std::optional<int> maxSteps;
+    std::optional<std::string> debugReportPath;
+    std::optional<std::string> deadlockReportPath;
+    bool stopOnDeadlock{false};
 };
 
 PathAlgo parseAlgorithm(const std::string& value);
@@ -77,6 +82,15 @@ bool parse_headless_option(CliOptions& options, std::string_view argument, int& 
     } else if (argument == "--max-steps") {
         options.maxSteps = std::stoi(next_argument_value(index, argc, argv, "--max-steps"));
         mark_headless_mode(options);
+    } else if (argument == "--debug-report") {
+        options.debugReportPath = next_argument_value(index, argc, argv, "--debug-report");
+        mark_headless_mode(options);
+    } else if (argument == "--deadlock-report") {
+        options.deadlockReportPath = next_argument_value(index, argc, argv, "--deadlock-report");
+        mark_headless_mode(options);
+    } else if (argument == "--stop-on-deadlock") {
+        options.stopOnDeadlock = true;
+        mark_headless_mode(options);
     } else if (argument == "--render") {
         options.suppressOutput = false;
         mark_headless_mode(options);
@@ -102,6 +116,9 @@ void printUsage() {
         << "  --park-chance <0-100>\n"
         << "  --exit-chance <0-100>\n"
         << "  --max-steps <n>\n"
+        << "  --debug-report <path>\n"
+        << "  --deadlock-report <path>\n"
+        << "  --stop-on-deadlock\n"
         << "  --render\n";
 }
 
@@ -189,12 +206,50 @@ int runHeadless(const CliOptions& options) {
     engine.setAlgorithm(options.algorithm);
     engine.configureScenario(options.scenario);
     engine.setSuppressOutput(options.suppressOutput);
-    if (options.maxSteps.has_value()) {
-        for (int step = 0; step < *options.maxSteps && !engine.isComplete(); ++step) {
+
+    auto build_deadlock_report_path = [](const std::string& base_path, const agv::core::MetricsSnapshot& metrics) {
+        std::filesystem::path path(base_path);
+        const std::string stem = path.stem().string();
+        const std::string suffix =
+            "_deadlock_" + std::to_string(metrics.deadlockCount) +
+            "_step_" + std::to_string(metrics.recordedSteps);
+        if (path.has_extension()) {
+            path.replace_filename(stem + suffix + path.extension().string());
+        } else {
+            path += suffix;
+        }
+        return path.string();
+    };
+
+    const bool needs_step_loop =
+        options.maxSteps.has_value() ||
+        options.debugReportPath.has_value() ||
+        options.deadlockReportPath.has_value() ||
+        options.stopOnDeadlock;
+
+    if (needs_step_loop) {
+        std::uint64_t previous_deadlock_count = 0;
+        const int max_steps = options.maxSteps.value_or(std::numeric_limits<int>::max());
+        for (int step = 0; step < max_steps && !engine.isComplete(); ++step) {
             engine.step();
+            const auto metrics = engine.snapshotMetrics();
+            if (metrics.deadlockCount > previous_deadlock_count) {
+                previous_deadlock_count = metrics.deadlockCount;
+                if (options.deadlockReportPath.has_value()) {
+                    const std::string report_path = build_deadlock_report_path(*options.deadlockReportPath, metrics);
+                    engine.writeDebugReport(report_path, true);
+                }
+                if (options.stopOnDeadlock) {
+                    break;
+                }
+            }
         }
     } else {
         engine.runUntilComplete();
+    }
+
+    if (options.debugReportPath.has_value()) {
+        engine.writeDebugReport(*options.debugReportPath, true);
     }
 
     const auto metrics = engine.snapshotMetrics();

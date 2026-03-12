@@ -15,6 +15,7 @@ constexpr int kPriorityMovingTask = 1;
 constexpr int kDeadlockThreshold = 5;
 constexpr int kStuckBoostMult = 10;
 constexpr int kStuckBoostHard = 1000;
+constexpr double kImmediateBacktrackPenalty = 3.0;
 constexpr int kTurn90Wait = 2;
 constexpr int kDir4X[4] = {0, 0, 1, -1};
 constexpr int kDir4Y[4] = {1, -1, 0, 0};
@@ -42,6 +43,7 @@ struct CandidateMove final {
     Node* node{nullptr};
     double cost{0.0};
     double distance{0.0};
+    int backtrack_penalty{0};
 };
 
 void mark_temp_node(TempMarkList& marks, Node* node) {
@@ -84,10 +86,11 @@ OrderedMoveCandidates OrderedMoveRankingPolicy::rank(Pathfinder* pf, GridMap* ma
     constexpr std::array<int, 4> kStepX = {0, 0, 1, -1};
     constexpr std::array<int, 4> kStepY = {1, -1, 0, 0};
 
+    const Agent* owner = pf ? pf->ownerAgent() : nullptr;
     std::array<CandidateMove, 5> candidates{};
     int candidate_count = 0;
     const double current_g = pf->gCost(current);
-    candidates[candidate_count++] = CandidateMove{current, current_g + 1e-6, 1e18};
+    candidates[candidate_count++] = CandidateMove{current, current_g + 1e-6, 1e18, 0};
 
     for (int i = 0; i < 4; ++i) {
         const int next_x = current->x + kStepX[i];
@@ -98,11 +101,22 @@ OrderedMoveCandidates OrderedMoveRankingPolicy::rank(Pathfinder* pf, GridMap* ma
         if (grid_is_node_blocked(map, manager, next, pf->ownerAgent())) continue;
 
         const double successor_g = pf->gCost(next);
+        const bool is_immediate_backtrack =
+            owner &&
+            owner->last_pos &&
+            next == owner->last_pos &&
+            current != owner->last_pos &&
+            next != goal;
+        const double backtrack_cost =
+            is_immediate_backtrack
+            ? ((owner->stuck_steps >= kDeadlockThreshold) ? (kImmediateBacktrackPenalty * 0.5) : kImmediateBacktrackPenalty)
+            : 0.0;
         candidates[candidate_count++] = CandidateMove{
             next,
-            1.0 + successor_g,
+            1.0 + successor_g + backtrack_cost,
             std::fabs(static_cast<double>(next->x) - static_cast<double>(goal->x)) +
                 std::fabs(static_cast<double>(next->y) - static_cast<double>(goal->y)),
+            is_immediate_backtrack ? 1 : 0,
         };
     }
 
@@ -110,6 +124,7 @@ OrderedMoveCandidates OrderedMoveRankingPolicy::rank(Pathfinder* pf, GridMap* ma
         [](const CandidateMove& lhs, const CandidateMove& rhs) {
             if (lhs.cost < rhs.cost - 1e-9) return true;
             if (lhs.cost > rhs.cost + 1e-9) return false;
+            if (lhs.backtrack_penalty != rhs.backtrack_penalty) return lhs.backtrack_penalty < rhs.backtrack_penalty;
             return lhs.distance < rhs.distance;
         });
 
@@ -123,7 +138,7 @@ OrderedMoveCandidates OrderedMoveRankingPolicy::rank(Pathfinder* pf, GridMap* ma
 int priority_score(const Agent* agent) {
     int importance = 0;
     if (agent->state == AgentState::ReturningWithCar) importance = kPriorityReturningWithCar;
-    else if (agent->state == AgentState::GoingToCharge) importance = kPriorityGoingToCharge;
+    else if (agent->state == AgentState::GoingToCharge || agent->state == AgentState::ReturningHomeMaintenance) importance = kPriorityGoingToCharge;
     else if (agent->state == AgentState::GoingToPark || agent->state == AgentState::GoingToCollect) importance = kPriorityMovingTask;
 
     const int stuck_boost = (agent->stuck_steps >= kDeadlockThreshold) ? kStuckBoostHard : (agent->stuck_steps * kStuckBoostMult);
@@ -323,6 +338,7 @@ void ConflictResolutionPolicy::resolve(AgentManager* manager, const AgentOrder& 
         const int other = (destination_idx >= 0) ? cell_owner_[destination_idx] : -1;
         if (other == -1 || other == agent_id || !next_positions[other]) continue;
         if (next_positions[other] == manager->agents[agent_id].pos) {
+            next_positions[agent_id] = manager->agents[agent_id].pos;
             next_positions[other] = manager->agents[other].pos;
         } else if (next_positions[other] == manager->agents[other].pos &&
             next_positions[agent_id] == manager->agents[other].pos) {

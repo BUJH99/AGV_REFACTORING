@@ -92,7 +92,6 @@ void do_ms_pause(int ms) {
 
 constexpr int kMinMapId = 1;
 constexpr int kMaxMapId = 5;
-
 std::string_view phase_type_name(PhaseType type) {
     return (type == PhaseType::Park) ? "park" : "exit";
 }
@@ -313,7 +312,7 @@ int simulation_setup_map_local(Simulation* sim) {
     agv::internal::text::console_print(std::string(C_B_WHT) + "--- Select Map (1~5) ---\n" + C_NRM);
     agv::internal::text::console_print("1. %sCompact parking lot%s (baseline)\n", C_B_GRN, C_NRM);
     agv::internal::text::console_print("2. %sMid-size lot with one retrieval target%s\n", C_YEL, C_NRM);
-    agv::internal::text::console_print("3. %s8 AGVs + 900 requests%s (up to 16 AGVs, A~H)\n", C_YEL, C_NRM);
+    agv::internal::text::console_print("3. %s16 AGVs + 900 requests%s (A~P)\n", C_YEL, C_NRM);
     agv::internal::text::console_print("4. %sDense lot with one retrieval target and four parking waves%s (up to 10 AGVs, A~J)\n", C_YEL, C_NRM);
     agv::internal::text::console_print("5. %sCharging-stress map%s (extra chargers, longer aisles, and heavy parking load)\n\n", C_YEL, C_NRM);
     int map_id = get_integer_input_local("Select map id (1~5): ", 1, 5);

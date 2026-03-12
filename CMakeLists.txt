@@ -55,7 +55,10 @@ if(BUILD_TESTING)
     set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(googletest)
 
-    add_executable(agv_core_tests tests/simulation_engine_test.cpp)
+    add_executable(agv_core_tests
+        tests/simulation_engine_test.cpp
+        tests/debug_support_test.cpp
+    )
     target_link_libraries(agv_core_tests PRIVATE agv_core GTest::gtest_main)
     include(GoogleTest)
     gtest_discover_tests(agv_core_tests)

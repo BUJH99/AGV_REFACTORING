@@ -3,6 +3,8 @@
 #include <array>
 #include <cstddef>
 #include <optional>
+#include <string>
+#include <vector>
 
 inline constexpr int DISPLAY_BUFFER_SIZE = 512000;
 inline constexpr int GRID_WIDTH = 82;
@@ -41,8 +43,8 @@ inline constexpr int PRIORITY_MOVING_TASK = 1;
 inline constexpr int STUCK_BOOST_MULT = 10;
 inline constexpr int STUCK_BOOST_HARD = 1000;
 inline constexpr int DEADLOCK_THRESHOLD = 5;
-inline constexpr int MAX_WAIT_EDGES = 128;
-inline constexpr int MAX_CBS_GROUP = 8;
+inline constexpr int MAX_WAIT_EDGES = 512;
+inline constexpr int MAX_CBS_GROUP = MAX_AGENTS;
 inline constexpr int MAX_CBS_NODES = 1024;
 inline constexpr int CBS_MAX_EXPANSIONS = 128;
 inline constexpr int MAX_TOT = (MAX_WHCA_HORIZON + 1) * GRID_WIDTH * GRID_HEIGHT;
@@ -138,7 +140,7 @@ void agent_manager_update_state_after_move(
     Simulation* sim);
 void agent_manager_update_charge_state(AgentManager* manager, GridMap* map, Logger* logger);
 bool agv_apply_moves_and_update_stuck(Simulation* sim, AgentNodeSlots& next_positions, AgentNodeSlots& previous_positions);
-void agv_update_deadlock_counter(Simulation* sim, bool moved_this_step, bool is_custom_mode);
+void agv_update_deadlock_counter(Simulation* sim, const AgentNodeSlots& next_positions, bool moved_this_step, bool is_custom_mode);
 void agv_accumulate_wait_ticks_if_realtime(Simulation* sim);
 void agv_execute_step_service(Simulation* sim, bool is_paused);
 
@@ -148,6 +150,7 @@ bool execute_headless_step(Simulation* sim);
 bool run_simulation_to_completion(Simulation* sim);
 RunSummary collect_run_summary(const Simulation* sim);
 std::string build_render_frame_text(Simulation* sim, bool is_paused);
+std::vector<std::string> collect_recent_logs(const Logger* logger);
 
 void agv_prepare_console();
 void ui_enter_alt_screen();

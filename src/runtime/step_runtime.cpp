@@ -1,6 +1,7 @@
 #define _CRT_SECURE_NO_WARNINGS
 
 #include <ctime>
+#include <string>
 
 #include "agv/internal/engine_internal.hpp"
 
@@ -14,6 +15,16 @@ constexpr int kMemorySampleIntervalSteps = 8;
 
 inline int node_flat_index_local(const Node* node) {
     return node ? (node->y * GRID_WIDTH + node->x) : -1;
+}
+
+inline bool node_is_charge_station_local(const GridMap* map, const Node* node) {
+    if (!map || !node) return false;
+    for (int index = 0; index < map->num_charge_stations; ++index) {
+        if (map->charge_stations[index] == node) {
+            return true;
+        }
+    }
+    return false;
 }
 
 inline AgentDir dir_from_delta_local(int dx, int dy) {
@@ -90,6 +101,7 @@ void resolve_conflicts_by_order_local(
         int other = (dest_idx >= 0) ? scratch.cell_owner[dest_idx] : -1;
         if (other == -1 || other == index || !next_positions[other]) continue;
         if (next_positions[other] == manager->agents[index].pos) {
+            next_positions[index] = manager->agents[index].pos;
             next_positions[other] = manager->agents[other].pos;
         } else if (next_positions[other] == manager->agents[other].pos &&
             next_positions[index] == manager->agents[other].pos) {
@@ -100,6 +112,160 @@ void resolve_conflicts_by_order_local(
     scratch.clearTouchedCellOwner();
 }
 
+bool agent_is_active_for_deadlock_local(const Agent* agent) {
+    return agent &&
+        agent->pos &&
+        agent->state != AgentState::Idle &&
+        agent->state != AgentState::Charging;
+}
+
+void append_unique_agent_id_local(std::array<int, MAX_AGENTS>& ids, int& count, int agent_id) {
+    if (count >= MAX_AGENTS) {
+        return;
+    }
+    for (int index = 0; index < count; ++index) {
+        if (ids[index] == agent_id) {
+            return;
+        }
+    }
+    ids[count++] = agent_id;
+}
+
+int count_pipeline_moves_local(const AgentManager* manager, const AgentNodeSlots& positions, const AgentNodeSlots& previous_positions) {
+    if (!manager) return 0;
+
+    int count = 0;
+    for (int agent_id = 0; agent_id < MAX_AGENTS; ++agent_id) {
+        if (!manager->agents[agent_id].pos || !positions[agent_id]) {
+            continue;
+        }
+        if (positions[agent_id] != previous_positions[agent_id]) {
+            count++;
+        }
+    }
+    return count;
+}
+
+void record_pipeline_cancellations_local(
+    const AgentManager* manager,
+    const AgentNodeSlots& before_positions,
+    const AgentNodeSlots& after_positions,
+    const AgentNodeSlots& previous_positions,
+    std::array<int, MAX_AGENTS>& out_ids,
+    int& out_count) {
+    out_ids.fill(-1);
+    out_count = 0;
+    if (!manager) return;
+
+    for (int agent_id = 0; agent_id < MAX_AGENTS; ++agent_id) {
+        if (!manager->agents[agent_id].pos || !before_positions[agent_id] || !after_positions[agent_id]) {
+            continue;
+        }
+        const bool had_move = before_positions[agent_id] != previous_positions[agent_id];
+        const bool lost_move = after_positions[agent_id] == previous_positions[agent_id];
+        if (had_move && lost_move) {
+            append_unique_agent_id_local(out_ids, out_count, agent_id);
+        }
+    }
+}
+
+void append_deadlock_participant_local(DeadlockEventRecord& event, int agent_id) {
+    if (event.participant_count >= MAX_AGENTS) {
+        return;
+    }
+    for (int index = 0; index < event.participant_count; ++index) {
+        if (event.participant_agent_ids[index] == agent_id) {
+            return;
+        }
+    }
+    event.participant_agent_ids[event.participant_count++] = agent_id;
+}
+
+std::string build_deadlock_reason_local(
+    const Simulation* sim,
+    int waiting_agent_count,
+    int stuck_agent_count) {
+    const PlannerMetricsState& metrics = sim->planner_metrics;
+    if (metrics.scc_last > 0) {
+        return "Wait-for graph cycle detected with no movement in this step.";
+    }
+    if (metrics.wf_edges_last > 0 && metrics.cbs_ok_last > 0) {
+        return "CBS attempted to break the conflict, but a standstill still remained.";
+    }
+    if (metrics.wf_edges_last > 0 && metrics.cbs_exp_last > 0) {
+        return "Planner reported unresolved wait edges and no active agent moved.";
+    }
+    if (stuck_agent_count > 0) {
+        return "Multiple active agents remained stationary or oscillating while work was unresolved.";
+    }
+    if (waiting_agent_count > 0) {
+        return "All active agents waited in place while unresolved work remained.";
+    }
+    return "Deadlock counter increased because no active movement occurred before task completion.";
+}
+
+void record_deadlock_event_local(
+    Simulation* sim,
+    const AgentNodeSlots& next_positions,
+    bool is_custom_mode) {
+    if (!sim || !sim->scenario_manager || !sim->agent_manager) {
+        return;
+    }
+
+    DeadlockEventRecord event{};
+    event.valid = true;
+    event.step = sim->scenario_manager->time_step + 1;
+    event.deadlock_count = sim->deadlock_count;
+    event.phase_index = sim->scenario_manager->current_phase_index;
+    event.pending_task_count = sim->scenario_manager->task_count;
+    event.planner_wait_edges = sim->planner_metrics.wf_edges_last;
+    event.planner_scc_count = sim->planner_metrics.scc_last;
+    event.planner_cbs_succeeded = sim->planner_metrics.cbs_ok_last;
+    event.planner_cbs_expansions = sim->planner_metrics.cbs_exp_last;
+    event.whca_horizon = sim->planner_metrics.whca_h;
+    event.planned_move_count = sim->step_scratch.planned_move_count;
+    event.post_rotation_move_count = sim->step_scratch.post_rotation_move_count;
+    event.post_blocker_move_count = sim->step_scratch.post_blocker_move_count;
+    event.final_move_count = sim->step_scratch.final_move_count;
+    event.rotation_canceled_count = sim->step_scratch.rotation_canceled_count;
+    event.rotation_canceled_agent_ids = sim->step_scratch.rotation_canceled_agent_ids;
+    event.blocker_canceled_count = sim->step_scratch.blocker_canceled_count;
+    event.blocker_canceled_agent_ids = sim->step_scratch.blocker_canceled_agent_ids;
+    event.order_canceled_count = sim->step_scratch.order_canceled_count;
+    event.order_canceled_agent_ids = sim->step_scratch.order_canceled_agent_ids;
+
+    if (is_custom_mode &&
+        event.phase_index >= 0 &&
+        event.phase_index < sim->scenario_manager->num_phases) {
+        const DynamicPhase& phase = sim->scenario_manager->phases[event.phase_index];
+        event.phase_task_target = phase.task_count;
+        event.phase_tasks_completed = sim->scenario_manager->tasks_completed_in_phase;
+    }
+
+    for (int index = 0; index < MAX_AGENTS; ++index) {
+        const Agent& agent = sim->agent_manager->agents[index];
+        if (!agent_is_active_for_deadlock_local(&agent)) {
+            continue;
+        }
+
+        event.active_agent_count++;
+        if (next_positions[index] == agent.pos) {
+            event.waiting_agent_count++;
+        }
+        if (agent.stuck_steps > 0 || agent.oscillation_steps > 0) {
+            event.stuck_agent_count++;
+        }
+        if (agent.stuck_steps >= DEADLOCK_THRESHOLD ||
+            agent.oscillation_steps > 0 ||
+            next_positions[index] == agent.pos) {
+            append_deadlock_participant_local(event, agent.id);
+        }
+    }
+
+    event.reason = build_deadlock_reason_local(sim, event.waiting_agent_count, event.stuck_agent_count);
+    sim->last_deadlock_event = event;
+}
+
 void force_idle_cleanup_local(AgentManager* manager, Simulation* sim, Logger* logger) {
     if (!manager) return;
     int changed = 0;
@@ -107,6 +273,9 @@ void force_idle_cleanup_local(AgentManager* manager, Simulation* sim, Logger* lo
         Agent* agent = &manager->agents[i];
         if (!agent->pos) continue;
         if (agent->state == AgentState::Idle) continue;
+        if (agent->pos->reserved_by_agent == agent->id) {
+            agent->pos->reserved_by_agent = -1;
+        }
         if (agent->goal) {
             agent->goal->reserved_by_agent = -1;
             agent->goal = nullptr;
@@ -114,6 +283,7 @@ void force_idle_cleanup_local(AgentManager* manager, Simulation* sim, Logger* lo
         agent->pf.reset();
         agent->rotation_wait = 0;
         agent->stuck_steps = 0;
+        agent->oscillation_steps = 0;
         agent->action_timer = 0;
         agent->state = AgentState::Idle;
         changed = 1;
@@ -206,11 +376,53 @@ private:
             previous_positions[i] = agents->agents[i].pos;
         }
 
-        sim->planStep(next_positions);
+        scratch.resetPlanDebug();
+
+        sim->planStep(scratch.planner_positions);
+        next_positions = scratch.planner_positions;
+        scratch.planned_move_count = count_pipeline_moves_local(agents, next_positions, previous_positions);
+
+        if (sim->path_algo == PathAlgo::Default) {
+            scratch.post_rotation_positions = next_positions;
+            scratch.post_rotation_move_count = scratch.planned_move_count;
+            scratch.post_blocker_positions = next_positions;
+            scratch.post_blocker_move_count = scratch.planned_move_count;
+            scratch.final_move_count = scratch.planned_move_count;
+            return;
+        }
+
         apply_rotation_stage(agents, next_positions);
+        scratch.post_rotation_positions = next_positions;
+        scratch.post_rotation_move_count = count_pipeline_moves_local(agents, next_positions, previous_positions);
+        record_pipeline_cancellations_local(
+            agents,
+            scratch.planner_positions,
+            scratch.post_rotation_positions,
+            previous_positions,
+            scratch.rotation_canceled_agent_ids,
+            scratch.rotation_canceled_count);
+
         resolve_stationary_blockers(agents, next_positions, scratch);
+        scratch.post_blocker_positions = next_positions;
+        scratch.post_blocker_move_count = count_pipeline_moves_local(agents, next_positions, previous_positions);
+        record_pipeline_cancellations_local(
+            agents,
+            scratch.post_rotation_positions,
+            scratch.post_blocker_positions,
+            previous_positions,
+            scratch.blocker_canceled_agent_ids,
+            scratch.blocker_canceled_count);
+
         sort_agents_by_priority(agents, order);
         resolve_conflicts_by_order_local(agents, order, next_positions, scratch);
+        scratch.final_move_count = count_pipeline_moves_local(agents, next_positions, previous_positions);
+        record_pipeline_cancellations_local(
+            agents,
+            scratch.post_blocker_positions,
+            next_positions,
+            previous_positions,
+            scratch.order_canceled_agent_ids,
+            scratch.order_canceled_count);
     }
 
     void apply_rotation_stage(AgentManager* agents, AgentNodeSlots& next_positions) const {
@@ -273,7 +485,7 @@ private:
         }
 
         record_step_phase_accounting(sim, frame, step_time_ms);
-        agv_update_deadlock_counter(sim, moved_this_step, frame.is_custom_mode);
+        agv_update_deadlock_counter(sim, sim->step_scratch.next_positions, moved_this_step, frame.is_custom_mode);
         agv_accumulate_wait_ticks_if_realtime(sim);
         if (frame.step_label == 1 || (frame.step_label % kMemorySampleIntervalSteps) == 0) {
             sim->collectMemorySampleAlgo();
@@ -295,10 +507,25 @@ bool agv_apply_moves_and_update_stuck(Simulation* sim, AgentNodeSlots& next_posi
     for (int i = 0; i < MAX_AGENTS; i++) {
         Agent* agent = &sim->agent_manager->agents[i];
         if (agent->state != AgentState::Charging && next_positions[i]) {
+            Node* current = agent->pos;
+            const bool immediate_backtrack =
+                current &&
+                agent->last_pos &&
+                next_positions[i] == agent->last_pos &&
+                current != agent->last_pos;
             if (agent->pos != next_positions[i]) {
+                if (current &&
+                    current->reserved_by_agent == agent->id &&
+                    node_is_charge_station_local(sim->map, current)) {
+                    current->reserved_by_agent = -1;
+                }
                 agent->total_distance_traveled += 1.0;
                 sim->total_movement_cost += 1.0;
                 moved_this_step = true;
+                agent->last_pos = current;
+                agent->oscillation_steps = immediate_backtrack ? (agent->oscillation_steps + 1) : 0;
+            } else {
+                agent->oscillation_steps = 0;
             }
             agent->pos = next_positions[i];
         }
@@ -308,28 +535,32 @@ bool agv_apply_moves_and_update_stuck(Simulation* sim, AgentNodeSlots& next_posi
         Agent* agent = &sim->agent_manager->agents[i];
         if (agent->state == AgentState::Charging || agent->state == AgentState::Idle || agent->action_timer > 0) {
             agent->stuck_steps = 0;
+            agent->oscillation_steps = 0;
             continue;
         }
-        if (agent->pos == previous_positions[i]) agent->stuck_steps++;
+        if (agent->pos == previous_positions[i] || agent->oscillation_steps > 0) agent->stuck_steps++;
         else agent->stuck_steps = 0;
     }
 
     return moved_this_step;
 }
 
-void agv_update_deadlock_counter(Simulation* sim, bool moved_this_step, bool is_custom_mode) {
+void agv_update_deadlock_counter(Simulation* sim, const AgentNodeSlots& next_positions, bool moved_this_step, bool is_custom_mode) {
     ScenarioManager* scenario = sim->scenario_manager;
     if (moved_this_step) return;
     int unresolved = 0;
     if (is_custom_mode) {
         if (scenario->current_phase_index < scenario->num_phases) {
             const DynamicPhase* phase = &scenario->phases[scenario->current_phase_index];
-        if (scenario->tasks_completed_in_phase < phase->task_count) unresolved = 1;
+            if (scenario->tasks_completed_in_phase < phase->task_count) unresolved = 1;
         }
     } else if (scenario->mode == SimulationMode::Realtime) {
         if (scenario->task_count > 0) unresolved = 1;
     }
-    if (unresolved) sim->deadlock_count++;
+    if (unresolved) {
+        sim->deadlock_count++;
+        record_deadlock_event_local(sim, next_positions, is_custom_mode);
+    }
 }
 
 void agv_accumulate_wait_ticks_if_realtime(Simulation* sim) {

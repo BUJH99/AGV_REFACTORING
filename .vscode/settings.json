@@ -10,5 +10,8 @@
                 "pwsh.exe"
             ]
         }
-    }
+    },
+    "editor.fontFamily": "D2Coding ligature",
+    "editor.fontLigatures": true,
+    "terminal.integrated.fontFamily": "D2Coding ligature"
 }

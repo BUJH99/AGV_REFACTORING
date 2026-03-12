@@ -8,11 +8,13 @@ AgentManager::AgentManager() {
         agents[i].id = i;
         agents[i].symbol = 'A' + i;
         agents[i].state = AgentState::Idle;
+        agents[i].last_pos = nullptr;
         agents[i].heading = AgentDir::None;
         agents[i].rotation_wait = 0;
         agents[i].action_timer = 0;
         agents[i].pf.reset();
         agents[i].stuck_steps = 0;
+        agents[i].oscillation_steps = 0;
         agents[i].metrics_task_active = false;
         agents[i].metrics_task_start_step = 0;
         agents[i].metrics_distance_at_start = 0.0;
@@ -123,6 +125,18 @@ void clear_goal_reservation_local(Agent* agent, Node* reached) {
     agent->goal = nullptr;
 }
 
+bool reached_temporary_return_waypoint_local(Logger* logger, Agent* agent, Node* reached, const char* reason) {
+    if (!agent) return false;
+    if (agent->home_base && reached && reached != agent->home_base) {
+        logger_log(logger, "[%sInfo%s] Agent %c reached a temporary holding goal at (%d,%d). Resuming the %s path.",
+            C_CYN, C_NRM, agent->symbol, reached->x, reached->y, reason);
+        agent->pf.reset();
+        agent->stuck_steps = 0;
+        return true;
+    }
+    return false;
+}
+
 void finish_parking_goal_local(
     AgentManager* agents,
     ScenarioManager* scenario,
@@ -142,11 +156,7 @@ void finish_parking_goal_local(
 
 void finish_return_home_empty_local(Logger* logger, Simulation* sim, Agent* agent, Node* reached) {
     if (!agent) return;
-    if (agent->home_base && reached && reached != agent->home_base) {
-        logger_log(logger, "[%sInfo%s] Agent %c reached a temporary holding goal at (%d,%d). Resuming the return home path.",
-            C_CYN, C_NRM, agent->symbol, reached->x, reached->y);
-        agent->pf.reset();
-        agent->stuck_steps = 0;
+    if (reached_temporary_return_waypoint_local(logger, agent, reached, "return home")) {
         return;
     }
 
@@ -183,6 +193,10 @@ void finish_charge_arrival_local(AgentManager* agents, GridMap* map, Logger* log
 }
 
 void finish_return_maintenance_local(Logger* logger, Agent* agent) {
+    if (reached_temporary_return_waypoint_local(logger, agent, agent->pos, "post-charge return home")) {
+        return;
+    }
+
     logger_log(logger, "[%sInfo%s] Agent %c returned home after charging.", C_CYN, C_NRM, agent->symbol);
     agent->state = AgentState::Idle;
     agent->pf.reset();
@@ -226,12 +240,6 @@ int tick_charge_timer_local(Agent* agent) {
     return agent->charge_timer <= 0;
 }
 
-void clear_position_reservation_local(Agent* agent) {
-    if (agent && agent->pos) {
-        agent->pos->reserved_by_agent = -1;
-    }
-}
-
 void reset_goal_and_path_local(Agent* agent) {
     if (!agent) return;
     agent->goal = nullptr;
@@ -242,7 +250,6 @@ void finish_charging_cycle_local(AgentManager* agents, GridMap* map, Logger* log
     logger_log(logger, "[%sCharge%s] Agent %c finished charging.", C_B_GRN, C_NRM, agent->symbol);
     agent->total_distance_traveled = 0.0;
     agent->state = AgentState::ReturningHomeMaintenance;
-    clear_position_reservation_local(agent);
     if (agent->pos) {
         broadcast_cell_change_local(agents, map, agent->pos);
     }

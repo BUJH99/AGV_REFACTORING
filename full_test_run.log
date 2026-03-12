@@ -1,0 +1,34 @@
+Running main() from C:\Users\tbdk5\Desktop\MAIN\0_Working\AGV_REFACOTR\AGV_REFACTORING\build-codex\_deps\googletest-src\googletest\src\gtest_main.cc
+[==========] Running 26 tests from 2 test suites.
+[----------] Global test environment set-up.
+[----------] 3 tests from DebugSupportTest
+[ RUN      ] DebugSupportTest.InternalRecentLogCollectionPreservesChronologicalOrderAcrossWraparound
+[       OK ] DebugSupportTest.InternalRecentLogCollectionPreservesChronologicalOrderAcrossWraparound (0 ms)
+[ RUN      ] DebugSupportTest.PublicDebugSnapshotCapturesLogsAgentsAndFrame
+[       OK ] DebugSupportTest.PublicDebugSnapshotCapturesLogsAgentsAndFrame (3 ms)
+[ RUN      ] DebugSupportTest.DebugReportCanBeWrittenToDisk
+[       OK ] DebugSupportTest.DebugReportCanBeWrittenToDisk (12 ms)
+[----------] 3 tests from DebugSupportTest (16 ms total)
+
+[----------] 23 tests from SimulationEngineTest
+[ RUN      ] SimulationEngineTest.HeadlessCustomScenarioProducesMetricsAndFrame
+[       OK ] SimulationEngineTest.HeadlessCustomScenarioProducesMetricsAndFrame (3 ms)
+[ RUN      ] SimulationEngineTest.DifferentAlgorithmsRemainExecutableThroughPublicApi
+[       OK ] SimulationEngineTest.DifferentAlgorithmsRemainExecutableThroughPublicApi (5 ms)
+[ RUN      ] SimulationEngineTest.StepAdvancesSimulationIncrementally
+[       OK ] SimulationEngineTest.StepAdvancesSimulationIncrementally (2 ms)
+[ RUN      ] SimulationEngineTest.RealtimeScenarioCanBeSteppedThroughPublicApi
+[       OK ] SimulationEngineTest.RealtimeScenarioCanBeSteppedThroughPublicApi (2 ms)
+[ RUN      ] SimulationEngineTest.RealtimeScenarioRemainsDeterministicForSameSeed
+[       OK ] SimulationEngineTest.RealtimeScenarioRemainsDeterministicForSameSeed (3 ms)
+[ RUN      ] SimulationEngineTest.SequentialEnginesStayIndependentAcrossAlgorithmsAndModes
+[       OK ] SimulationEngineTest.SequentialEnginesStayIndependentAcrossAlgorithmsAndModes (3 ms)
+[ RUN      ] SimulationEngineTest.InternalPathfinderReinitializeAndUpdateStartRemainStable
+[       OK ] SimulationEngineTest.InternalPathfinderReinitializeAndUpdateStartRemainStable (0 ms)
+[ RUN      ] SimulationEngineTest.InternalGoalAssignmentKeepsExactBestCandidateSelection
+[       OK ] SimulationEngineTest.InternalGoalAssignmentKeepsExactBestCandidateSelection (0 ms)
+[ RUN      ] SimulationEngineTest.InternalStepScratchTouchedCellOwnerResetRemainsStable
+[       OK ] SimulationEngineTest.InternalStepScratchTouchedCellOwnerResetRemainsStable (0 ms)
+[ RUN      ] SimulationEngineTest.InternalReservationTableTouchedClearRemainsStable
+[       OK ] SimulationEngineTest.InternalReservationTableTouchedClearRemainsStable (0 ms)
+[ RUN      ] SimulationEngineTest.InternalPartialCbsResolvesCrossingConflictWithGroupLocalPlans

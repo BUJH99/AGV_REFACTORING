@@ -43,6 +43,17 @@ public:
         buffer_.push_back(ch);
     }
 
+    void appendText(std::string_view text) {
+        if (remaining() == 0) return;
+        append(text);
+    }
+
+    void appendColoredChar(const char* color, char ch, const char* reset = C_NRM) {
+        appendText(color ? std::string_view(color) : std::string_view{});
+        appendChar(ch);
+        appendText(reset ? std::string_view(reset) : std::string_view{});
+    }
+
     size_t remaining() const {
         if (buffer_.size() >= max_size_) {
             return 0;
@@ -265,9 +276,9 @@ static void grid_map_append_color_view(
     const GridColorBuffer& colors) {
     for (int y = 0; y < GRID_HEIGHT; y++) {
         for (int x = 0; x < GRID_WIDTH; x++) {
-            writer.appendf("%s%c%s", colors[y][x], view[y][x], C_NRM);
+            writer.appendColoredChar(colors[y][x], view[y][x]);
         }
-        writer.appendf("\n");
+        writer.appendChar('\n');
     }
 }
 

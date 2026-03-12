@@ -215,7 +215,7 @@ struct CBSConstraint {
 struct CBSNode {
     CBSConstraint cons[MAX_CBS_CONS]{};
     int ncons{0};
-    Node* plans[MAX_AGENTS][MAX_WHCA_HORIZON + 1]{};
+    Node* plans[MAX_CBS_GROUP][MAX_WHCA_HORIZON + 1]{};
     double cost{0.0};
 };
 
@@ -228,6 +228,7 @@ struct Agent_ {
     int id{0};
     char symbol{0};
     Node* pos{nullptr};
+    Node* last_pos{nullptr};
     Node* home_base{nullptr};
     Node* goal{nullptr};
     AgentState state{AgentState::Idle};
@@ -238,6 +239,7 @@ struct Agent_ {
     int rotation_wait{0};
     std::unique_ptr<Pathfinder> pf{};
     int stuck_steps{0};
+    int oscillation_steps{0};
     bool metrics_task_active{false};
     int metrics_task_start_step{0};
     double metrics_distance_at_start{0.0};
@@ -366,6 +368,37 @@ struct PlannerMetricsState {
     }
 };
 
+struct DeadlockEventRecord final {
+    bool valid{false};
+    int step{0};
+    unsigned long long deadlock_count{0};
+    int phase_index{-1};
+    int phase_task_target{0};
+    int phase_tasks_completed{0};
+    int pending_task_count{0};
+    int active_agent_count{0};
+    int waiting_agent_count{0};
+    int stuck_agent_count{0};
+    int planner_wait_edges{0};
+    int planner_scc_count{0};
+    int planner_cbs_succeeded{0};
+    int planner_cbs_expansions{0};
+    int whca_horizon{0};
+    int planned_move_count{0};
+    int post_rotation_move_count{0};
+    int post_blocker_move_count{0};
+    int final_move_count{0};
+    std::array<int, MAX_AGENTS> rotation_canceled_agent_ids{};
+    int rotation_canceled_count{0};
+    std::array<int, MAX_AGENTS> blocker_canceled_agent_ids{};
+    int blocker_canceled_count{0};
+    std::array<int, MAX_AGENTS> order_canceled_agent_ids{};
+    int order_canceled_count{0};
+    std::array<int, MAX_AGENTS> participant_agent_ids{};
+    int participant_count{0};
+    std::string reason{};
+};
+
 struct AgentWorkloadSnapshot {
     int active_park_agents{0};
     int active_exit_agents{0};
@@ -485,24 +518,28 @@ struct CbsSolveResult final {
 
 struct FallbackDecision final {
     int leader{-1};
+    AgentMask yield_agents{};
     AgentMask pull_over_agents{};
     bool used_cbs{false};
+
+    bool hasAction() const {
+        return used_cbs || leader >= 0 || !yield_agents.empty() || !pull_over_agents.empty();
+    }
 };
 
 struct DefaultPlannerScratch final {
     WaitEdgeBuffer wait_edges{};
-    CbsPlanBuffer cbs_plans{};
     std::array<int, MAX_CBS_GROUP> group_ids{};
     std::array<int, MAX_CBS_GROUP> masked_group_ids{};
     std::array<int, MAX_CBS_GROUP> fallback_group_ids{};
     SpaceTimeSearchBuffers pull_over_search{};
     SpaceTimeSearchBuffers cbs_search{};
     std::int16_t ext_occ[MAX_WHCA_HORIZON + 1][GRID_HEIGHT][GRID_WIDTH]{};
-    std::array<CBSNode, MAX_CBS_NODES> cbs_heap{};
+    std::array<CBSNode, MAX_CBS_NODES> cbs_nodes{};
+    std::array<int, MAX_CBS_NODES> cbs_heap_indices{};
 
     void clear() {
         wait_edges.clear();
-        cbs_plans.clear();
         group_ids.fill(-1);
         masked_group_ids.fill(-1);
         fallback_group_ids.fill(-1);
@@ -516,10 +553,23 @@ struct StepScratch {
 
     AgentNodeSlots next_positions{};
     AgentNodeSlots previous_positions{};
+    AgentNodeSlots planner_positions{};
+    AgentNodeSlots post_rotation_positions{};
+    AgentNodeSlots post_blocker_positions{};
     AgentOrder priority_order{};
     std::array<int, GRID_WIDTH * GRID_HEIGHT> cell_owner{};
     std::array<int, MAX_AGENTS> touched_cell_indices{};
     int touched_cell_count{0};
+    int planned_move_count{0};
+    int post_rotation_move_count{0};
+    int post_blocker_move_count{0};
+    int final_move_count{0};
+    std::array<int, MAX_AGENTS> rotation_canceled_agent_ids{};
+    int rotation_canceled_count{0};
+    std::array<int, MAX_AGENTS> blocker_canceled_agent_ids{};
+    int blocker_canceled_count{0};
+    std::array<int, MAX_AGENTS> order_canceled_agent_ids{};
+    int order_canceled_count{0};
 
     void clearTouchedCellOwner() {
         for (int i = 0; i < touched_cell_count; ++i) {
@@ -539,6 +589,22 @@ struct StepScratch {
             touched_cell_indices[touched_cell_count++] = index;
         }
         cell_owner[index] = value;
+    }
+
+    void resetPlanDebug() {
+        planner_positions.fill(nullptr);
+        post_rotation_positions.fill(nullptr);
+        post_blocker_positions.fill(nullptr);
+        planned_move_count = 0;
+        post_rotation_move_count = 0;
+        post_blocker_move_count = 0;
+        final_move_count = 0;
+        rotation_canceled_agent_ids.fill(-1);
+        rotation_canceled_count = 0;
+        blocker_canceled_agent_ids.fill(-1);
+        blocker_canceled_count = 0;
+        order_canceled_agent_ids.fill(-1);
+        order_canceled_count = 0;
     }
 };
 
@@ -639,6 +705,7 @@ public:
     RuntimeTuningState runtime_tuning{};
     RendererState render_state{};
     PlannerMetricsState planner_metrics{};
+    DeadlockEventRecord last_deadlock_event{};
     AgentWorkloadSnapshot workload_snapshot{};
     StepScratch step_scratch{};
     std::string display_buffer{};

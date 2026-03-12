@@ -1,5 +1,7 @@
 #include "agv/simulation_engine.hpp"
 #include "agv/internal/engine_internal.hpp"
+#include "../src/planning/collision_planner_support.hpp"
+#include "../src/planning/collision_planner_whca_support.hpp"
 
 #include <array>
 #include <initializer_list>
@@ -164,12 +166,47 @@ bool has_agent_in_state(const Simulation& sim, AgentState state) {
     return false;
 }
 
+int count_agents_in_state(const Simulation& sim, AgentState state) {
+    int count = 0;
+    for (int i = 0; i < MAX_AGENTS; ++i) {
+        if (sim.agent_manager->agents[i].state == state) {
+            count++;
+        }
+    }
+    return count;
+}
+
+int count_agents_with_position(const Simulation& sim) {
+    int count = 0;
+    for (int i = 0; i < MAX_AGENTS; ++i) {
+        if (sim.agent_manager->agents[i].pos != nullptr) {
+            count++;
+        }
+    }
+    return count;
+}
+
 bool is_charge_station_goal(const Simulation& sim, const Node* node) {
     if (!node) {
         return false;
     }
     for (int i = 0; i < sim.map->num_charge_stations; ++i) {
         if (sim.map->charge_stations[i] == node) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool plans_have_spacetime_conflict(const TimedNodePlan& lhs, const TimedNodePlan& rhs, int horizon) {
+    for (int t = 1; t <= horizon; ++t) {
+        if (!lhs[t] || !rhs[t] || !lhs[t - 1] || !rhs[t - 1]) {
+            return true;
+        }
+        if (lhs[t] == rhs[t]) {
+            return true;
+        }
+        if (lhs[t] == rhs[t - 1] && rhs[t] == lhs[t - 1]) {
             return true;
         }
     }
@@ -192,6 +229,28 @@ void initialize_empty_map(GridMap* map) {
             node.reserved_by_agent = -1;
         }
     }
+}
+
+Node* find_adjacent_walkable_node(GridMap* map, Node* origin) {
+    if (!map || !origin) {
+        return nullptr;
+    }
+
+    constexpr std::array<int, 4> kStepX = {1, -1, 0, 0};
+    constexpr std::array<int, 4> kStepY = {0, 0, 1, -1};
+    for (int index = 0; index < 4; ++index) {
+        const int next_x = origin->x + kStepX[index];
+        const int next_y = origin->y + kStepY[index];
+        if (!grid_is_valid_coord(next_x, next_y)) {
+            continue;
+        }
+        Node* next = &map->grid[next_y][next_x];
+        if (!next->is_obstacle && !next->is_parked) {
+            return next;
+        }
+    }
+
+    return nullptr;
 }
 
 Agent* initialize_pathfinder_agent(AgentManager* manager, Node* start) {
@@ -340,6 +399,128 @@ TEST(SimulationEngineTest, InternalReservationTableTouchedClearRemainsStable) {
     EXPECT_EQ(table.occupantAt(2, future, MAX_WHCA_HORIZON), -1);
 }
 
+TEST(SimulationEngineTest, InternalPartialCbsResolvesCrossingConflictWithGroupLocalPlans) {
+    GridMap map;
+    initialize_empty_map(&map);
+
+    AgentManager manager;
+    Logger logger;
+    RuntimeTuningState tuning;
+    PlannerMetricsState metrics;
+    DefaultPlannerScratch scratch;
+    ReservationTable table;
+
+    tuning.whca_horizon = 4;
+
+    Agent* first = &manager.agents[0];
+    first->id = 0;
+    first->symbol = 'A';
+    first->pos = &map.grid[1][1];
+    first->goal = &map.grid[1][3];
+    first->heading = AgentDir::None;
+
+    Agent* second = &manager.agents[1];
+    second->id = 1;
+    second->symbol = 'B';
+    second->pos = &map.grid[1][3];
+    second->goal = &map.grid[1][1];
+    second->heading = AgentDir::None;
+
+    PlanningContext context;
+    context.agents = &manager;
+    context.map = &map;
+    context.logger = &logger;
+    context.runtime_tuning = &tuning;
+    context.planner_metrics = &metrics;
+
+    std::array<int, MAX_CBS_GROUP> group_ids{};
+    group_ids.fill(-1);
+    group_ids[0] = first->id;
+    group_ids[1] = second->id;
+
+    const CbsSolveResult result = run_partial_CBS(context, group_ids, 2, table, scratch);
+    ASSERT_TRUE(result.solved);
+    EXPECT_GT(result.expansions, 0);
+    EXPECT_FALSE(plans_have_spacetime_conflict(result.plans[first->id], result.plans[second->id], tuning.whca_horizon));
+}
+
+TEST(SimulationEngineTest, InternalConflictResolutionPolicyKeepsSwapTargetsDistinct) {
+    GridMap map;
+    initialize_empty_map(&map);
+
+    AgentManager manager;
+    Agent* first = &manager.agents[0];
+    first->id = 0;
+    first->pos = &map.grid[1][1];
+    first->goal = &map.grid[1][2];
+    first->state = AgentState::GoingToCollect;
+
+    Agent* second = &manager.agents[1];
+    second->id = 1;
+    second->pos = &map.grid[1][2];
+    second->goal = &map.grid[1][1];
+    second->state = AgentState::GoingToCollect;
+
+    AgentOrder order{};
+    order[0] = first->id;
+    order[1] = second->id;
+    for (int index = 2; index < MAX_AGENTS; ++index) {
+        order[index] = index;
+    }
+
+    AgentNodeSlots next_positions{};
+    next_positions[first->id] = second->pos;
+    next_positions[second->id] = first->pos;
+
+    ConflictResolutionPolicy policy;
+    policy.resolve(&manager, order, next_positions);
+
+    EXPECT_EQ(next_positions[first->id], first->pos);
+    EXPECT_EQ(next_positions[second->id], second->pos);
+}
+
+TEST(SimulationEngineTest, InternalOscillationCountsAsStuckProgress) {
+    Simulation sim;
+    ASSERT_TRUE(apply_simulation_config(&sim, make_internal_custom_config({ConfigPhase{PhaseType::Park, 1}})));
+    Agent* agent = find_first_agent_with_home(sim);
+    ASSERT_NE(agent, nullptr);
+
+    Node* origin = agent->pos;
+    Node* neighbor = find_adjacent_walkable_node(sim.map, origin);
+    ASSERT_NE(neighbor, nullptr);
+
+    agent->state = AgentState::ReturningHomeEmpty;
+    agent->goal = agent->home_base;
+
+    AgentNodeSlots next_positions{};
+    AgentNodeSlots previous_positions{};
+
+    previous_positions[agent->id] = origin;
+    next_positions[agent->id] = neighbor;
+    ASSERT_TRUE(agv_apply_moves_and_update_stuck(&sim, next_positions, previous_positions));
+    EXPECT_EQ(agent->last_pos, origin);
+    EXPECT_EQ(agent->stuck_steps, 0);
+
+    previous_positions[agent->id] = neighbor;
+    next_positions[agent->id] = origin;
+    ASSERT_TRUE(agv_apply_moves_and_update_stuck(&sim, next_positions, previous_positions));
+    EXPECT_EQ(agent->oscillation_steps, 1);
+    EXPECT_GT(agent->stuck_steps, 0);
+}
+
+TEST(SimulationEngineTest, InternalFallbackDecisionTracksYieldingAgents) {
+    FallbackDecision decision;
+    EXPECT_FALSE(decision.hasAction());
+
+    decision.yield_agents.set(2);
+    EXPECT_TRUE(decision.hasAction());
+    EXPECT_TRUE(decision.yield_agents.contains(2));
+}
+
+TEST(SimulationEngineTest, InternalCbsGroupLimitMatchesAgentCapacity) {
+    EXPECT_EQ(MAX_CBS_GROUP, MAX_AGENTS);
+}
+
 TEST(SimulationEngineTest, InterleavedDefaultEnginesRemainIndependent) {
     agv::core::SimulationEngine first;
     agv::core::SimulationEngine second;
@@ -393,6 +574,43 @@ TEST(SimulationEngineTest, InternalTaskDispatchAndPhaseAdvancementRemainStable) 
     phase_sim.workload_snapshot = agv_collect_agent_workload(phase_sim.agent_manager);
     agv_update_task_dispatch(&phase_sim);
     EXPECT_TRUE(has_agent_in_state(phase_sim, AgentState::GoingToCollect));
+}
+
+TEST(SimulationEngineTest, InternalMap3ParkingDispatchUsesAllStagedAgents) {
+    Simulation sim;
+    SimulationConfig config = make_internal_custom_config({ConfigPhase{PhaseType::Park, 900}});
+    config.map_id = 3;
+    ASSERT_TRUE(apply_simulation_config(&sim, config));
+    EXPECT_EQ(count_agents_with_position(sim), 16);
+
+    sim.workload_snapshot = agv_collect_agent_workload(sim.agent_manager);
+    agv_update_task_dispatch(&sim);
+
+    EXPECT_EQ(count_agents_in_state(sim, AgentState::GoingToPark), 16);
+}
+
+TEST(SimulationEngineTest, PublicMap3DefaultAlgorithmCompletes900ParkingRequestsWithoutDeadlock) {
+    agv::core::SimulationEngine engine;
+
+    agv::core::ScenarioConfig scenario;
+    scenario.mode = agv::core::SimulationMode::Custom;
+    scenario.speedMultiplier = 0.0;
+    scenario.phases = {{agv::core::PhaseType::Park, 900}};
+
+    engine.setSeed(1);
+    engine.loadMap(3);
+    engine.setAlgorithm(agv::core::PathAlgo::Default);
+    engine.configureScenario(scenario);
+    engine.setSuppressOutput(true);
+
+    engine.runUntilComplete();
+
+    const auto metrics = engine.snapshotMetrics();
+    EXPECT_TRUE(engine.isComplete());
+    EXPECT_EQ(metrics.mapId, 3);
+    EXPECT_EQ(metrics.algorithm, agv::core::PathAlgo::Default);
+    EXPECT_EQ(metrics.tasksCompletedTotal, 900u);
+    EXPECT_EQ(metrics.deadlockCount, 0u);
 }
 
 TEST(SimulationEngineTest, InternalGoalCompletionTransitionsRemainStable) {
@@ -510,6 +728,66 @@ TEST(SimulationEngineTest, InternalChargeLifecycleRemainsStable) {
         sim.logger,
         &sim);
     EXPECT_EQ(agent->state, AgentState::Idle);
+}
+
+TEST(SimulationEngineTest, InternalChargeStationReservationPersistsUntilAgentLeaves) {
+    Simulation sim;
+    ASSERT_TRUE(apply_simulation_config(&sim, make_internal_custom_config({ConfigPhase{PhaseType::Park, 1}})));
+    Agent* agent = find_first_agent_with_home(sim);
+    ASSERT_NE(agent, nullptr);
+    ASSERT_GT(sim.map->num_charge_stations, 0);
+
+    Node* charge_station = sim.map->charge_stations[0];
+    ASSERT_NE(charge_station, nullptr);
+    Node* departure = find_adjacent_walkable_node(sim.map, charge_station);
+    ASSERT_NE(departure, nullptr);
+
+    agent->state = AgentState::Charging;
+    agent->pos = charge_station;
+    agent->goal = nullptr;
+    agent->charge_timer = 1;
+    charge_station->reserved_by_agent = agent->id;
+
+    agent_manager_update_charge_state(sim.agent_manager, sim.map, sim.logger);
+    EXPECT_EQ(agent->state, AgentState::ReturningHomeMaintenance);
+    EXPECT_EQ(charge_station->reserved_by_agent, agent->id);
+
+    AgentNodeSlots next_positions{};
+    AgentNodeSlots previous_positions{};
+    previous_positions[agent->id] = agent->pos;
+    next_positions[agent->id] = departure;
+
+    EXPECT_TRUE(agv_apply_moves_and_update_stuck(&sim, next_positions, previous_positions));
+    EXPECT_EQ(agent->pos, departure);
+    EXPECT_EQ(charge_station->reserved_by_agent, -1);
+}
+
+TEST(SimulationEngineTest, InternalReturningHomeMaintenanceUsesHoldingGoalWithoutIdling) {
+    Simulation sim;
+    ASSERT_TRUE(apply_simulation_config(&sim, make_internal_custom_config({ConfigPhase{PhaseType::Park, 1}})));
+    Agent* agent = find_first_agent_with_home(sim);
+    ASSERT_NE(agent, nullptr);
+    ASSERT_GT(sim.map->num_goals, 0);
+
+    Node* holding_goal = sim.map->goals[0];
+    ASSERT_NE(holding_goal, nullptr);
+    ASSERT_NE(holding_goal, agent->home_base);
+
+    agent->state = AgentState::ReturningHomeMaintenance;
+    agent->goal = holding_goal;
+    agent->pos = holding_goal;
+    holding_goal->reserved_by_agent = agent->id;
+
+    agent_manager_update_state_after_move(
+        sim.agent_manager,
+        sim.scenario_manager,
+        sim.map,
+        sim.logger,
+        &sim);
+
+    EXPECT_EQ(agent->state, AgentState::ReturningHomeMaintenance);
+    EXPECT_EQ(agent->goal, nullptr);
+    EXPECT_EQ(agent->stuck_steps, 0);
 }
 
 }  // namespace

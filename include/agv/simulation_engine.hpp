@@ -79,6 +79,61 @@ struct RenderFrame {
     std::string text;
 };
 
+struct AgentDebugSnapshot {
+    int id{0};
+    char symbol{0};
+    AgentState state{AgentState::Idle};
+    bool isActive{false};
+    int posX{-1};
+    int posY{-1};
+    int lastPosX{-1};
+    int lastPosY{-1};
+    int homeX{-1};
+    int homeY{-1};
+    int goalX{-1};
+    int goalY{-1};
+    double totalDistanceTraveled{0.0};
+    int chargeTimer{0};
+    int actionTimer{0};
+    int stuckSteps{0};
+    int oscillationSteps{0};
+};
+
+struct DeadlockSnapshot {
+    bool hasEvent{false};
+    int step{0};
+    std::uint64_t deadlockCount{0};
+    int phaseIndex{-1};
+    int phaseTaskTarget{0};
+    int phaseTasksCompleted{0};
+    int pendingTaskCount{0};
+    int activeAgentCount{0};
+    int waitingAgentCount{0};
+    int stuckAgentCount{0};
+    int plannerWaitEdges{0};
+    int plannerSccCount{0};
+    int plannerCbsSucceeded{0};
+    int plannerCbsExpansions{0};
+    int whcaHorizon{0};
+    int plannedMoveCount{0};
+    int postRotationMoveCount{0};
+    int postBlockerMoveCount{0};
+    int finalMoveCount{0};
+    std::vector<int> rotationCanceledAgentIds;
+    std::vector<int> blockerCanceledAgentIds;
+    std::vector<int> orderCanceledAgentIds;
+    std::vector<int> participantAgentIds;
+    std::string reason;
+};
+
+struct DebugSnapshot {
+    MetricsSnapshot metrics;
+    RenderFrame frame;
+    std::vector<std::string> recentLogs;
+    std::vector<AgentDebugSnapshot> agents;
+    DeadlockSnapshot deadlock;
+};
+
 class SimulationEngine {
 public:
     SimulationEngine();
@@ -105,6 +160,10 @@ public:
     bool isComplete();
     MetricsSnapshot snapshotMetrics();
     RenderFrame snapshotFrame(bool paused = false);
+    std::vector<std::string> snapshotRecentLogs();
+    DebugSnapshot snapshotDebugState(bool paused = false);
+    std::string buildDebugReport(bool paused = false);
+    bool writeDebugReport(const std::string& path, bool paused = false);
 
 private:
     struct Impl;

@@ -8,7 +8,12 @@
 
 namespace {
 
-constexpr int kReturnHomeHoldingGoalStuckSteps = 12;
+constexpr int kReturnHomeHoldingGoalStuckSteps = 6;
+
+bool can_use_temporary_holding_goal_local(AgentState state) {
+    return state == AgentState::ReturningHomeEmpty ||
+        state == AgentState::ReturningHomeMaintenance;
+}
 
 enum class GoalTypeLocal {
     Parking,
@@ -190,7 +195,7 @@ public:
 
     Node* resolveGoalForCurrentState() const {
         if (!context_.agent) return nullptr;
-        if (context_.agent->state == AgentState::ReturningHomeEmpty &&
+        if (can_use_temporary_holding_goal_local(context_.agent->state) &&
             context_.agent->stuck_steps >= kReturnHomeHoldingGoalStuckSteps) {
             if (Node* holding_goal = selectTemporaryHoldingGoal()) {
                 return holding_goal;
@@ -279,7 +284,7 @@ void release_current_goal_reservation_local(Agent* agent) {
 
 void maybe_request_temporary_holding_goal_local(Agent* agent, Logger* logger) {
     if (!agent ||
-        agent->state != AgentState::ReturningHomeEmpty ||
+        !can_use_temporary_holding_goal_local(agent->state) ||
         agent->stuck_steps < kReturnHomeHoldingGoalStuckSteps ||
         !agent->goal ||
         agent->goal != agent->home_base) {
