@@ -100,6 +100,15 @@ void record_planner_step_results(
     sim->last_planning_time_ms = planning_time_ms;
     sim->total_planning_time_ms += planning_time_ms;
     if (planning_time_ms > sim->max_planning_time_ms) sim->max_planning_time_ms = planning_time_ms;
+    if (metrics.wf_edges_last > 0) {
+        sim->planner_metrics.wf_step_count++;
+    }
+    if (metrics.scc_last > 0) {
+        sim->planner_metrics.scc_step_count++;
+    }
+    if (metrics.cbs_exp_last > 0 || metrics.cbs_ok_last > 0) {
+        sim->planner_metrics.cbs_attempt_sum++;
+    }
     sim->algorithm_operation_count += (unsigned long long)((metrics.wf_edges_last > 0 ? metrics.wf_edges_last : 0) +
         (metrics.scc_last > 0 ? metrics.scc_last : 0) +
         (metrics.cbs_exp_last > 0 ? metrics.cbs_exp_last : 0));
@@ -240,6 +249,14 @@ void Simulation_::resetRuntimeStats() {
     total_movement_cost = 0.0;
     deadlock_count = 0;
     no_movement_streak = 0;
+    max_no_movement_streak = 0;
+    steps_with_movement = 0;
+    stall_step_count = 0;
+    last_active_agent_count = 0;
+    last_waiting_agent_count = 0;
+    last_stuck_agent_count = 0;
+    last_oscillating_agent_count = 0;
+    last_action_agent_count = 0;
     memory_usage_sum_kb = 0.0;
     memory_usage_peak_kb = 0.0;
     memory_samples = 0;
@@ -256,16 +273,32 @@ void Simulation_::resetRuntimeStats() {
     metrics_sum_ttask = 0.0;
     requests_created_total = 0;
     request_wait_ticks_sum = 0;
+    outstanding_task_sum = 0;
+    outstanding_task_samples = 0;
+    outstanding_task_peak = 0;
+    oldest_request_age_last = 0;
+    oldest_request_age_sum = 0;
+    oldest_request_age_peak = 0;
+    algo_nodes_expanded_total = 0;
+    algo_heap_moves_total = 0;
+    algo_nodes_expanded_last_step = 0;
+    algo_heap_moves_last_step = 0;
     algo_generated_nodes_total = 0;
     algo_valid_expansions_total = 0;
     algo_generated_nodes_last_step = 0;
     algo_valid_expansions_last_step = 0;
+    planner_metrics = {};
+    planner_metrics.whca_h = runtime_tuning.whca_horizon;
+    last_deadlock_event = {};
+    workload_snapshot = {};
+    step_scratch = {};
 }
 
 void Simulation_::reportRealtimeDashboard() {
     ScenarioManager* scenario = scenario_manager;
     int steps = (total_executed_steps > 0) ? total_executed_steps : (scenario ? scenario->time_step : 0);
     if (steps <= 0) steps = 1;
+    const RunSummary summary = collect_run_summary(this);
 
     const unsigned long long total_completed = tasks_completed_total;
     int interval_steps = steps - last_report_step;
@@ -274,15 +307,6 @@ void Simulation_::reportRealtimeDashboard() {
 
     const double throughput_avg = (double)total_completed / (double)steps;
     const double throughput_interval = (double)delta_completed / (double)interval_steps;
-    const double avg_planning_ms = (steps > 0) ? total_planning_time_ms / (double)steps : 0.0;
-    const double avg_memory_kb = (memory_samples > 0) ? memory_usage_sum_kb / (double)memory_samples : 0.0;
-
-    int active_agents = 0;
-    if (agent_manager) {
-        for (int i = 0; i < MAX_AGENTS; i++) {
-            if (agent_manager->agents[i].pos) active_agents++;
-        }
-    }
 
     if (suppress_stdout) {
         last_report_completed_tasks = total_completed;
@@ -292,18 +316,30 @@ void Simulation_::reportRealtimeDashboard() {
 
     agv::internal::text::console_print("\n========== Real-Time Dashboard @ step %d ==========\n", steps);
     agv::internal::text::console_print(" Total Physical Time Steps      : %d\n", steps);
-    agv::internal::text::console_print(" Operating AGVs                 : %d\n", active_agents);
+    agv::internal::text::console_print(" Operating AGVs                 : %d\n", summary.active_agents);
     agv::internal::text::console_print(" Tasks Completed (total)        : %llu\n", total_completed);
     agv::internal::text::console_print(" Throughput (total avg)         : %.4f tasks/step\n", throughput_avg);
     agv::internal::text::console_print(" Throughput (last interval)     : %.4f tasks/step over %d steps\n", throughput_interval, interval_steps);
     agv::internal::text::console_print(" Total Computation CPU Time     : %.2f ms\n", total_cpu_time_ms);
-    agv::internal::text::console_print(" Average Planning Time / Step   : %.4f ms\n", avg_planning_ms);
+    agv::internal::text::console_print(" Planning Time (avg/max/share)  : %.4f / %.4f ms / %.2f%%\n",
+        summary.avg_planning_time_ms, summary.max_planning_time_ms, summary.planning_cpu_share * 100.0);
     agv::internal::text::console_print(" Total Task Completion Step     : %d\n", last_task_completion_step);
     agv::internal::text::console_print(" Total Movement Cost            : %.2f cells\n", total_movement_cost);
+    agv::internal::text::console_print(" Movement / Stall Step Ratio    : %.2f%% / %.2f%%\n",
+        summary.movement_step_ratio * 100.0, summary.stall_step_ratio * 100.0);
+    agv::internal::text::console_print(" Outstanding / Queued / InFlight: %d / %d / %d\n",
+        summary.outstanding_task_count, summary.queued_task_count, summary.in_flight_task_count);
+    agv::internal::text::console_print(" Oldest Queued Request Age      : %d step(s) (peak %d)\n",
+        summary.oldest_queued_request_age, summary.peak_oldest_queued_request_age);
     agv::internal::text::console_print(" Requests Created (total)       : %llu\n", requests_created_total);
-    agv::internal::text::console_print(" Request Wait Ticks (sum)       : %llu\n", request_wait_ticks_sum);
+    agv::internal::text::console_print(" Request Wait Ticks (sum/avg)   : %llu / %.2f\n",
+        request_wait_ticks_sum, summary.avg_request_wait_ticks);
     agv::internal::text::console_print(" Process Memory Usage Sum      : %.2f KB (avg %.2f KB / sample, peak %.2f KB)\n",
-        memory_usage_sum_kb, avg_memory_kb, memory_usage_peak_kb);
+        memory_usage_sum_kb, summary.avg_memory_usage_kb, memory_usage_peak_kb);
+    agv::internal::text::console_print(" Last Step Active/Waiting/Stuck : %d / %d / %d\n",
+        last_active_agent_count, last_waiting_agent_count, last_stuck_agent_count);
+    agv::internal::text::console_print(" Last Planner wait/scc/cbs_exp  : %d / %d / %d\n",
+        planner_metrics.wf_edges_last, planner_metrics.scc_last, planner_metrics.cbs_exp_last);
     agv::internal::text::console_print(" Heap Moves (total/last)          : %llu / %llu\n", algo_heap_moves_total, algo_heap_moves_last_step);
     agv::internal::text::console_print(" Generated Nodes (total/last)     : %llu / %llu\n", algo_generated_nodes_total, algo_generated_nodes_last_step);
     agv::internal::text::console_print(" Valid Expansions (total/last)    : %llu / %llu\n", algo_valid_expansions_total, algo_valid_expansions_last_step);

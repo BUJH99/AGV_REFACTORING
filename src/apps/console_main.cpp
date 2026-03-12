@@ -256,8 +256,13 @@ int runHeadless(const CliOptions& options) {
     std::cout
         << "steps=" << metrics.recordedSteps
         << " tasks=" << metrics.tasksCompletedTotal
+        << " throughput=" << metrics.throughput
         << " movement=" << metrics.totalMovementCost
+        << " stall_steps=" << metrics.stallStepCount
         << " deadlocks=" << metrics.deadlockCount
+        << " outstanding=" << metrics.outstandingTaskCount
+        << " cpu_ms=" << metrics.totalCpuTimeMs
+        << " planning_ms=" << metrics.totalPlanningTimeMs
         << '\n';
     return 0;
 }

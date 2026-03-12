@@ -244,6 +244,9 @@ struct Agent_ {
     int metrics_task_start_step{0};
     double metrics_distance_at_start{0.0};
     int metrics_turns_current{0};
+    unsigned long long metrics_completed_tasks_total{0};
+    double metrics_total_distance_all_time{0.0};
+    unsigned long long metrics_idle_steps_total{0};
 };
 
 class AgentManager final {
@@ -325,10 +328,13 @@ struct PlannerMetricsState {
     int whca_h{0};
     int wf_edges_last{0};
     long long wf_edges_sum{0};
+    long long wf_step_count{0};
     int scc_last{0};
     long long scc_sum{0};
+    long long scc_step_count{0};
     int cbs_ok_last{0};
     int cbs_exp_last{0};
+    long long cbs_attempt_sum{0};
     long long cbs_success_sum{0};
     long long cbs_fail_sum{0};
     unsigned long long whca_nodes_expanded_this_step{0};
@@ -349,6 +355,10 @@ struct PlannerMetricsState {
     unsigned long long dstar_valid_expansions_this_step{0};
 
     void resetStepCounters() {
+        wf_edges_last = 0;
+        scc_last = 0;
+        cbs_ok_last = 0;
+        cbs_exp_last = 0;
         whca_nodes_expanded_this_step = 0;
         whca_heap_moves_this_step = 0;
         astar_nodes_expanded_this_step = 0;
@@ -729,6 +739,14 @@ public:
     double total_movement_cost{0.0};
     unsigned long long deadlock_count{0};
     int no_movement_streak{0};
+    int max_no_movement_streak{0};
+    unsigned long long steps_with_movement{0};
+    unsigned long long stall_step_count{0};
+    int last_active_agent_count{0};
+    int last_waiting_agent_count{0};
+    int last_stuck_agent_count{0};
+    int last_oscillating_agent_count{0};
+    int last_action_agent_count{0};
     double memory_usage_sum_kb{0.0};
     double memory_usage_peak_kb{0.0};
     int memory_samples{0};
@@ -745,6 +763,12 @@ public:
     double metrics_sum_ttask{0.0};
     unsigned long long requests_created_total{0};
     unsigned long long request_wait_ticks_sum{0};
+    unsigned long long outstanding_task_sum{0};
+    unsigned long long outstanding_task_samples{0};
+    int outstanding_task_peak{0};
+    int oldest_request_age_last{0};
+    unsigned long long oldest_request_age_sum{0};
+    int oldest_request_age_peak{0};
     unsigned long long algo_nodes_expanded_total{0};
     unsigned long long algo_heap_moves_total{0};
     unsigned long long algo_nodes_expanded_last_step{0};

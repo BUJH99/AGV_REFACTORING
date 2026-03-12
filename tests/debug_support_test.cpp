@@ -54,6 +54,10 @@ TEST(DebugSupportTest, PublicDebugSnapshotCapturesLogsAgentsAndFrame) {
     EXPECT_FALSE(snapshot.recentLogs.empty());
     EXPECT_LE(snapshot.recentLogs.size(), static_cast<std::size_t>(LOG_BUFFER_LINES));
     EXPECT_FALSE(snapshot.agents.empty());
+    EXPECT_GE(snapshot.runtime.currentStep, 1);
+    EXPECT_GE(snapshot.runtime.lastStepCpuTimeMs, 0.0);
+    EXPECT_GE(snapshot.runtime.plannedMoveCount, snapshot.runtime.finalMoveCount);
+    EXPECT_GE(snapshot.runtime.noMovementStreak, 0);
 
     const auto active_agent = std::find_if(
         snapshot.agents.begin(),
@@ -86,6 +90,12 @@ TEST(DebugSupportTest, DebugReportCanBeWrittenToDisk) {
     input.close();
 
     EXPECT_NE(contents.find("Simulation Debug Report"), std::string::npos);
+    EXPECT_NE(contents.find("Runtime Snapshot"), std::string::npos);
+    EXPECT_NE(contents.find("Tasks/AGV"), std::string::npos);
+    EXPECT_NE(contents.find("AGV Fairness"), std::string::npos);
+    EXPECT_NE(contents.find("cv/min-max"), std::string::npos);
+    EXPECT_NE(contents.find("AGV A : tasks="), std::string::npos);
+    EXPECT_NE(contents.find("Planner Derived KPIs"), std::string::npos);
     EXPECT_NE(contents.find("Recent Logs"), std::string::npos);
     EXPECT_NE(contents.find("Agent Snapshots"), std::string::npos);
     EXPECT_NE(contents.find("Render Frame"), std::string::npos);

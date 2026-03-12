@@ -19,6 +19,9 @@ AgentManager::AgentManager() {
         agents[i].metrics_task_start_step = 0;
         agents[i].metrics_distance_at_start = 0.0;
         agents[i].metrics_turns_current = 0;
+        agents[i].metrics_completed_tasks_total = 0;
+        agents[i].metrics_total_distance_all_time = 0.0;
+        agents[i].metrics_idle_steps_total = 0;
     }
 }
 
@@ -45,6 +48,7 @@ void metrics_finalize_task_if_active_local(Simulation* sim, Agent* agent) {
     sim->metrics_sum_dmove += d_move;
     sim->metrics_sum_turns += turns;
     sim->metrics_sum_ttask += t_task;
+    agent->metrics_completed_tasks_total++;
     agent->metrics_task_active = false;
     agent->metrics_turns_current = 0;
 }

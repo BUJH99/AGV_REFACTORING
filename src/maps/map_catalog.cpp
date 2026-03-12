@@ -180,6 +180,9 @@ static void agent_manager_reset_for_new_map(AgentManager* am) {
         am->agents[i].metrics_task_start_step = 0;
         am->agents[i].metrics_distance_at_start = 0.0;
         am->agents[i].metrics_turns_current = 0;
+        am->agents[i].metrics_completed_tasks_total = 0;
+        am->agents[i].metrics_total_distance_all_time = 0.0;
+        am->agents[i].metrics_idle_steps_total = 0;
     }
     am->total_cars_parked = 0;
 }

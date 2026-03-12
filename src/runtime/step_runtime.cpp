@@ -1,5 +1,6 @@
 #define _CRT_SECURE_NO_WARNINGS
 
+#include <algorithm>
 #include <ctime>
 #include <string>
 
@@ -140,6 +141,157 @@ bool any_goal_action_in_progress_local(const AgentManager* manager) {
     return false;
 }
 
+int count_in_flight_tasks_local(const AgentManager* manager) {
+    if (!manager) {
+        return 0;
+    }
+
+    int count = 0;
+    for (int index = 0; index < MAX_AGENTS; ++index) {
+        const AgentState state = manager->agents[index].state;
+        if (state == AgentState::GoingToPark ||
+            state == AgentState::ReturningHomeEmpty ||
+            state == AgentState::GoingToCollect ||
+            state == AgentState::ReturningWithCar) {
+            count++;
+        }
+    }
+
+    return count;
+}
+
+int current_phase_remaining_tasks_local(const Simulation* sim) {
+    if (!sim || !sim->scenario_manager) {
+        return 0;
+    }
+
+    const ScenarioManager* scenario = sim->scenario_manager;
+    if (scenario->mode != SimulationMode::Custom ||
+        scenario->current_phase_index < 0 ||
+        scenario->current_phase_index >= scenario->num_phases) {
+        return 0;
+    }
+
+    const DynamicPhase& phase = scenario->phases[scenario->current_phase_index];
+    return std::max(phase.task_count - scenario->tasks_completed_in_phase, 0);
+}
+
+int current_oldest_request_age_local(const ScenarioManager* scenario) {
+    if (!scenario || scenario->task_queue.empty()) {
+        return 0;
+    }
+
+    int oldest_age = 0;
+    for (const TaskNode& task : scenario->task_queue) {
+        const int age = std::max(scenario->time_step - task.created_at_step, 0);
+        if (age > oldest_age) {
+            oldest_age = age;
+        }
+    }
+
+    return oldest_age;
+}
+
+int current_outstanding_task_count_local(const Simulation* sim) {
+    if (!sim || !sim->scenario_manager) {
+        return 0;
+    }
+
+    const ScenarioManager* scenario = sim->scenario_manager;
+    if (scenario->mode == SimulationMode::Custom) {
+        return current_phase_remaining_tasks_local(sim);
+    }
+
+    return scenario->task_count + count_in_flight_tasks_local(sim->agent_manager);
+}
+
+void record_runtime_backlog_snapshot_local(Simulation* sim) {
+    if (!sim || !sim->scenario_manager) {
+        return;
+    }
+
+    const int outstanding = current_outstanding_task_count_local(sim);
+    sim->outstanding_task_sum += static_cast<unsigned long long>(outstanding);
+    sim->outstanding_task_samples++;
+    if (outstanding > sim->outstanding_task_peak) {
+        sim->outstanding_task_peak = outstanding;
+    }
+
+    const int oldest_age = current_oldest_request_age_local(sim->scenario_manager);
+    sim->oldest_request_age_last = oldest_age;
+    sim->oldest_request_age_sum += static_cast<unsigned long long>(oldest_age);
+    if (oldest_age > sim->oldest_request_age_peak) {
+        sim->oldest_request_age_peak = oldest_age;
+    }
+}
+
+void record_step_agent_state_local(
+    Simulation* sim,
+    const AgentNodeSlots& next_positions,
+    const AgentNodeSlots& previous_positions) {
+    if (!sim || !sim->agent_manager) {
+        return;
+    }
+
+    sim->last_active_agent_count = 0;
+    sim->last_waiting_agent_count = 0;
+    sim->last_stuck_agent_count = 0;
+    sim->last_oscillating_agent_count = 0;
+    sim->last_action_agent_count = 0;
+
+    for (int index = 0; index < MAX_AGENTS; ++index) {
+        const Agent& agent = sim->agent_manager->agents[index];
+        if (agent_has_goal_action_in_progress_local(&agent)) {
+            sim->last_action_agent_count++;
+        }
+        if (!agent_is_active_for_deadlock_local(&agent)) {
+            continue;
+        }
+
+        sim->last_active_agent_count++;
+        if (next_positions[index] == previous_positions[index]) {
+            sim->last_waiting_agent_count++;
+        }
+        if (agent.stuck_steps > 0) {
+            sim->last_stuck_agent_count++;
+        }
+        if (agent.oscillation_steps > 0) {
+            sim->last_oscillating_agent_count++;
+        }
+    }
+}
+
+void mark_idle_agents_at_step_start_local(
+    const AgentManager* manager,
+    std::array<unsigned char, MAX_AGENTS>& idle_flags) {
+    idle_flags.fill(0);
+    if (!manager) {
+        return;
+    }
+
+    for (int index = 0; index < MAX_AGENTS; ++index) {
+        const Agent& agent = manager->agents[index];
+        if (agent.pos && agent.state == AgentState::Idle) {
+            idle_flags[index] = 1;
+        }
+    }
+}
+
+void record_idle_agents_that_remained_idle_local(
+    AgentManager* manager,
+    const std::array<unsigned char, MAX_AGENTS>& idle_flags) {
+    if (!manager) {
+        return;
+    }
+
+    for (int index = 0; index < MAX_AGENTS; ++index) {
+        Agent& agent = manager->agents[index];
+        if (idle_flags[index] != 0 && agent.pos && agent.state == AgentState::Idle) {
+            agent.metrics_idle_steps_total++;
+        }
+    }
+}
+
 void append_unique_agent_id_local(std::array<int, MAX_AGENTS>& ids, int& count, int agent_id) {
     if (count >= MAX_AGENTS) {
         return;
@@ -238,7 +390,7 @@ void record_deadlock_event_local(
     event.step = sim->scenario_manager->time_step + 1;
     event.deadlock_count = sim->deadlock_count;
     event.phase_index = sim->scenario_manager->current_phase_index;
-    event.pending_task_count = sim->scenario_manager->task_count;
+    event.pending_task_count = current_outstanding_task_count_local(sim);
     event.planner_wait_edges = sim->planner_metrics.wf_edges_last;
     event.planner_scc_count = sim->planner_metrics.scc_last;
     event.planner_cbs_succeeded = sim->planner_metrics.cbs_ok_last;
@@ -362,6 +514,8 @@ public:
 
         StepExecutionFrame frame = begin_frame(sim);
         agent_manager_update_charge_state(sim->agent_manager, sim->map, sim->logger);
+        std::array<unsigned char, MAX_AGENTS> idle_agents_at_step_start{};
+        mark_idle_agents_at_step_start_local(sim->agent_manager, idle_agents_at_step_start);
         agv_update_task_dispatch(sim);
 
         StepScratch& scratch = sim->step_scratch;
@@ -371,6 +525,7 @@ public:
 
         const bool moved_this_step = agv_apply_moves_and_update_stuck(sim, next_positions, previous_positions);
         finalize_move_state(sim, frame.step_label);
+        record_idle_agents_that_remained_idle_local(sim->agent_manager, idle_agents_at_step_start);
         finalize_frame(sim, frame, moved_this_step, is_paused);
     }
 
@@ -506,8 +661,10 @@ private:
         }
 
         record_step_phase_accounting(sim, frame, step_time_ms);
+        record_step_agent_state_local(sim, sim->step_scratch.next_positions, sim->step_scratch.previous_positions);
         agv_update_deadlock_counter(sim, sim->step_scratch.next_positions, moved_this_step, frame.is_custom_mode);
         agv_accumulate_wait_ticks_if_realtime(sim);
+        record_runtime_backlog_snapshot_local(sim);
         if (frame.step_label == 1 || (frame.step_label % kMemorySampleIntervalSteps) == 0) {
             sim->collectMemorySampleAlgo();
             sim->collectMemorySample();
@@ -541,6 +698,7 @@ bool agv_apply_moves_and_update_stuck(Simulation* sim, AgentNodeSlots& next_posi
                     current->reserved_by_agent = -1;
                 }
                 agent->total_distance_traveled += 1.0;
+                agent->metrics_total_distance_all_time += 1.0;
                 sim->total_movement_cost += 1.0;
                 moved_this_step = true;
                 agent->last_pos = current;
@@ -569,6 +727,7 @@ bool agv_apply_moves_and_update_stuck(Simulation* sim, AgentNodeSlots& next_posi
 void agv_update_deadlock_counter(Simulation* sim, const AgentNodeSlots& next_positions, bool moved_this_step, bool is_custom_mode) {
     ScenarioManager* scenario = sim->scenario_manager;
     if (moved_this_step) {
+        sim->steps_with_movement++;
         sim->no_movement_streak = 0;
         return;
     }
@@ -592,6 +751,10 @@ void agv_update_deadlock_counter(Simulation* sim, const AgentNodeSlots& next_pos
     }
 
     sim->no_movement_streak++;
+    sim->stall_step_count++;
+    if (sim->no_movement_streak > sim->max_no_movement_streak) {
+        sim->max_no_movement_streak = sim->no_movement_streak;
+    }
     if (sim->no_movement_streak == DEADLOCK_THRESHOLD) {
         sim->deadlock_count++;
         record_deadlock_event_local(sim, next_positions, is_custom_mode);

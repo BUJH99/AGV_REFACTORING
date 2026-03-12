@@ -72,6 +72,69 @@ TEST(SimulationEngineTest, HeadlessCustomScenarioProducesMetricsAndFrame) {
     const auto metrics = run_headless_custom_once(engine, agv::core::PathAlgo::Default);
     EXPECT_GT(metrics.recordedSteps, 0);
     EXPECT_GE(metrics.tasksCompletedTotal, 1u);
+    EXPECT_GE(metrics.maxStepCpuTimeMs, metrics.avgCpuTimeMs);
+    EXPECT_GE(metrics.maxPlanningTimeMs, metrics.avgPlanningTimeMs);
+    EXPECT_GE(metrics.stepsWithMovement, 1u);
+    EXPECT_LE(metrics.stepsWithMovement, static_cast<std::uint64_t>(metrics.recordedSteps));
+    EXPECT_EQ(metrics.outstandingTaskCount, 0);
+    EXPECT_GT(metrics.avgMovementPerTask, 0.0);
+    EXPECT_GT(metrics.avgTaskSteps, 0.0);
+    EXPECT_GT(metrics.tasksPerAgent, 0.0);
+    EXPECT_GT(metrics.tasksPerCpuSecond, 0.0);
+    EXPECT_GT(metrics.tasksPerPlanningSecond, 0.0);
+    EXPECT_GE(metrics.avgCpuTimePerTaskMs, 0.0);
+    EXPECT_GE(metrics.avgPlanningTimePerTaskMs, 0.0);
+    EXPECT_GE(metrics.nonTaskMovementCost, 0.0);
+    EXPECT_GE(metrics.taskMovementCoverageRatio, 0.0);
+    EXPECT_LE(metrics.taskMovementCoverageRatio, 1.0);
+    EXPECT_GE(metrics.nonTaskMovementRatio, 0.0);
+    EXPECT_LE(metrics.nonTaskMovementRatio, 1.0);
+    EXPECT_GT(metrics.avgTaskStepsPerCell, 0.0);
+    EXPECT_GE(metrics.avgTaskTurnsPer100Cells, 0.0);
+    EXPECT_GE(metrics.nodesExpandedPerPlanningMs, 0.0);
+    EXPECT_GE(metrics.heapMovesPerNodeExpanded, 0.0);
+    EXPECT_GE(metrics.avgOutstandingTasksPerAgent, 0.0);
+    EXPECT_GE(metrics.peakOutstandingTasksPerAgent, 0.0);
+    EXPECT_GE(metrics.plannerWaitEdgesPerStep, 0.0);
+    EXPECT_GE(metrics.plannerWaitEdgesPerConflictStep, 0.0);
+    EXPECT_GE(metrics.plannerCycleStepRatio, 0.0);
+    EXPECT_LE(metrics.plannerCycleStepRatio, 1.0);
+    EXPECT_GE(metrics.plannerCbsAttemptRate, 0.0);
+    EXPECT_GE(metrics.plannerCbsFailureRate, 0.0);
+    EXPECT_LE(metrics.plannerCbsFailureRate, 1.0);
+    EXPECT_EQ(metrics.agentFairnessBreakdown.size(), static_cast<std::size_t>(metrics.activeAgents));
+    EXPECT_DOUBLE_EQ(metrics.tasksPerAgentSpread.avg, metrics.tasksPerAgent);
+    EXPECT_DOUBLE_EQ(metrics.distancePerAgentSpread.avg, metrics.totalMovementCost / (double)metrics.activeAgents);
+    double tasks_sum = 0.0;
+    double distance_sum = 0.0;
+    double idle_sum = 0.0;
+    for (const auto& agent : metrics.agentFairnessBreakdown) {
+        tasks_sum += static_cast<double>(agent.tasksCompleted);
+        distance_sum += agent.distanceCells;
+        idle_sum += static_cast<double>(agent.idleSteps);
+    }
+    EXPECT_DOUBLE_EQ(tasks_sum, static_cast<double>(metrics.tasksCompletedTotal));
+    EXPECT_DOUBLE_EQ(distance_sum, metrics.totalMovementCost);
+    EXPECT_DOUBLE_EQ(idle_sum / (double)metrics.activeAgents, metrics.idleStepsPerAgentSpread.avg);
+    EXPECT_GE(metrics.tasksPerAgentSpread.min, 0.0);
+    EXPECT_GE(metrics.distancePerAgentSpread.min, 0.0);
+    EXPECT_GE(metrics.idleStepsPerAgentSpread.min, 0.0);
+    EXPECT_GE(metrics.tasksPerAgentSpread.max, metrics.tasksPerAgentSpread.min);
+    EXPECT_GE(metrics.distancePerAgentSpread.max, metrics.distancePerAgentSpread.min);
+    EXPECT_GE(metrics.idleStepsPerAgentSpread.max, metrics.idleStepsPerAgentSpread.min);
+    EXPECT_GE(metrics.tasksPerAgentSpread.stddev, 0.0);
+    EXPECT_GE(metrics.distancePerAgentSpread.stddev, 0.0);
+    EXPECT_GE(metrics.idleStepsPerAgentSpread.stddev, 0.0);
+    EXPECT_GE(metrics.tasksPerAgentSpread.coefficientOfVariation, 0.0);
+    EXPECT_GE(metrics.distancePerAgentSpread.coefficientOfVariation, 0.0);
+    EXPECT_GE(metrics.idleStepsPerAgentSpread.coefficientOfVariation, 0.0);
+    EXPECT_GE(metrics.tasksPerAgentSpread.minMaxRatio, 0.0);
+    EXPECT_GE(metrics.distancePerAgentSpread.minMaxRatio, 0.0);
+    EXPECT_GE(metrics.idleStepsPerAgentSpread.minMaxRatio, 0.0);
+    EXPECT_LE(metrics.tasksPerAgentSpread.minMaxRatio, 1.0);
+    EXPECT_LE(metrics.distancePerAgentSpread.minMaxRatio, 1.0);
+    EXPECT_LE(metrics.idleStepsPerAgentSpread.minMaxRatio, 1.0);
+    EXPECT_GE(metrics.planningCpuShare, 0.0);
 
     const auto frame = engine.snapshotFrame();
     EXPECT_FALSE(frame.text.empty());
@@ -706,6 +769,23 @@ TEST(SimulationEngineTest, InternalFallbackDecisionTracksYieldingAgents) {
     EXPECT_TRUE(decision.yield_agents.contains(2));
 }
 
+TEST(SimulationEngineTest, InternalPlannerStepResetClearsLastConflictFlags) {
+    PlannerMetricsState metrics;
+    metrics.wf_edges_last = 5;
+    metrics.scc_last = 2;
+    metrics.cbs_ok_last = 1;
+    metrics.cbs_exp_last = 9;
+    metrics.whca_nodes_expanded_this_step = 7;
+
+    metrics.resetStepCounters();
+
+    EXPECT_EQ(metrics.wf_edges_last, 0);
+    EXPECT_EQ(metrics.scc_last, 0);
+    EXPECT_EQ(metrics.cbs_ok_last, 0);
+    EXPECT_EQ(metrics.cbs_exp_last, 0);
+    EXPECT_EQ(metrics.whca_nodes_expanded_this_step, 0u);
+}
+
 TEST(SimulationEngineTest, InternalCbsGroupLimitMatchesAgentCapacity) {
     EXPECT_EQ(MAX_CBS_GROUP, MAX_AGENTS);
 }
@@ -852,6 +932,28 @@ TEST(SimulationEngineTest, InternalDeadlockCounterRequiresSustainedStallBeforeCo
         agv_update_deadlock_counter(&sim, next_positions, false, true);
     }
     EXPECT_EQ(sim.deadlock_count, 2u);
+}
+
+TEST(SimulationEngineTest, InternalDeadlockEventTracksOutstandingCustomPhaseWork) {
+    Simulation sim;
+    ASSERT_TRUE(apply_simulation_config(&sim, make_internal_custom_config({ConfigPhase{PhaseType::Park, 2}})));
+    Agent* agent = find_first_agent_with_home(sim);
+    ASSERT_NE(agent, nullptr);
+    ASSERT_GT(sim.map->num_goals, 0);
+
+    agent->state = AgentState::GoingToPark;
+    agent->goal = sim.map->goals[0];
+
+    AgentNodeSlots next_positions{};
+    next_positions[agent->id] = agent->pos;
+
+    for (int step = 0; step < DEADLOCK_THRESHOLD; ++step) {
+        agv_update_deadlock_counter(&sim, next_positions, false, true);
+    }
+
+    ASSERT_TRUE(sim.last_deadlock_event.valid);
+    EXPECT_EQ(sim.last_deadlock_event.pending_task_count, 2);
+    EXPECT_EQ(sim.last_deadlock_event.phase_task_target, 2);
 }
 
 TEST(SimulationEngineTest, PublicMap3AStarAlgorithmCompletes900ParkingThen900ExitWithoutDeadlock) {
