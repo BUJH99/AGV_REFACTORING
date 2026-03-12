@@ -1,1 +1,0 @@
-steps=20 tasks=0 movement=47 deadlocks=2

@@ -1,21 +1,41 @@
 step_metrics.csv
 *.pyc
+__pycache__/
 *.exe
-step_metrics.csv
-*.pyc
-*.exe
-tests/artifacts/
-tests/golden/
-build-codex/
-agv_debug_report_test.txt
-electron/node_modules/
-electron/out/
+*.obj
+*.o
 
-# 가상환경 제외
-.venv/
-venv/
-ENV/
+# Local tooling
+/.playwright-cli/
+/.venv/
+/venv/
+/ENV/
 
-# Windows 예약어 및 기타 불필요한 파일 제외
+# CMake and build outputs
+/build-codex/
+/build-run/
+/build-test/
+
+# Test and debug artifacts
+/agv_debug_report_test.txt
+/cmd_run.txt
+/full_test_run.log
+/full_test_run.exit
+/single_cbs_test.log
+/single_cbs_test.exit
+/ps_run.log
+/map*.txt
+/libgcc_s_seh-1.dll
+/libstdc++-6.dll
+/libwinpthread-1.dll
+/tests/artifacts/
+/tests/golden/
+
+# Electron generated files
+/electron/node_modules/
+/electron/out/
+/electron/smoke_*.log
+
+# Windows reserved names
 nul
 [Nn]ul

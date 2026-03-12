@@ -37,6 +37,7 @@ const kLogRingSize = 8;
 const kStatusRingSize = 8;
 const kRunStepsPerTick = 1;
 const kRunFrameDelayMs = 48;
+const kMetricHistoryLimit = 72;
 const kChargeDistanceThreshold = 300.0;
 const kImportantLogCategories = new Set(["Control", "Scenario", "Deadlock", "Charge"]);
 const kAgentPalette = [
@@ -65,15 +66,145 @@ const hudKeys = [
   ["Waiting", (frame) => String(frame?.hud?.waitingAgentCount ?? "-")],
 ];
 
-const metricKeys = [
-  ["Tasks completed", (metrics) => String(metrics?.tasksCompletedTotal ?? "-"), "primary"],
-  ["Throughput", (metrics) => formatNumber(metrics?.throughput, 2), "primary"],
-  ["Avg CPU ms", (metrics) => formatNumber(metrics?.avgCpuTimeMs, 2), "neutral"],
-  ["Avg planning ms", (metrics) => formatNumber(metrics?.avgPlanningTimeMs, 2), "primary"],
-  ["Deadlocks", (metrics) => String(metrics?.deadlockCount ?? "-"), "danger"],
-  ["Outstanding", (metrics) => String(metrics?.outstandingTaskCount ?? "-"), "warning"],
-  ["Wait edges / step", (metrics) => formatNumber(metrics?.plannerWaitEdgesPerStep, 2), "warning"],
-  ["Conflict cycles", (metrics) => String(metrics?.plannerConflictCycleTotal ?? "-"), "warning"],
+const trendDeckSpecs = [
+  {
+    key: "throughput",
+    label: "Throughput",
+    tone: "primary",
+    formatter: (value) => formatNumber(value, 2),
+    deltaFormatter: (value) => formatSigned(value, 2),
+    improvesWhen: "up",
+    footnote: "completed tasks per recorded step",
+  },
+  {
+    key: "avgPlanningTimeMs",
+    label: "Avg plan ms",
+    tone: "primary",
+    formatter: (value) => `${formatNumber(value, 2)} ms`,
+    deltaFormatter: (value) => `${formatSigned(value, 2)} ms`,
+    improvesWhen: "down",
+    footnote: "planner cost across the run",
+  },
+  {
+    key: "outstandingTaskCount",
+    label: "Outstanding",
+    tone: "warning",
+    formatter: (value) => formatInteger(value),
+    deltaFormatter: (value) => formatSigned(value, 0),
+    improvesWhen: "down",
+    footnote: "queued plus in-flight backlog",
+  },
+  {
+    key: "plannerWaitEdgesPerStep",
+    label: "Wait edges",
+    tone: "warning",
+    formatter: (value) => formatNumber(value, 2),
+    deltaFormatter: (value) => formatSigned(value, 2),
+    improvesWhen: "down",
+    footnote: "planner dependency edges per step",
+  },
+];
+
+const metricSectionSpecs = [
+  {
+    title: "Operations",
+    copy: "Session-level productivity, movement, and service latency.",
+    items: [
+      { label: "Tasks completed", key: "tasksCompletedTotal", tone: "primary", format: formatInteger },
+      { label: "Tasks / AGV", key: "tasksPerAgent", format: (value) => formatNumber(value, 2) },
+      { label: "Requests created", key: "requestsCreatedTotal", format: formatInteger },
+      { label: "Avg request wait", key: "avgRequestWaitTicks", format: (value) => formatNumber(value, 1) },
+      { label: "Avg movement / task", key: "avgMovementPerTask", format: (value) => formatNumber(value, 2) },
+      { label: "Avg task distance", key: "avgTaskDistance", format: (value) => formatNumber(value, 2) },
+      { label: "Avg task turns", key: "avgTaskTurns", format: (value) => formatNumber(value, 2) },
+      { label: "Avg task steps", key: "avgTaskSteps", format: (value) => formatNumber(value, 2) },
+      { label: "Steps / cell", key: "avgTaskStepsPerCell", format: (value) => formatNumber(value, 2) },
+      { label: "Turns / 100 cells", key: "avgTaskTurnsPer100Cells", format: (value) => formatNumber(value, 2) },
+      { label: "Task movement cover", key: "taskMovementCoverageRatio", format: (value) => formatPercent(value, 1) },
+      { label: "Remaining parked", key: "remainingParkedVehicles", format: formatInteger },
+    ],
+  },
+  {
+    title: "CPU and Memory",
+    copy: "Runtime cost, planning cost, and memory pressure already tracked by the backend.",
+    items: [
+      { label: "Avg CPU ms", key: "avgCpuTimeMs", tone: "primary", format: (value) => `${formatNumber(value, 2)} ms` },
+      { label: "Max CPU ms", key: "maxStepCpuTimeMs", format: (value) => `${formatNumber(value, 2)} ms` },
+      { label: "Total CPU ms", key: "totalCpuTimeMs", format: (value) => `${formatNumber(value, 1)} ms` },
+      { label: "CPU tasks / sec", key: "tasksPerCpuSecond", format: (value) => formatNumber(value, 2) },
+      { label: "Avg planning ms", key: "avgPlanningTimeMs", tone: "primary", format: (value) => `${formatNumber(value, 2)} ms` },
+      { label: "Max planning ms", key: "maxPlanningTimeMs", format: (value) => `${formatNumber(value, 2)} ms` },
+      { label: "Total planning ms", key: "totalPlanningTimeMs", format: (value) => `${formatNumber(value, 1)} ms` },
+      { label: "Planning CPU share", key: "planningCpuShare", format: (value) => formatPercent(value, 1) },
+      { label: "Planning ms / task", key: "avgPlanningTimePerTaskMs", format: (value) => `${formatNumber(value, 2)} ms` },
+      { label: "Planning tasks / sec", key: "tasksPerPlanningSecond", format: (value) => formatNumber(value, 2) },
+      { label: "Avg memory", key: "avgMemoryUsageKb", format: formatMemory },
+      { label: "Peak memory", key: "memoryUsagePeakKb", format: formatMemory },
+      { label: "Memory / AGV", key: "avgMemoryUsagePerAgentKb", format: formatMemory },
+    ],
+  },
+  {
+    title: "Planner Search",
+    copy: "Search-space expansion, heap churn, and validity ratios from the planner backend.",
+    items: [
+      { label: "Nodes expanded", key: "algoNodesExpandedTotal", format: formatInteger },
+      { label: "Generated nodes", key: "algoGeneratedNodesTotal", format: formatInteger },
+      { label: "Valid expansions", key: "algoValidExpansionsTotal", format: formatInteger },
+      { label: "Valid ratio", key: "validExpansionRatio", format: (value) => formatPercent(value, 1) },
+      { label: "Avg nodes / step", key: "avgNodesExpandedPerStep", format: (value) => formatNumber(value, 2) },
+      { label: "Avg nodes / task", key: "avgNodesExpandedPerTask", format: (value) => formatNumber(value, 2) },
+      { label: "Nodes / planning ms", key: "nodesExpandedPerPlanningMs", format: (value) => formatNumber(value, 2) },
+      { label: "Heap moves", key: "algoHeapMovesTotal", format: formatInteger },
+      { label: "Heap / node", key: "heapMovesPerNodeExpanded", format: (value) => formatNumber(value, 2) },
+      { label: "Movement cost", key: "totalMovementCost", format: (value) => formatNumber(value, 2) },
+      { label: "Non-task movement", key: "nonTaskMovementCost", format: (value) => formatNumber(value, 2) },
+      { label: "Non-task ratio", key: "nonTaskMovementRatio", format: (value) => formatPercent(value, 1) },
+    ],
+  },
+  {
+    title: "Queue and Backlog",
+    copy: "Outstanding work, queue age, and how long the system has gone without a completion.",
+    items: [
+      { label: "Recorded steps", key: "recordedSteps", format: formatInteger },
+      { label: "Queued tasks", key: "queuedTaskCount", tone: "warning", format: formatInteger },
+      { label: "In flight tasks", key: "inFlightTaskCount", format: formatInteger },
+      { label: "Outstanding tasks", key: "outstandingTaskCount", tone: "warning", format: formatInteger },
+      { label: "Avg outstanding", key: "avgOutstandingTaskCount", format: (value) => formatNumber(value, 2) },
+      { label: "Peak outstanding", key: "peakOutstandingTaskCount", format: formatInteger },
+      { label: "Avg outstanding / AGV", key: "avgOutstandingTasksPerAgent", format: (value) => formatNumber(value, 2) },
+      { label: "Peak outstanding / AGV", key: "peakOutstandingTasksPerAgent", format: (value) => formatNumber(value, 2) },
+      { label: "Oldest queued age", key: "oldestQueuedRequestAge", format: formatInteger },
+      { label: "Avg oldest age", key: "avgOldestQueuedRequestAge", format: (value) => formatNumber(value, 1) },
+      { label: "Peak oldest age", key: "peakOldestQueuedRequestAge", format: formatInteger },
+      { label: "Last completion step", key: "lastTaskCompletionStep", format: formatInteger },
+      { label: "Steps since completion", key: "stepsSinceLastTaskCompletion", tone: "warning", format: formatInteger },
+    ],
+  },
+  {
+    title: "Stall and Conflict",
+    copy: "Deadlocks, movement stalls, wait edges, cycles, and CBS outcomes.",
+    items: [
+      { label: "Deadlocks", key: "deadlockCount", tone: "danger", format: formatInteger },
+      { label: "Steps with movement", key: "stepsWithMovement", format: formatInteger },
+      { label: "Movement step ratio", key: "movementStepRatio", format: (value) => formatPercent(value, 1) },
+      { label: "Stall steps", key: "stallStepCount", tone: "warning", format: formatInteger },
+      { label: "Stall step ratio", key: "stallStepRatio", format: (value) => formatPercent(value, 1) },
+      { label: "Max no-move streak", key: "maxNoMovementStreak", format: formatInteger },
+      { label: "Wait edges sum", key: "plannerWaitEdgesSum", format: formatInteger },
+      { label: "Wait edges / step", key: "plannerWaitEdgesPerStep", tone: "warning", format: (value) => formatNumber(value, 2) },
+      { label: "Wait edges / conflict", key: "plannerWaitEdgesPerConflictStep", format: (value) => formatNumber(value, 2) },
+      { label: "Wait-edge steps", key: "plannerWaitEdgeStepCount", format: formatInteger },
+      { label: "Conflict cycles", key: "plannerConflictCycleTotal", tone: "warning", format: formatInteger },
+      { label: "Cycle steps", key: "plannerCycleStepCount", format: formatInteger },
+      { label: "Cycle step ratio", key: "plannerCycleStepRatio", format: (value) => formatPercent(value, 1) },
+      { label: "CBS attempts", key: "plannerCbsAttemptCount", format: formatInteger },
+      { label: "CBS success", key: "plannerCbsSuccessCount", format: formatInteger },
+      { label: "CBS failures", key: "plannerCbsFailureCount", tone: "danger", format: formatInteger },
+      { label: "CBS attempt rate", key: "plannerCbsAttemptRate", format: (value) => formatPercent(value, 1) },
+      { label: "CBS success rate", key: "plannerCbsSuccessRate", format: (value) => formatPercent(value, 1) },
+      { label: "CBS failure rate", key: "plannerCbsFailureRate", format: (value) => formatPercent(value, 1) },
+    ],
+  },
 ];
 
 const state = {
@@ -85,6 +216,7 @@ const state = {
   scene: null,
   frame: null,
   metrics: null,
+  metricHistory: [],
   paused: true,
   busy: false,
   running: false,
@@ -138,11 +270,16 @@ const elements = {
   topStatGrid: document.getElementById("top-stat-grid"),
   liveIndicator: document.getElementById("live-indicator"),
   plannerSummaryGrid: document.getElementById("planner-summary-grid"),
+  plannerTrendStrip: document.getElementById("planner-trend-strip"),
   fleetSummary: document.getElementById("fleet-summary"),
   agentRosterList: document.getElementById("agent-roster-list"),
   telemetryContent: document.getElementById("telemetry-content"),
   modalSummaryGrid: document.getElementById("modal-summary-grid"),
-  metricsGrid: document.getElementById("metrics-grid"),
+  metricsHeroGrid: document.getElementById("metrics-hero-grid"),
+  metricsInfographicsGrid: document.getElementById("metrics-infographics-grid"),
+  metricsDistributionGrid: document.getElementById("metrics-distribution-grid"),
+  metricsFairnessList: document.getElementById("metrics-fairness-list"),
+  metricsSections: document.getElementById("metrics-sections"),
   logsList: document.getElementById("logs-list"),
   statusList: document.getElementById("status-list"),
   debugCard: document.getElementById("debug-card"),
@@ -180,6 +317,58 @@ function formatNumber(value, fractionDigits = 1) {
     return "-";
   }
   return Number(value).toFixed(fractionDigits);
+}
+
+function formatSigned(value, fractionDigits = 1) {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return "-";
+  }
+  const numeric = Number(value);
+  const sign = numeric > 0 ? "+" : "";
+  return `${sign}${numeric.toFixed(fractionDigits)}`;
+}
+
+function formatInteger(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return "-";
+  }
+  return Math.round(Number(value)).toLocaleString();
+}
+
+function formatPercent(value, fractionDigits = 1) {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return "-";
+  }
+  return `${(Number(value) * 100).toFixed(fractionDigits)}%`;
+}
+
+function formatMemory(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return "-";
+  }
+  const numeric = Number(value);
+  if (Math.abs(numeric) >= 1024) {
+    return `${(numeric / 1024).toFixed(1)} MB`;
+  }
+  return `${numeric.toFixed(0)} KB`;
+}
+
+function toneColor(tone = "neutral") {
+  switch (tone) {
+    case "primary":
+      return "#2563eb";
+    case "warning":
+      return "#d97706";
+    case "danger":
+      return "#dc3f6a";
+    case "success":
+      return "#0f9b71";
+    case "active":
+      return "#2563eb";
+    case "neutral":
+    default:
+      return "#64748b";
+  }
 }
 
 function titleCase(value) {
@@ -368,6 +557,50 @@ function oscillatingAgentCount() {
   return currentAgents().filter((agent) => agent.waitReason === "oscillating").length;
 }
 
+function fairnessBreakdown() {
+  return Array.isArray(state.metrics?.agentFairnessBreakdown)
+    ? state.metrics.agentFairnessBreakdown
+    : [];
+}
+
+function fairnessForAgent(agentId) {
+  return fairnessBreakdown().find((item) => item.id === agentId) || null;
+}
+
+function maxFairnessValue(key) {
+  return fairnessBreakdown().reduce(
+    (maxValue, item) => Math.max(maxValue, Number(item?.[key] || 0)),
+    0,
+  );
+}
+
+function agentTasksCompleted(agent) {
+  return Number(fairnessForAgent(agent?.id)?.tasksCompleted || 0);
+}
+
+function agentTaskShare(agent) {
+  const total = Math.max(1, Number(state.metrics?.tasksCompletedTotal || 0));
+  return agentTasksCompleted(agent) / total;
+}
+
+function agentTaskThroughput(agent) {
+  const recordedSteps = Math.max(1, Number(state.metrics?.recordedSteps || state.frame?.hud?.step || 0));
+  return (agentTasksCompleted(agent) / recordedSteps) * 100;
+}
+
+function agentTaskLoadTone(agent, maxTasksCompleted = maxFairnessValue("tasksCompleted")) {
+  const relativeLoad = maxTasksCompleted > 0
+    ? agentTasksCompleted(agent) / maxTasksCompleted
+    : 0;
+  if (relativeLoad >= 0.72) {
+    return "primary";
+  }
+  if (relativeLoad >= 0.36) {
+    return "warning";
+  }
+  return "neutral";
+}
+
 function deterministicAgentColor(agent) {
   const seed = Number(agent?.id || 0) + String(agent?.symbol || "").charCodeAt(0);
   return kAgentPalette[Math.abs(seed) % kAgentPalette.length];
@@ -438,6 +671,419 @@ function createSummaryCard(label, value) {
   cardValue.textContent = value;
 
   card.append(cardLabel, cardValue);
+  return card;
+}
+
+function createEmptyState(title, message) {
+  const empty = document.createElement("div");
+  empty.className = "telemetry-empty";
+
+  const heading = document.createElement("h3");
+  heading.textContent = title;
+
+  const copy = document.createElement("p");
+  copy.textContent = message;
+
+  empty.append(heading, copy);
+  return empty;
+}
+
+function historyEntries(limit = kMetricHistoryLimit) {
+  return state.metricHistory.slice(-limit);
+}
+
+function metricSeries(key, limit = kMetricHistoryLimit) {
+  return historyEntries(limit).map((entry) => {
+    const value = Number(entry?.[key]);
+    return Number.isFinite(value) ? value : 0;
+  });
+}
+
+function currentMetricEntry() {
+  return historyEntries(1)[0] || null;
+}
+
+function previousMetricEntry() {
+  const entries = historyEntries(2);
+  return entries.length >= 2 ? entries[0] : null;
+}
+
+function updateMetricHistory(metrics) {
+  state.metrics = metrics || null;
+  if (!metrics) {
+    state.metricHistory = [];
+    return;
+  }
+
+  const snapshot = {
+    ...metrics,
+    frameId: Number(state.frame?.frameId ?? metrics.recordedSteps ?? state.metricHistory.length),
+    step: Number(state.frame?.hud?.step ?? metrics.recordedSteps ?? 0),
+    activeAgentsLive: activeAgentCount(),
+    waitingAgentsLive: waitingAgentCount(),
+    stuckAgentsLive: stuckAgentCount(),
+    oscillatingAgentsLive: oscillatingAgentCount(),
+  };
+
+  const last = state.metricHistory[state.metricHistory.length - 1];
+  if (last && last.frameId === snapshot.frameId && last.step === snapshot.step) {
+    state.metricHistory[state.metricHistory.length - 1] = snapshot;
+  } else {
+    state.metricHistory.push(snapshot);
+  }
+
+  if (state.metricHistory.length > kMetricHistoryLimit) {
+    state.metricHistory = state.metricHistory.slice(-kMetricHistoryLimit);
+  }
+}
+
+function createSparkline(values, tone = "primary", options = {}) {
+  const shell = document.createElement("div");
+  shell.className = "sparkline-shell";
+  const width = options.width || 220;
+  const height = options.height || 58;
+  const padding = 8;
+  shell.style.minHeight = `${height}px`;
+
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("preserveAspectRatio", "none");
+
+  const chartValues = values.length > 1 ? values : [values[0] ?? 0, values[0] ?? 0];
+  const min = Math.min(...chartValues);
+  const max = Math.max(...chartValues);
+  const range = max - min || 1;
+  const stepX = chartValues.length > 1 ? (width - padding * 2) / (chartValues.length - 1) : 0;
+  const points = chartValues.map((value, index) => {
+    const numeric = Number.isFinite(value) ? value : min;
+    return {
+      x: padding + index * stepX,
+      y: height - padding - ((numeric - min) / range) * (height - padding * 2),
+    };
+  });
+
+  [0.25, 0.5, 0.75].forEach((fraction) => {
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    line.setAttribute("x1", String(padding));
+    line.setAttribute("x2", String(width - padding));
+    line.setAttribute("y1", String(padding + (height - padding * 2) * fraction));
+    line.setAttribute("y2", String(padding + (height - padding * 2) * fraction));
+    line.setAttribute("stroke", "rgba(91, 111, 151, 0.14)");
+    line.setAttribute("stroke-width", "1");
+    svg.append(line);
+  });
+
+  const stroke = toneColor(tone);
+  const area = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  area.setAttribute(
+    "d",
+    [
+      `M ${points[0].x} ${height - padding}`,
+      ...points.map((point) => `L ${point.x} ${point.y}`),
+      `L ${points[points.length - 1].x} ${height - padding}`,
+      "Z",
+    ].join(" "),
+  );
+  area.setAttribute("fill", hexToRgba(stroke, 0.14));
+  svg.append(area);
+
+  const polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+  polyline.setAttribute(
+    "points",
+    points.map((point) => `${point.x},${point.y}`).join(" "),
+  );
+  polyline.setAttribute("fill", "none");
+  polyline.setAttribute("stroke", stroke);
+  polyline.setAttribute("stroke-width", String(options.strokeWidth || 3));
+  polyline.setAttribute("stroke-linecap", "round");
+  polyline.setAttribute("stroke-linejoin", "round");
+  svg.append(polyline);
+
+  const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+  const lastPoint = points[points.length - 1];
+  dot.setAttribute("cx", String(lastPoint.x));
+  dot.setAttribute("cy", String(lastPoint.y));
+  dot.setAttribute("r", String(options.dotRadius || 3.5));
+  dot.setAttribute("fill", stroke);
+  dot.setAttribute("stroke", "rgba(255, 255, 255, 0.95)");
+  dot.setAttribute("stroke-width", "2");
+  svg.append(dot);
+
+  shell.append(svg);
+  return shell;
+}
+
+function createTrendDelta(spec) {
+  const currentEntry = currentMetricEntry();
+  const previousEntry = previousMetricEntry();
+  const currentValue = Number(currentEntry?.[spec.key]);
+  const previousValue = Number(previousEntry?.[spec.key]);
+
+  const delta = document.createElement("span");
+  delta.className = "trend-delta flat";
+
+  if (!Number.isFinite(currentValue) || !Number.isFinite(previousValue)) {
+    delta.textContent = "warming up";
+    return delta;
+  }
+
+  const diff = currentValue - previousValue;
+  if (Math.abs(diff) < 0.0001) {
+    delta.textContent = "flat";
+    return delta;
+  }
+
+  const better = spec.improvesWhen === "down" ? diff < 0 : diff > 0;
+  delta.className = `trend-delta ${better ? "up" : "down"}`;
+  delta.textContent = `${spec.deltaFormatter(diff)} vs prev`;
+  return delta;
+}
+
+function createTrendCard(spec, compact = false) {
+  const card = document.createElement("div");
+  card.className = compact ? "planner-trend-card" : "metric-trend-card";
+  if (!compact) {
+    card.dataset.tone = spec.tone;
+  }
+
+  const head = document.createElement("div");
+  head.className = compact ? "planner-trend-head" : "metric-trend-head";
+
+  const label = document.createElement("div");
+  label.className = compact ? "planner-trend-label" : "metric-trend-label";
+  label.textContent = spec.label;
+
+  const value = document.createElement("div");
+  value.className = compact ? "planner-trend-value" : "metric-trend-value";
+  value.textContent = spec.formatter(state.metrics?.[spec.key]);
+
+  head.append(label, createTrendDelta(spec));
+
+  card.append(head, value);
+  card.append(
+    createSparkline(metricSeries(spec.key), spec.tone, {
+      height: compact ? 52 : 82,
+      strokeWidth: compact ? 2.6 : 3.2,
+      dotRadius: compact ? 3 : 4,
+    }),
+  );
+
+  if (!compact) {
+    const foot = document.createElement("div");
+    foot.className = "metric-trend-foot";
+    foot.textContent = spec.footnote;
+    card.append(foot);
+  }
+
+  return card;
+}
+
+function createProgressRow(label, valueText, fraction, tone = "primary") {
+  const row = document.createElement("div");
+  row.className = "progress-row";
+
+  const head = document.createElement("div");
+  head.className = "progress-head";
+
+  const labelNode = document.createElement("div");
+  labelNode.className = "progress-label";
+  labelNode.textContent = label;
+
+  const valueNode = document.createElement("div");
+  valueNode.className = "progress-value";
+  valueNode.textContent = valueText;
+
+  const track = document.createElement("div");
+  track.className = "progress-track";
+
+  const fill = document.createElement("div");
+  fill.className = `progress-fill ${tone}`;
+  fill.style.width = `${Math.max(0, Math.min(100, Number(fraction || 0) * 100))}%`;
+  track.append(fill);
+
+  head.append(labelNode, valueNode);
+  row.append(head, track);
+  return row;
+}
+
+function createInfographicCard(title, copy, rows) {
+  const card = document.createElement("div");
+  card.className = "infographic-card";
+
+  const heading = document.createElement("div");
+
+  const titleNode = document.createElement("div");
+  titleNode.className = "infographic-title";
+  titleNode.textContent = title;
+
+  const copyNode = document.createElement("div");
+  copyNode.className = "infographic-copy";
+  copyNode.textContent = copy;
+
+  heading.append(titleNode, copyNode);
+
+  const list = document.createElement("div");
+  list.className = "progress-list";
+  rows.forEach((row) => list.append(row));
+
+  card.append(heading, list);
+  return card;
+}
+
+function createDistributionStat(label, value) {
+  const stat = document.createElement("div");
+  stat.className = "distribution-stat";
+
+  const statLabel = document.createElement("div");
+  statLabel.className = "distribution-stat-label";
+  statLabel.textContent = label;
+
+  const statValue = document.createElement("div");
+  statValue.className = "distribution-stat-value";
+  statValue.textContent = value;
+
+  stat.append(statLabel, statValue);
+  return stat;
+}
+
+function createDistributionCard(title, copy, summary, formatter) {
+  const card = document.createElement("div");
+  card.className = "distribution-card";
+
+  const heading = document.createElement("div");
+
+  const titleNode = document.createElement("div");
+  titleNode.className = "distribution-title";
+  titleNode.textContent = title;
+
+  const copyNode = document.createElement("div");
+  copyNode.className = "distribution-copy";
+  copyNode.textContent = copy;
+
+  heading.append(titleNode, copyNode);
+
+  const stats = document.createElement("div");
+  stats.className = "distribution-summary";
+  stats.append(
+    createDistributionStat("Min", formatter(summary?.min)),
+    createDistributionStat("Avg", formatter(summary?.avg)),
+    createDistributionStat("Max", formatter(summary?.max)),
+  );
+
+  const band = document.createElement("div");
+  band.className = "distribution-band";
+
+  const fill = document.createElement("div");
+  fill.className = "distribution-band-fill";
+  const max = Math.max(0, Number(summary?.max || 0));
+  const min = Math.max(0, Number(summary?.min || 0));
+  const avg = Math.max(0, Number(summary?.avg || 0));
+  const minFraction = max > 0 ? min / max : 0;
+  fill.style.left = `${Math.max(0, Math.min(100, minFraction * 100))}%`;
+  fill.style.width = `${Math.max(8, 100 - minFraction * 100)}%`;
+  band.append(fill);
+
+  const avgPin = document.createElement("div");
+  avgPin.className = "distribution-pin";
+  avgPin.style.left = `${Math.max(0, Math.min(100, max > 0 ? (avg / max) * 100 : 0))}%`;
+  band.append(avgPin);
+
+  const meta = document.createElement("div");
+  meta.className = "distribution-meta";
+  meta.append(
+    Object.assign(document.createElement("span"), {
+      textContent: `CV ${formatNumber(summary?.coefficientOfVariation, 2)}`,
+    }),
+    Object.assign(document.createElement("span"), {
+      textContent: `Min/max ${formatNumber(summary?.minMaxRatio, 2)}`,
+    }),
+  );
+
+  card.append(heading, stats, band, meta);
+  return card;
+}
+
+function createFairnessRow(item, maxima) {
+  const row = document.createElement("div");
+  row.className = "fairness-row";
+
+  const head = document.createElement("div");
+  head.className = "fairness-head";
+
+  const titleWrap = document.createElement("div");
+  const title = document.createElement("div");
+  title.className = "fairness-title";
+  title.textContent = `Agent ${item.symbol || "?"}`;
+
+  const subtitle = document.createElement("div");
+  subtitle.className = "fairness-subtitle";
+  subtitle.textContent = `id ${item.id} · tasks ${formatInteger(item.tasksCompleted)} · distance ${formatNumber(item.distanceCells, 1)} · idle ${formatInteger(item.idleSteps)}`;
+
+  titleWrap.append(title, subtitle);
+
+  const swatch = document.createElement("div");
+  swatch.className = "agent-swatch";
+  const color = deterministicAgentColor(item);
+  swatch.style.background = `linear-gradient(135deg, ${color}, ${color}cc)`;
+  swatch.textContent = item.symbol || "?";
+
+  head.append(titleWrap, swatch);
+
+  const meters = document.createElement("div");
+  meters.className = "fairness-meters";
+
+  [
+    ["Tasks", item.tasksCompleted, maxima.tasksCompleted, "primary", formatInteger],
+    ["Distance", item.distanceCells, maxima.distanceCells, "warning", (value) => formatNumber(value, 1)],
+    ["Idle", item.idleSteps, maxima.idleSteps, "danger", formatInteger],
+  ].forEach(([label, value, maxValue, tone, formatter]) => {
+    const meterRow = document.createElement("div");
+    meterRow.className = "fairness-meter-row";
+
+    const meterLabel = document.createElement("div");
+    meterLabel.className = "fairness-meter-label";
+    meterLabel.textContent = label;
+
+    const track = document.createElement("div");
+    track.className = "fairness-meter-track";
+
+    const fill = document.createElement("div");
+    fill.className = `fairness-meter-fill ${tone}`;
+    const percent = maxValue > 0 ? (Number(value || 0) / Number(maxValue)) * 100 : 0;
+    fill.style.width = `${percent > 0 ? Math.max(6, percent) : 0}%`;
+    track.append(fill);
+
+    const meterValue = document.createElement("div");
+    meterValue.className = "fairness-meter-value";
+    meterValue.textContent = formatter(value);
+
+    meterRow.append(meterLabel, track, meterValue);
+    meters.append(meterRow);
+  });
+
+  row.append(head, meters);
+  return row;
+}
+
+function createMetricSection(section) {
+  const card = document.createElement("div");
+  card.className = "metric-section";
+
+  const title = document.createElement("div");
+  title.className = "metric-section-title";
+  title.textContent = section.title;
+
+  const copy = document.createElement("div");
+  copy.className = "metric-section-copy";
+  copy.textContent = section.copy;
+
+  const grid = document.createElement("div");
+  grid.className = "metric-section-grid";
+  section.items.forEach((item) => {
+    grid.append(createMetricTile(item.label, item.format(state.metrics?.[item.key]), item.tone || "neutral"));
+  });
+
+  card.append(title, copy, grid);
   return card;
 }
 
@@ -945,27 +1591,46 @@ function renderTopBar() {
 }
 
 function renderPlannerSummary() {
+  elements.plannerSummaryGrid.innerHTML = "";
+  elements.plannerTrendStrip.innerHTML = "";
+
+  if (!state.metrics) {
+    elements.plannerSummaryGrid.append(createMetricTile("Status", "Load a session", "neutral"));
+    return;
+  }
+
   const overlay = state.frame?.plannerOverlay;
   const cards = [
-    ["Avg plan ms", formatNumber(state.metrics?.avgPlanningTimeMs, 2), "primary"],
-    ["Avg CPU ms", formatNumber(state.metrics?.avgCpuTimeMs, 2), "neutral"],
+    ["Avg plan ms", `${formatNumber(state.metrics?.avgPlanningTimeMs, 2)} ms`, "primary"],
+    ["Max plan ms", `${formatNumber(state.metrics?.maxPlanningTimeMs, 2)} ms`, "primary"],
+    ["Avg CPU ms", `${formatNumber(state.metrics?.avgCpuTimeMs, 2)} ms`, "neutral"],
     ["Throughput", formatNumber(state.metrics?.throughput, 2), "primary"],
+    ["Outstanding", formatInteger(state.metrics?.outstandingTaskCount), "warning"],
     ["Deadlocks", String(state.metrics?.deadlockCount ?? "-"), Number(state.metrics?.deadlockCount || 0) > 0 ? "danger" : "neutral"],
     [
       "Wait edges",
-      overlay?.available ? String(overlay.waitEdgeCount) : formatNumber(state.metrics?.plannerWaitEdgesPerStep, 2),
-      Number(overlay?.waitEdgeCount || 0) > 0 ? "warning" : "neutral",
+      overlay?.available
+        ? `${formatInteger(overlay.waitEdgeCount)} live`
+        : formatNumber(state.metrics?.plannerWaitEdgesPerStep, 2),
+      Number(overlay?.waitEdgeCount || state.metrics?.plannerWaitEdgesPerStep || 0) > 0
+        ? "warning"
+        : "neutral",
     ],
     [
       "CBS success",
-      `${state.metrics?.plannerCbsSuccessCount ?? 0}/${state.metrics?.plannerCbsAttemptCount ?? 0}`,
-      "warning",
+      Number(state.metrics?.plannerCbsAttemptCount || 0) > 0
+        ? formatPercent(state.metrics?.plannerCbsSuccessRate, 1)
+        : "0/0",
+      Number(state.metrics?.plannerCbsFailureCount || 0) > 0 ? "warning" : "neutral",
     ],
   ];
 
-  elements.plannerSummaryGrid.innerHTML = "";
   cards.forEach(([label, value, tone]) => {
     elements.plannerSummaryGrid.append(createMetricTile(label, value, tone));
+  });
+
+  trendDeckSpecs.forEach((spec) => {
+    elements.plannerTrendStrip.append(createTrendCard(spec, true));
   });
 }
 
@@ -978,14 +1643,120 @@ function renderModalSummary() {
 }
 
 function renderMetrics() {
-  elements.metricsGrid.innerHTML = "";
-  metricKeys.forEach(([label, getter, tone]) => {
-    elements.metricsGrid.append(createMetricTile(label, String(getter(state.metrics)), tone));
+  if (!state.metrics) {
+    [
+      elements.metricsHeroGrid,
+      elements.metricsInfographicsGrid,
+      elements.metricsDistributionGrid,
+      elements.metricsFairnessList,
+      elements.metricsSections,
+    ].forEach((container) => {
+      container.innerHTML = "";
+      container.append(
+        createEmptyState(
+          "No live metrics yet",
+          "Load a session and advance the simulation to populate this dashboard.",
+        ),
+      );
+    });
+    return;
+  }
+
+  const metrics = state.metrics;
+  const agents = currentAgents();
+  const totalAgents = Math.max(agents.length, Number(metrics.activeAgents || 0), 1);
+  const outstandingPeak = Math.max(1, Number(metrics.peakOutstandingTaskCount || 0), Number(metrics.outstandingTaskCount || 0));
+  const oldestPeak = Math.max(1, Number(metrics.peakOldestQueuedRequestAge || 0), Number(metrics.oldestQueuedRequestAge || 0));
+
+  elements.metricsHeroGrid.innerHTML = "";
+  trendDeckSpecs.forEach((spec) => {
+    elements.metricsHeroGrid.append(createTrendCard(spec));
+  });
+
+  elements.metricsInfographicsGrid.innerHTML = "";
+  elements.metricsInfographicsGrid.append(
+    createInfographicCard("Queue pressure", "Backlog growth, in-flight work, and request age.", [
+      createProgressRow("Queued", formatInteger(metrics.queuedTaskCount), Number(metrics.queuedTaskCount || 0) / outstandingPeak, "warning"),
+      createProgressRow("In flight", formatInteger(metrics.inFlightTaskCount), Number(metrics.inFlightTaskCount || 0) / outstandingPeak, "primary"),
+      createProgressRow("Outstanding", formatInteger(metrics.outstandingTaskCount), Number(metrics.outstandingTaskCount || 0) / outstandingPeak, "warning"),
+      createProgressRow("Oldest age", formatInteger(metrics.oldestQueuedRequestAge), Number(metrics.oldestQueuedRequestAge || 0) / oldestPeak, "danger"),
+    ]),
+  );
+  elements.metricsInfographicsGrid.append(
+    createInfographicCard("Planner health", "Success ratios and execution quality from the backend planner.", [
+      createProgressRow("Planning CPU", formatPercent(metrics.planningCpuShare, 1), metrics.planningCpuShare, "primary"),
+      createProgressRow("Valid expansions", formatPercent(metrics.validExpansionRatio, 1), metrics.validExpansionRatio, "success"),
+      createProgressRow(
+        "CBS success",
+        Number(metrics.plannerCbsAttemptCount || 0) > 0 ? formatPercent(metrics.plannerCbsSuccessRate, 1) : "0/0",
+        Number(metrics.plannerCbsAttemptCount || 0) > 0 ? Number(metrics.plannerCbsSuccessRate || 0) : 0,
+        "primary",
+      ),
+      createProgressRow("Movement steps", formatPercent(metrics.movementStepRatio, 1), metrics.movementStepRatio, "success"),
+    ]),
+  );
+  elements.metricsInfographicsGrid.append(
+    createInfographicCard("Fleet activity", "Real-time AGV distribution derived from the live frame.", [
+      createProgressRow("Active", `${activeAgentCount()}/${totalAgents}`, activeAgentCount() / totalAgents, "primary"),
+      createProgressRow("Waiting", `${waitingAgentCount()}/${totalAgents}`, waitingAgentCount() / totalAgents, "warning"),
+      createProgressRow("Stuck", `${stuckAgentCount()}/${totalAgents}`, stuckAgentCount() / totalAgents, "danger"),
+      createProgressRow("Oscillating", `${oscillatingAgentCount()}/${totalAgents}`, oscillatingAgentCount() / totalAgents, "warning"),
+    ]),
+  );
+
+  elements.metricsDistributionGrid.innerHTML = "";
+  elements.metricsDistributionGrid.append(
+    createDistributionCard(
+      "Tasks per AGV",
+      "Fairness spread for completed task allocation.",
+      metrics.tasksPerAgentSpread,
+      (value) => formatNumber(value, 2),
+    ),
+    createDistributionCard(
+      "Distance per AGV",
+      "How evenly travel distance is being shared across the fleet.",
+      metrics.distancePerAgentSpread,
+      (value) => formatNumber(value, 1),
+    ),
+    createDistributionCard(
+      "Idle steps per AGV",
+      "Fleet idle-time dispersion highlights stranded or underused agents.",
+      metrics.idleStepsPerAgentSpread,
+      formatInteger,
+    ),
+  );
+
+  elements.metricsFairnessList.innerHTML = "";
+  const fairness = Array.isArray(metrics.agentFairnessBreakdown)
+    ? [...metrics.agentFairnessBreakdown].sort((left, right) => left.id - right.id)
+    : [];
+  if (fairness.length === 0) {
+    elements.metricsFairnessList.append(
+      createEmptyState("No fleet breakdown", "Agent fairness data appears after the backend reports active agents."),
+    );
+  } else {
+    const maxima = fairness.reduce(
+      (acc, item) => ({
+        tasksCompleted: Math.max(acc.tasksCompleted, Number(item.tasksCompleted || 0)),
+        distanceCells: Math.max(acc.distanceCells, Number(item.distanceCells || 0)),
+        idleSteps: Math.max(acc.idleSteps, Number(item.idleSteps || 0)),
+      }),
+      { tasksCompleted: 0, distanceCells: 0, idleSteps: 0 },
+    );
+    fairness.forEach((item) => {
+      elements.metricsFairnessList.append(createFairnessRow(item, maxima));
+    });
+  }
+
+  elements.metricsSections.innerHTML = "";
+  metricSectionSpecs.forEach((section) => {
+    elements.metricsSections.append(createMetricSection(section));
   });
 }
 
 function renderRoster() {
   const agents = currentAgents();
+  const maxTasksCompleted = maxFairnessValue("tasksCompleted");
   elements.agentRosterList.innerHTML = "";
 
   if (agents.length === 0) {
@@ -1064,13 +1835,66 @@ function renderRoster() {
     stateText.className = "roster-meta";
     stateText.textContent = titleCase(agent.state || "idle");
 
+    const signalGroup = document.createElement("div");
+    signalGroup.className = "roster-signal-group";
+
+    const taskTone = agentTaskLoadTone(agent, maxTasksCompleted);
+
+    const taskChip = document.createElement("span");
+    taskChip.className = `task-chip ${taskTone}`;
+    taskChip.textContent = `TASK ${formatInteger(agentTasksCompleted(agent))}`;
+
     const batteryChip = document.createElement("span");
     batteryChip.className = `battery-chip ${chargeReserveTone(agent)}`;
     batteryChip.textContent = `${
       (agent.chargeTimer || 0) > 0 || agent.state === "charging" ? "CHG" : "BAT"
     } ${chargeReservePercent(agent)}%`;
 
-    statusRow.append(stateText, batteryChip);
+    signalGroup.append(taskChip, batteryChip);
+    statusRow.append(stateText, signalGroup);
+
+    const taskRail = document.createElement("div");
+    taskRail.className = "roster-task-rail";
+
+    const taskHead = document.createElement("div");
+    taskHead.className = "roster-task-head";
+
+    const taskLabel = document.createElement("span");
+    taskLabel.className = "roster-task-label";
+    taskLabel.textContent = "Task throughput";
+
+    const taskValue = document.createElement("span");
+    taskValue.className = "roster-task-value";
+    taskValue.textContent = `${formatNumber(agentTaskThroughput(agent), 2)} / 100 step`;
+
+    taskHead.append(taskLabel, taskValue);
+
+    const taskMeter = document.createElement("div");
+    taskMeter.className = "roster-task-meter";
+
+    const taskFill = document.createElement("div");
+    taskFill.className = `roster-task-fill ${taskTone}`;
+    taskFill.style.width = `${Math.max(
+      0,
+      Math.min(
+        100,
+        maxTasksCompleted > 0
+          ? (agentTasksCompleted(agent) / maxTasksCompleted) * 100
+          : 0,
+      ),
+    )}%`;
+    taskMeter.append(taskFill);
+
+    const taskMeta = document.createElement("div");
+    taskMeta.className = "roster-task-meta";
+
+    const shareText = document.createElement("span");
+    shareText.textContent = `share ${formatPercent(agentTaskShare(agent), 0)}`;
+
+    const countText = document.createElement("span");
+    countText.textContent = `${formatInteger(agentTasksCompleted(agent))} completed`;
+
+    taskMeta.append(shareText, countText);
 
     const battery = document.createElement("div");
     battery.className = "roster-battery";
@@ -1094,7 +1918,8 @@ function renderRoster() {
     meter.append(fill);
 
     battery.append(batteryMeta, meter);
-    body.append(statusRow, battery);
+    taskRail.append(taskHead, taskMeter, taskMeta);
+    body.append(statusRow, taskRail, battery);
     button.append(head, body);
     elements.agentRosterList.append(button);
   });
@@ -1756,24 +2581,26 @@ function applyFrame(frame) {
   normalizeSelection();
 }
 
-function handleSync(sync) {
+function applySync(sync) {
   if (!sync) {
-    renderAll();
     return;
   }
-
   if (sync.kind === "frame") {
     applyFrame(sync.frame);
   } else if (sync.kind === "delta") {
     applyDelta(sync.delta);
   }
+}
+
+function handleSync(sync) {
+  applySync(sync);
   renderAll();
 }
 
 function clearSessionView() {
   state.scene = null;
   state.frame = null;
-  state.metrics = null;
+  updateMetricHistory(null);
   state.logs = [];
   state.lastLogSeq = 0;
   state.running = false;
@@ -1841,7 +2668,7 @@ async function startSession() {
   const response = await window.agvShell.startSession({ launchConfig, captureLevel });
 
   state.scene = response.scene;
-  state.metrics = response.metrics;
+  state.metricHistory = [];
   state.logs = [];
   state.lastLogSeq = 0;
   state.running = false;
@@ -1849,6 +2676,7 @@ async function startSession() {
   state.selectedAgentId = null;
   state.hoveredAgentId = null;
   applyFrame(response.frame);
+  updateMetricHistory(response.metrics);
   setSessionState(response.session.sessionId, response.captureLevel);
   await ensurePaused(true);
   renderAll();
@@ -1867,10 +2695,11 @@ async function advance(payload, options = {}) {
     captureLevel: elements.captureLevel.value || state.captureLevel,
     ...payload,
   });
-  state.metrics = response.metrics;
   state.paused = Boolean(response.advance.paused);
   setSessionState(state.sessionId, response.advance.captureLevel);
-  handleSync(response.sync);
+  applySync(response.sync);
+  updateMetricHistory(response.metrics);
+  renderAll();
 
   if (!options.silent) {
     appendStatus(

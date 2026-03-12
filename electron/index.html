@@ -178,16 +178,6 @@
         </div>
 
         <aside class="left-stack ui-layer">
-          <section class="glass-card planner-card">
-            <div class="section-head">
-              <div>
-                <p class="section-kicker">Planning</p>
-                <h2>Planner Summary</h2>
-              </div>
-            </div>
-            <div id="planner-summary-grid" class="planner-summary-grid"></div>
-          </section>
-
           <section class="glass-card roster-card">
             <div class="section-head">
               <div>
@@ -233,6 +223,17 @@
             <pre id="debug-output" class="debug-output hidden">
 No debug snapshot requested yet.</pre
             >
+          </section>
+
+          <section class="glass-card planner-card">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">Planning</p>
+                <h2>Planner Summary</h2>
+              </div>
+            </div>
+            <div id="planner-summary-grid" class="planner-summary-grid"></div>
+            <div id="planner-trend-strip" class="planner-trend-strip"></div>
           </section>
         </aside>
 
@@ -446,11 +447,42 @@ No debug snapshot requested yet.</pre
           <section class="glass-subcard">
             <div class="section-head">
               <div>
+                <p class="section-kicker">Realtime</p>
+                <h3>Live trend deck</h3>
+              </div>
+            </div>
+            <div id="metrics-hero-grid" class="metrics-hero-grid"></div>
+          </section>
+
+          <section class="glass-subcard">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">Infographics</p>
+                <h3>Planner and fleet health</h3>
+              </div>
+            </div>
+            <div id="metrics-infographics-grid" class="metrics-infographics-grid"></div>
+          </section>
+
+          <section class="glass-subcard">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">Balance</p>
+                <h3>Fleet fairness snapshot</h3>
+              </div>
+            </div>
+            <div id="metrics-distribution-grid" class="metrics-distribution-grid"></div>
+            <div id="metrics-fairness-list" class="metrics-fairness-list"></div>
+          </section>
+
+          <section class="glass-subcard">
+            <div class="section-head">
+              <div>
                 <p class="section-kicker">System</p>
                 <h3>Planner and runtime metrics</h3>
               </div>
             </div>
-            <div id="metrics-grid" class="metrics-grid"></div>
+            <div id="metrics-sections" class="metrics-sections"></div>
           </section>
         </div>
       </section>
