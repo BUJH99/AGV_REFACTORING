@@ -7,12 +7,20 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(CTest)
+include(FetchContent)
+
+FetchContent_Declare(
+    nlohmann_json
+    URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+)
+FetchContent_MakeAvailable(nlohmann_json)
 
 file(GLOB_RECURSE CORE_HEADERS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/include/*.hpp")
 file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 
 # Exclude the console application entry point from the core library
 list(REMOVE_ITEM CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/apps/console_main.cpp")
+list(REMOVE_ITEM CORE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/apps/render_ipc_main.cpp")
 
 add_library(agv_core
     ${CORE_HEADERS}
@@ -27,6 +35,7 @@ target_include_directories(agv_core
 )
 
 target_link_libraries(agv_core PUBLIC psapi)
+target_link_libraries(agv_core PUBLIC nlohmann_json::nlohmann_json)
 
 if(MSVC)
     target_compile_options(agv_core PRIVATE /W4 /permissive-)
@@ -36,6 +45,9 @@ endif()
 
 add_executable(agv_console src/apps/console_main.cpp)
 target_link_libraries(agv_console PRIVATE agv_core)
+
+add_executable(agv_render_ipc src/apps/render_ipc_main.cpp)
+target_link_libraries(agv_render_ipc PRIVATE agv_core)
 
 if(BUILD_TESTING)
     add_test(
@@ -47,7 +59,6 @@ if(BUILD_TESTING)
 endif()
 
 if(BUILD_TESTING)
-    include(FetchContent)
     FetchContent_Declare(
         googletest
         URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
@@ -58,6 +69,7 @@ if(BUILD_TESTING)
     add_executable(agv_core_tests
         tests/simulation_engine_test.cpp
         tests/debug_support_test.cpp
+        tests/render_model_test.cpp
     )
     target_link_libraries(agv_core_tests PRIVATE agv_core GTest::gtest_main)
     include(GoogleTest)

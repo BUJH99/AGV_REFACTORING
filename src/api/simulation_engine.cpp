@@ -737,6 +737,7 @@ struct SimulationEngine::Impl {
     std::unique_ptr<Simulation> simulation;
     SimulationConfig config{};
     bool dirty{true};
+    std::uint64_t session_counter{0};
  
     Impl()
         : config(default_simulation_config()) {
@@ -763,6 +764,7 @@ struct SimulationEngine::Impl {
         if (!apply_simulation_config(simulation.get(), config)) {
             throw std::runtime_error("apply_simulation_config failed");
         }
+        render_model_reset(simulation.get(), ++session_counter);
 
         dirty = false;
         return *simulation;
@@ -822,7 +824,11 @@ void SimulationEngine::prepareConsole() {
 bool SimulationEngine::interactiveSetup() {
     Simulation& simulation = impl_->createFreshSimulation();
     impl_->dirty = false;
-    return simulation_setup(&simulation) != 0;
+    const bool configured = simulation_setup(&simulation) != 0;
+    if (configured) {
+        render_model_reset(&simulation, ++impl_->session_counter);
+    }
+    return configured;
 }
 
 void SimulationEngine::runInteractiveConsole() {
@@ -859,6 +865,20 @@ bool SimulationEngine::isComplete() {
 
 MetricsSnapshot SimulationEngine::snapshotMetrics() {
     return toMetricsSnapshot(collect_run_summary(&impl_->rebuildSimulationIfNeeded()));
+}
+
+StaticSceneSnapshot SimulationEngine::snapshotStaticScene() {
+    return snapshot_static_scene(&impl_->rebuildSimulationIfNeeded());
+}
+
+RenderFrameSnapshot SimulationEngine::snapshotRenderFrame(const RenderQueryOptions& options) {
+    return snapshot_render_frame(&impl_->rebuildSimulationIfNeeded(), options);
+}
+
+RenderFrameDelta SimulationEngine::snapshotRenderDelta(
+    std::uint64_t sinceFrameId,
+    const RenderQueryOptions& options) {
+    return snapshot_render_delta(&impl_->rebuildSimulationIfNeeded(), sinceFrameId, options);
 }
 
 RenderFrame SimulationEngine::snapshotFrame(bool paused) {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -149,6 +150,153 @@ struct MetricsSnapshot {
     int remainingParkedVehicles{0};
 };
 
+struct GridCoord {
+    int x{-1};
+    int y{-1};
+};
+
+struct HomeCellSnapshot {
+    int agentId{0};
+    char symbol{0};
+    GridCoord position{};
+};
+
+struct GoalRenderState {
+    GridCoord position{};
+    bool isGoal{false};
+    bool isParked{false};
+    int reservedByAgent{-1};
+};
+
+struct StructuredLogEntry {
+    std::uint64_t seq{0};
+    int step{0};
+    std::string category{};
+    std::string level{};
+    std::string text{};
+};
+
+struct OverlayWaitEdge {
+    int fromAgentId{0};
+    int toAgentId{0};
+    int timeOffset{0};
+    std::string cause{};
+    GridCoord from{};
+    GridCoord to{};
+};
+
+struct OverlayPlannedPath {
+    int agentId{0};
+    std::vector<GridCoord> cells{};
+};
+
+struct PlannerOverlaySnapshot {
+    bool available{false};
+    PathAlgo algorithm{PathAlgo::Default};
+    int horizon{0};
+    int waitEdgeCount{0};
+    int leaderAgentId{-1};
+    bool usedCbs{false};
+    std::vector<int> sccParticipantAgentIds{};
+    std::vector<int> yieldAgentIds{};
+    std::vector<int> pullOverAgentIds{};
+    std::vector<OverlayWaitEdge> waitEdges{};
+    std::vector<OverlayPlannedPath> plannedPaths{};
+    std::vector<OverlayPlannedPath> cbsPaths{};
+};
+
+struct HudSnapshot {
+    int mapId{1};
+    PathAlgo algorithm{PathAlgo::Default};
+    SimulationMode mode{SimulationMode::Custom};
+    int step{0};
+    bool paused{false};
+    double speedMultiplier{0.0};
+    int currentPhaseIndex{-1};
+    int totalPhases{0};
+    PhaseType currentPhaseType{PhaseType::Park};
+    int phaseTaskTarget{0};
+    int phaseTasksCompleted{0};
+    int phaseRemainingTasks{0};
+    int queuedTaskCount{0};
+    int inFlightTaskCount{0};
+    int outstandingTaskCount{0};
+    int parkedCars{0};
+    int totalGoalCount{0};
+    double lastStepCpuTimeMs{0.0};
+    double avgCpuTimeMs{0.0};
+    double totalCpuTimeMs{0.0};
+    int plannerWaitEdges{0};
+    int plannerSccCount{0};
+    bool plannerCbsSucceeded{false};
+    int plannerCbsExpansions{0};
+    int whcaHorizon{0};
+};
+
+struct AgentRenderState {
+    int id{0};
+    char symbol{0};
+    AgentState state{AgentState::Idle};
+    bool isActive{false};
+    GridCoord position{};
+    GridCoord lastPosition{};
+    GridCoord home{};
+    GridCoord goal{};
+    double totalDistanceTraveled{0.0};
+    int chargeTimer{0};
+    int actionTimer{0};
+    int rotationWait{0};
+    int stuckSteps{0};
+    int oscillationSteps{0};
+};
+
+struct StaticSceneSnapshot {
+    std::uint64_t sessionId{0};
+    std::uint64_t sceneVersion{0};
+    int mapId{1};
+    int width{0};
+    int height{0};
+    std::string baseTiles{};
+    std::vector<GridCoord> goalCells{};
+    std::vector<GridCoord> chargerCells{};
+    std::vector<HomeCellSnapshot> homeCells{};
+};
+
+struct RenderQueryOptions {
+    bool paused{false};
+    bool logsTail{true};
+    std::size_t maxLogEntries{5};
+    bool plannerOverlay{false};
+};
+
+struct RenderFrameSnapshot {
+    std::uint64_t sessionId{0};
+    std::uint64_t sceneVersion{0};
+    std::uint64_t frameId{0};
+    std::uint64_t lastLogSeq{0};
+    HudSnapshot hud{};
+    std::vector<AgentRenderState> agents{};
+    std::vector<GoalRenderState> goalStates{};
+    std::vector<StructuredLogEntry> logsTail{};
+    PlannerOverlaySnapshot plannerOverlay{};
+};
+
+struct RenderFrameDelta {
+    std::uint64_t sessionId{0};
+    std::uint64_t sceneVersion{0};
+    std::uint64_t fromFrameId{0};
+    std::uint64_t toFrameId{0};
+    std::uint64_t lastLogSeq{0};
+    bool requiresFullResync{false};
+    bool hudChanged{false};
+    bool overlayChanged{false};
+    HudSnapshot hud{};
+    std::vector<AgentRenderState> agentUpdates{};
+    std::vector<GoalRenderState> goalStateChanges{};
+    std::vector<StructuredLogEntry> newLogs{};
+    PlannerOverlaySnapshot plannerOverlay{};
+};
+
 struct RenderFrame {
     std::string text;
 };
@@ -279,6 +427,9 @@ public:
     void runUntilComplete();
     bool isComplete();
     MetricsSnapshot snapshotMetrics();
+    StaticSceneSnapshot snapshotStaticScene();
+    RenderFrameSnapshot snapshotRenderFrame(const RenderQueryOptions& options = {});
+    RenderFrameDelta snapshotRenderDelta(std::uint64_t sinceFrameId, const RenderQueryOptions& options = {});
     RenderFrame snapshotFrame(bool paused = false);
     std::vector<std::string> snapshotRecentLogs();
     DebugSnapshot snapshotDebugState(bool paused = false);

@@ -1,14 +1,17 @@
 #pragma once
 
+#include "agv/simulation_engine.hpp"
 #include "agv/internal/text_format.hpp"
 
 #include <array>
 #include <cstdint>
 #include <deque>
+#include <limits>
 #include <memory>
 #include <random>
 #include <string>
 #include <string_view>
+#include <vector>
 
 // Private engine type model.
 // This header is intentionally included from src/core/engine_orchestrator.cpp
@@ -618,6 +621,65 @@ struct StepScratch {
     }
 };
 
+struct PlannerOverlayCapture final {
+    bool valid{false};
+    PathAlgo algorithm{PathAlgo::Default};
+    int horizon{0};
+    int wait_edge_count{0};
+    AgentMask scc_agents{};
+    int leader_agent_id{-1};
+    bool used_cbs{false};
+    AgentMask yield_agents{};
+    AgentMask pull_over_agents{};
+    WaitEdgeBuffer wait_edges{};
+    CbsPlanBuffer planned_paths{};
+    CbsPlanBuffer cbs_paths{};
+
+    void clear() {
+        valid = false;
+        algorithm = PathAlgo::Default;
+        horizon = 0;
+        wait_edge_count = 0;
+        scc_agents = {};
+        leader_agent_id = -1;
+        used_cbs = false;
+        yield_agents = {};
+        pull_over_agents = {};
+        wait_edges.clear();
+        planned_paths.clear();
+        cbs_paths.clear();
+    }
+};
+
+struct RenderModelCache final {
+    static constexpr std::size_t kDeltaHistoryLimit = 256;
+    static constexpr std::size_t kLogHistoryLimit = 1024;
+
+    std::uint64_t session_id{0};
+    std::uint64_t scene_version{0};
+    std::uint64_t frame_id{0};
+    std::uint64_t next_log_seq{1};
+    std::vector<std::string> recent_log_lines{};
+    std::deque<agv::core::StructuredLogEntry> log_history{};
+    agv::core::RenderFrameSnapshot last_advanced_frame{};
+    bool has_last_advanced_frame{false};
+    std::deque<agv::core::RenderFrameDelta> recent_deltas{};
+    PlannerOverlayCapture planner_overlay{};
+
+    void reset(std::uint64_t new_session_id) {
+        session_id = new_session_id;
+        scene_version = 1;
+        frame_id = 0;
+        next_log_seq = 1;
+        recent_log_lines.clear();
+        log_history.clear();
+        last_advanced_frame = {};
+        has_last_advanced_frame = false;
+        recent_deltas.clear();
+        planner_overlay.clear();
+    }
+};
+
 struct PlanningContext final {
     Simulation_* sim{nullptr};
     AgentManager* agents{nullptr};
@@ -714,6 +776,7 @@ public:
     RendererFacade renderer{};
     RuntimeTuningState runtime_tuning{};
     RendererState render_state{};
+    RenderModelCache render_model{};
     PlannerMetricsState planner_metrics{};
     DeadlockEventRecord last_deadlock_event{};
     AgentWorkloadSnapshot workload_snapshot{};

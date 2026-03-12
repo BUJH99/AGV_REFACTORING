@@ -82,6 +82,13 @@ void reserve_goal_tail(
     }
 }
 
+void capture_planned_path(const PlanningContext& context, int agent_id, const TimedNodePlan& plan) {
+    if (!context.sim) {
+        return;
+    }
+    context.sim->render_model.planner_overlay.planned_paths[agent_id] = plan;
+}
+
 void sort_deadlock_agents_by_priority(const AgentManager* manager, AgentOrder& order) {
     std::iota(order.begin(), order.end(), 0);
     std::sort(order.begin(), order.end(),
@@ -290,10 +297,13 @@ public:
 
 private:
     void reserveWaitingAgentPath(const Agent& agent) {
+        TimedNodePlan plan{};
+        plan.fill(agent.pos);
         for (int step = 1; step <= context_.whcaHorizon(); ++step) {
             table_.setOccupant(step, agent.pos, agent.id, context_.whcaHorizon());
         }
         next_positions_[agent.id] = agent.pos;
+        capture_planned_path(context_, agent.id, plan);
     }
 
     void planPathForAgent(Agent& agent) {
@@ -357,6 +367,7 @@ private:
         }
 
         next_positions_[agent.id] = plan[1] ? plan[1] : agent.pos;
+        capture_planned_path(context_, agent.id, plan);
     }
 
     const PlanningContext& context_;
@@ -493,6 +504,9 @@ private:
 
         applyCbsSolution(group_ids, group_size, result);
         decision.used_cbs = true;
+        if (context_.sim) {
+            context_.sim->render_model.planner_overlay.cbs_paths = result.plans;
+        }
         if (success_log_message) {
             logger_log(context_.logger, success_log_message, C_B_CYN, C_NRM, group_size);
         }
@@ -799,6 +813,12 @@ void DefaultPlannerSession::execute() {
     scratch_.clear();
     table_.clear();
     table_.seedCurrent(context_.agents);
+    if (context_.sim) {
+        context_.sim->render_model.planner_overlay.clear();
+        context_.sim->render_model.planner_overlay.valid = true;
+        context_.sim->render_model.planner_overlay.algorithm = PathAlgo::Default;
+        context_.sim->render_model.planner_overlay.horizon = context_.whcaHorizon();
+    }
 
     WhcaPlanner whca_planner(context_, next_positions_, scratch_, table_);
     whca_planner.plan();
@@ -809,6 +829,16 @@ void DefaultPlannerSession::execute() {
 
     CbsFallbackResolver fallback_resolver(context_, next_positions_, scratch_, table_);
     const FallbackDecision decision = fallback_resolver.resolve(summary_);
+    if (context_.sim) {
+        PlannerOverlayCapture& overlay = context_.sim->render_model.planner_overlay;
+        overlay.wait_edges = scratch_.wait_edges;
+        overlay.wait_edge_count = summary_.wait_edge_count;
+        overlay.scc_agents = summary_.scc_agents;
+        overlay.leader_agent_id = decision.leader;
+        overlay.used_cbs = decision.used_cbs;
+        overlay.yield_agents = decision.yield_agents;
+        overlay.pull_over_agents = decision.pull_over_agents;
+    }
 
     FirstStepConflictResolver conflict_resolver(context_.agents, context_.logger, next_positions_);
     conflict_resolver.resolve(decision);
@@ -816,6 +846,13 @@ void DefaultPlannerSession::execute() {
     FallbackDecision post_conflict_decision{};
     fallback_resolver.handlePostConflictStandstill(post_conflict_decision);
     if (post_conflict_decision.hasAction()) {
+        if (context_.sim) {
+            PlannerOverlayCapture& overlay = context_.sim->render_model.planner_overlay;
+            overlay.leader_agent_id = post_conflict_decision.leader;
+            overlay.used_cbs = post_conflict_decision.used_cbs;
+            overlay.yield_agents = post_conflict_decision.yield_agents;
+            overlay.pull_over_agents = post_conflict_decision.pull_over_agents;
+        }
         conflict_resolver.resolve(post_conflict_decision);
     }
 

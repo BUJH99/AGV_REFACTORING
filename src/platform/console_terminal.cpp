@@ -89,3 +89,19 @@ std::optional<int> console_read_key_nonblocking() {
     }
     return _getch();
 }
+
+std::optional<ConsoleSize> console_current_size() {
+    HANDLE h_console = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (h_console == INVALID_HANDLE_VALUE) {
+        return std::nullopt;
+    }
+
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (!GetConsoleScreenBufferInfo(h_console, &csbi)) {
+        return std::nullopt;
+    }
+
+    const int columns = static_cast<int>(csbi.srWindow.Right - csbi.srWindow.Left + 1);
+    const int rows = static_cast<int>(csbi.srWindow.Bottom - csbi.srWindow.Top + 1);
+    return ConsoleSize{columns, rows};
+}

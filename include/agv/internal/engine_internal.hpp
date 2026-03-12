@@ -225,6 +225,27 @@ bool run_simulation_to_completion(Simulation* sim);
 RunSummary collect_run_summary(const Simulation* sim);
 std::string build_render_frame_text(Simulation* sim, bool is_paused);
 std::vector<std::string> collect_recent_logs(const Logger* logger);
+void render_model_reset(Simulation* sim, std::uint64_t session_id);
+void render_model_capture_advanced_frame(Simulation* sim);
+agv::core::StaticSceneSnapshot snapshot_static_scene(const Simulation* sim);
+agv::core::RenderFrameSnapshot snapshot_render_frame(Simulation* sim, const agv::core::RenderQueryOptions& options);
+agv::core::RenderFrameDelta snapshot_render_delta(
+    Simulation* sim,
+    std::uint64_t since_frame_id,
+    const agv::core::RenderQueryOptions& options);
+
+struct ConsoleSize {
+    int columns{0};
+    int rows{0};
+
+    bool operator==(const ConsoleSize& other) const {
+        return columns == other.columns && rows == other.rows;
+    }
+
+    bool operator!=(const ConsoleSize& other) const {
+        return !(*this == other);
+    }
+};
 
 void agv_prepare_console();
 void ui_enter_alt_screen();
@@ -232,5 +253,6 @@ void ui_leave_alt_screen();
 void platform_sleep_for_ms(int ms);
 int console_read_key_blocking();
 std::optional<int> console_read_key_nonblocking();
+std::optional<ConsoleSize> console_current_size();
 int simulation_setup(Simulation* sim);
 void grid_map_load_scenario(GridMap* map, AgentManager* am, int scenario_id);

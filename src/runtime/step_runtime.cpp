@@ -670,6 +670,8 @@ private:
             sim->collectMemorySample();
         }
         sim->total_executed_steps = frame.step_label;
+        sim->render_model.frame_id = static_cast<std::uint64_t>(frame.step_label);
+        render_model_capture_advanced_frame(sim);
         if (!sim->render_state.suppress_flush) {
             sim->renderer.drawFrame(sim, is_paused);
         }

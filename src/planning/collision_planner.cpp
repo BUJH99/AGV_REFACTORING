@@ -60,6 +60,31 @@ void seed_next_positions_from_current(AgentManager* manager, AgentNodeSlots& nex
     }
 }
 
+void capture_ordered_overlay(
+    const PlanningContext& context,
+    OrderedPlanningMetric metric_kind,
+    const AgentNodeSlots& next_positions) {
+    if (!context.sim || !context.agents) {
+        return;
+    }
+
+    PlannerOverlayCapture& overlay = context.sim->render_model.planner_overlay;
+    overlay.clear();
+    overlay.valid = true;
+    overlay.algorithm = (metric_kind == OrderedPlanningMetric::AStar)
+        ? PathAlgo::AStarSimple
+        : PathAlgo::DStarBasic;
+    overlay.horizon = 1;
+
+    for (int agent_id = 0; agent_id < MAX_AGENTS; ++agent_id) {
+        const Agent& agent = context.agents->agents[agent_id];
+        TimedNodePlan& plan = overlay.planned_paths[agent_id];
+        plan.fill(nullptr);
+        plan[0] = agent.pos;
+        plan[1] = next_positions[agent_id];
+    }
+}
+
 class OrderedPlannerBase : public PlannerStrategy {
 public:
     explicit OrderedPlannerBase(OrderedPlanningMetric metric_kind)
@@ -70,6 +95,7 @@ public:
         assign_goals_for_active_agents(context.agents, context.map, context.logger);
         seed_next_positions_from_current(context.agents, next_positions);
         runOrderedPlanning(context, next_positions);
+        capture_ordered_overlay(context, metric_kind_, next_positions);
     }
 
 protected:
