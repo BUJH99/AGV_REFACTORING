@@ -1,5 +1,6 @@
 #include "agv/internal/console_launch_wizard.hpp"
 #include "agv/internal/engine_internal.hpp"
+#include "agv/internal/launch_ui_metadata.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -35,21 +36,10 @@ enum class WizardNav {
     Cancel,
 };
 
+constexpr int kWizardStepCount = 7;
+
 std::uint32_t wizard_seed_now() {
     return static_cast<std::uint32_t>(std::chrono::system_clock::to_time_t(std::chrono::system_clock::now()));
-}
-
-core::LaunchConfig recommended_launch_config(std::uint32_t seed) {
-    core::LaunchConfig config;
-    config.seed = seed;
-    config.mapId = 1;
-    config.algorithm = core::PathAlgo::Default;
-    config.scenario.mode = core::SimulationMode::Custom;
-    config.scenario.speedMultiplier = 0.0;
-    config.scenario.realtimeParkChance = 0;
-    config.scenario.realtimeExitChance = 0;
-    config.scenario.phases = {{core::PhaseType::Park, 1}};
-    return config;
 }
 
 std::string trim_copy(std::string_view input) {
@@ -131,31 +121,8 @@ bool try_parse_double(std::string_view input, double& value) {
     }
 }
 
-std::string path_algo_label(core::PathAlgo algorithm) {
-    switch (algorithm) {
-        case core::PathAlgo::AStarSimple:
-            return "AStar";
-        case core::PathAlgo::DStarBasic:
-            return "DStar";
-        case core::PathAlgo::Default:
-        default:
-            return "Default";
-    }
-}
-
-std::string mode_label(core::SimulationMode mode) {
-    return (mode == core::SimulationMode::Realtime) ? "Realtime" : "Custom";
-}
-
 std::string phase_label(core::PhaseType type) {
     return (type == core::PhaseType::Exit) ? "Exit" : "Park";
-}
-
-int map_vehicle_capacity(int map_id) {
-    GridMap map{};
-    AgentManager agents{};
-    grid_map_load_scenario(&map, &agents, map_id);
-    return std::max(map.num_goals, 1);
 }
 
 json launch_config_to_json(const core::LaunchConfig& config) {
@@ -232,9 +199,13 @@ std::optional<core::LaunchConfig> launch_config_from_json(const json& value) {
 
 std::string summary_text(const core::LaunchConfig& config) {
     std::ostringstream out;
-    out << "Map: " << config.mapId << "\n";
-    out << "Algorithm: " << path_algo_label(config.algorithm) << "\n";
-    out << "Mode: " << mode_label(config.scenario.mode) << "\n";
+    const auto& map = launch_ui::map_option(config.mapId);
+    const auto& algorithm = launch_ui::algorithm_option(config.algorithm);
+    const auto& mode = launch_ui::mode_option(config.scenario.mode);
+
+    out << "Map: " << map.id << " - " << map.label << "\n";
+    out << "Algorithm: " << algorithm.label << "\n";
+    out << "Mode: " << mode.label << "\n";
     if (config.scenario.mode == core::SimulationMode::Realtime) {
         out << "Realtime chances: park=" << config.scenario.realtimeParkChance
             << "% exit=" << config.scenario.realtimeExitChance << "%\n";
@@ -256,6 +227,17 @@ std::string summary_text(const core::LaunchConfig& config) {
     return out.str();
 }
 
+void print_step_header(
+    std::ostream& output,
+    int step_number,
+    std::string_view title,
+    const core::LaunchConfig& draft) {
+    output
+        << "\n[" << step_number << "/" << kWizardStepCount << "] " << title << "\n"
+        << "Current draft: " << launch_ui::summarize_launch_config(draft) << "\n"
+        << "Tip: Enter keeps the current value. 'b' goes back. 'q' cancels.\n";
+}
+
 std::string read_line(std::istream& input, std::ostream& output, std::string_view prompt) {
     output << prompt;
     output.flush();
@@ -266,19 +248,19 @@ std::string read_line(std::istream& input, std::ostream& output, std::string_vie
 }
 
 WizardNav prompt_map(std::istream& input, std::ostream& output, core::LaunchConfig& draft) {
-    output
-        << "\nMap Setup\n"
-        << "  1. Compact parking lot\n"
-        << "  2. Mid-size lot\n"
-        << "  3. 16 AGVs + 900 requests\n"
-        << "  4. Dense lot\n"
-        << "  5. Cross intersection micro-map\n"
-        << "  6. Corner-case gauntlet\n"
-        << "  7. Reference split-room map\n";
+    print_step_header(output, 1, "Map Setup", draft);
+    for (const auto& option : launch_ui::map_options()) {
+        output << "  " << option.id << ". " << option.label
+               << " (capacity " << option.capacity << ")\n"
+               << "     " << option.description << "\n";
+    }
 
     while (true) {
         const std::string raw = lowercase_copy(read_line(
-            input, output, "Select map (1-7, 'b' back, 'q' cancel): "));
+            input, output, "Select map [current " + std::to_string(draft.mapId) + "]: "));
+        if (raw.empty()) {
+            return WizardNav::Advance;
+        }
         if (raw == "q" || raw == "quit") {
             return WizardNav::Cancel;
         }
@@ -296,15 +278,20 @@ WizardNav prompt_map(std::istream& input, std::ostream& output, core::LaunchConf
 }
 
 WizardNav prompt_algorithm(std::istream& input, std::ostream& output, core::LaunchConfig& draft) {
-    output
-        << "\nAlgorithm Setup\n"
-        << "  1. Default\n"
-        << "  2. AStar\n"
-        << "  3. DStar\n";
+    print_step_header(output, 2, "Algorithm Setup", draft);
+    int index = 1;
+    for (const auto& option : launch_ui::algorithm_options()) {
+        output << "  " << index++ << ". " << option.label << "\n"
+               << "     " << option.description << "\n";
+    }
 
     while (true) {
         const std::string raw = lowercase_copy(read_line(
-            input, output, "Select algorithm (1-3, 'b' back, 'q' cancel): "));
+            input, output, "Select algorithm [current " +
+                std::string(launch_ui::algorithm_option(draft.algorithm).label) + "]: "));
+        if (raw.empty()) {
+            return WizardNav::Advance;
+        }
         if (raw == "q" || raw == "quit") {
             return WizardNav::Cancel;
         }
@@ -328,14 +315,20 @@ WizardNav prompt_algorithm(std::istream& input, std::ostream& output, core::Laun
 }
 
 WizardNav prompt_mode(std::istream& input, std::ostream& output, core::LaunchConfig& draft) {
-    output
-        << "\nMode Setup\n"
-        << "  1. Custom\n"
-        << "  2. Realtime\n";
+    print_step_header(output, 3, "Mode Setup", draft);
+    int index = 1;
+    for (const auto& option : launch_ui::mode_options()) {
+        output << "  " << index++ << ". " << option.label << "\n"
+               << "     " << option.description << "\n";
+    }
 
     while (true) {
         const std::string raw = lowercase_copy(read_line(
-            input, output, "Select mode (1-2, 'b' back, 'q' cancel): "));
+            input, output, "Select mode [current " +
+                std::string(launch_ui::mode_option(draft.scenario.mode).label) + "]: "));
+        if (raw.empty()) {
+            return WizardNav::Advance;
+        }
         if (raw == "q" || raw == "quit") {
             return WizardNav::Cancel;
         }
@@ -356,11 +349,18 @@ WizardNav prompt_mode(std::istream& input, std::ostream& output, core::LaunchCon
 
 WizardNav prompt_custom_scenario(std::istream& input, std::ostream& output, core::LaunchConfig& draft) {
     const auto backup = draft.scenario;
-    const int capacity = map_vehicle_capacity(draft.mapId);
+    const int capacity = launch_ui::map_option(draft.mapId).capacity;
+    print_step_header(output, 4, "Custom Scenario Setup", draft);
+    output << "This map can schedule up to " << capacity << " vehicle(s) per phase.\n";
+    output << "Use 0 phases only if you want launch-time normalization back to Park x1.\n";
 
     while (true) {
         const std::string raw = lowercase_copy(read_line(
-            input, output, "Phase count (0-20, 'b' back, 'q' cancel): "));
+            input, output,
+            "Phase count [current " + std::to_string(static_cast<int>(draft.scenario.phases.size())) + "]: "));
+        if (raw.empty() && !draft.scenario.phases.empty()) {
+            return WizardNav::Advance;
+        }
         if (raw == "q" || raw == "quit") {
             draft.scenario = backup;
             return WizardNav::Cancel;
@@ -380,11 +380,54 @@ WizardNav prompt_custom_scenario(std::istream& input, std::ostream& output, core
         phases.reserve(static_cast<std::size_t>(phase_count));
 
         for (int index = 0; index < phase_count; ++index) {
+            const bool has_current_phase = index < static_cast<int>(backup.phases.size());
             while (true) {
-                const std::string type_raw = lowercase_copy(read_line(
-                    input, output,
+                std::string type_prompt =
                     std::string("Phase ") + std::to_string(index + 1) +
-                    " type ('park'/'exit', 'b' back, 'q' cancel): "));
+                    " type ('park'/'exit')";
+                if (has_current_phase) {
+                    type_prompt += " [current " + lowercase_copy(phase_label(backup.phases[static_cast<std::size_t>(index)].type)) + "]";
+                }
+                type_prompt += ": ";
+                const std::string type_raw = lowercase_copy(read_line(
+                    input, output, type_prompt));
+                if (type_raw.empty() && has_current_phase) {
+                    core::PhaseConfig phase = backup.phases[static_cast<std::size_t>(index)];
+                    while (true) {
+                        output
+                            << "Map #" << draft.mapId
+                            << " capacity: up to " << capacity
+                            << " vehicle(s) can be scheduled in a single "
+                            << lowercase_copy(phase_label(phase.type)) << " phase.\n";
+                        std::string count_prompt =
+                            std::string("Phase ") + std::to_string(index + 1) +
+                            " " + lowercase_copy(phase_label(phase.type)) + " count";
+                        count_prompt += " [current " + std::to_string(phase.taskCount) + "]: ";
+                        const std::string count_raw = lowercase_copy(read_line(input, output, count_prompt));
+                        if (count_raw.empty()) {
+                            phases.push_back(phase);
+                            break;
+                        }
+                        if (count_raw == "q" || count_raw == "quit") {
+                            draft.scenario = backup;
+                            return WizardNav::Cancel;
+                        }
+                        if (count_raw == "b" || count_raw == "back") {
+                            draft.scenario = backup;
+                            return WizardNav::Back;
+                        }
+
+                        int task_count = 0;
+                        if (try_parse_int(count_raw, task_count) && task_count >= 1 && task_count <= capacity) {
+                            phase.taskCount = task_count;
+                            phases.push_back(phase);
+                            break;
+                        }
+                        output << "Invalid count. For map #" << draft.mapId
+                               << ", enter a value in the range 1~" << capacity << ".\n";
+                    }
+                    break;
+                }
                 if (type_raw == "q" || type_raw == "quit") {
                     draft.scenario = backup;
                     return WizardNav::Cancel;
@@ -409,11 +452,20 @@ WizardNav prompt_custom_scenario(std::istream& input, std::ostream& output, core
                         << " capacity: up to " << capacity
                         << " vehicle(s) can be scheduled in a single "
                         << lowercase_copy(phase_label(phase.type)) << " phase.\n";
-                    const std::string count_raw = lowercase_copy(read_line(
-                        input, output,
+                    std::string count_prompt =
                         std::string("Phase ") + std::to_string(index + 1) +
                         " " + lowercase_copy(phase_label(phase.type)) +
-                        " count (1~" + std::to_string(capacity) + ", 'b' back, 'q' cancel): "));
+                        " count (1~" + std::to_string(capacity) + ")";
+                    if (has_current_phase) {
+                        count_prompt += " [current " + std::to_string(backup.phases[static_cast<std::size_t>(index)].taskCount) + "]";
+                    }
+                    count_prompt += ": ";
+                    const std::string count_raw = lowercase_copy(read_line(input, output, count_prompt));
+                    if (count_raw.empty() && has_current_phase) {
+                        phase.taskCount = backup.phases[static_cast<std::size_t>(index)].taskCount;
+                        phases.push_back(phase);
+                        break;
+                    }
                     if (count_raw == "q" || count_raw == "quit") {
                         draft.scenario = backup;
                         return WizardNav::Cancel;
@@ -447,10 +499,14 @@ WizardNav prompt_custom_scenario(std::istream& input, std::ostream& output, core
 
 WizardNav prompt_realtime_scenario(std::istream& input, std::ostream& output, core::LaunchConfig& draft) {
     const auto backup = draft.scenario;
+    print_step_header(output, 4, "Realtime Scenario Setup", draft);
+    output << "Enter keeps the current value for each field. Park + exit must stay at or below 100.\n";
 
     while (true) {
         const std::string park_raw = lowercase_copy(read_line(
-            input, output, "Realtime park chance (0-100, 'b' back, 'q' cancel): "));
+            input, output,
+            "Realtime park chance (0-100) [current " +
+                std::to_string(draft.scenario.realtimeParkChance) + "]: "));
         if (park_raw == "q" || park_raw == "quit") {
             draft.scenario = backup;
             return WizardNav::Cancel;
@@ -460,14 +516,16 @@ WizardNav prompt_realtime_scenario(std::istream& input, std::ostream& output, co
             return WizardNav::Back;
         }
 
-        int park = 0;
-        if (!try_parse_int(park_raw, park) || park < 0 || park > 100) {
+        int park = draft.scenario.realtimeParkChance;
+        if (!park_raw.empty() && (!try_parse_int(park_raw, park) || park < 0 || park > 100)) {
             output << "Invalid park chance. Choose 0 through 100.\n";
             continue;
         }
 
         const std::string exit_raw = lowercase_copy(read_line(
-            input, output, "Realtime exit chance (0-100, 'b' back, 'q' cancel): "));
+            input, output,
+            "Realtime exit chance (0-100) [current " +
+                std::to_string(draft.scenario.realtimeExitChance) + "]: "));
         if (exit_raw == "q" || exit_raw == "quit") {
             draft.scenario = backup;
             return WizardNav::Cancel;
@@ -477,8 +535,8 @@ WizardNav prompt_realtime_scenario(std::istream& input, std::ostream& output, co
             return WizardNav::Back;
         }
 
-        int exit = 0;
-        if (!try_parse_int(exit_raw, exit) || exit < 0 || exit > 100) {
+        int exit = draft.scenario.realtimeExitChance;
+        if (!exit_raw.empty() && (!try_parse_int(exit_raw, exit) || exit < 0 || exit > 100)) {
             output << "Invalid exit chance. Choose 0 through 100.\n";
             continue;
         }
@@ -495,7 +553,6 @@ WizardNav prompt_realtime_scenario(std::istream& input, std::ostream& output, co
 }
 
 WizardNav prompt_scenario(std::istream& input, std::ostream& output, core::LaunchConfig& draft) {
-    output << "\nScenario Setup\n";
     if (draft.scenario.mode == core::SimulationMode::Realtime) {
         return prompt_realtime_scenario(input, output, draft);
     }
@@ -503,9 +560,16 @@ WizardNav prompt_scenario(std::istream& input, std::ostream& output, core::Launc
 }
 
 WizardNav prompt_speed(std::istream& input, std::ostream& output, core::LaunchConfig& draft) {
+    print_step_header(output, 5, "Speed Setup", draft);
+    output << "0.0 means full-speed execution with no deliberate sleep delay.\n";
     while (true) {
         const std::string raw = lowercase_copy(read_line(
-            input, output, "Speed multiplier (0.0-10000.0, 'b' back, 'q' cancel): "));
+            input, output,
+            "Speed multiplier (0.0-10000.0) [current " +
+                std::to_string(draft.scenario.speedMultiplier) + "]: "));
+        if (raw.empty()) {
+            return WizardNav::Advance;
+        }
         if (raw == "q" || raw == "quit") {
             return WizardNav::Cancel;
         }
@@ -523,9 +587,16 @@ WizardNav prompt_speed(std::istream& input, std::ostream& output, core::LaunchCo
 }
 
 WizardNav prompt_seed(std::istream& input, std::ostream& output, core::LaunchConfig& draft) {
+    print_step_header(output, 6, "Seed Setup", draft);
+    output << "Same seed + same config reproduces the same random run.\n";
     while (true) {
         const std::string raw = lowercase_copy(read_line(
-            input, output, "Seed (0-4294967295, 'b' back, 'q' cancel): "));
+            input, output,
+            "Seed (0-4294967295) [current " +
+                std::to_string(draft.seed) + "]: "));
+        if (raw.empty()) {
+            return WizardNav::Advance;
+        }
         if (raw == "q" || raw == "quit") {
             return WizardNav::Cancel;
         }
@@ -545,7 +616,7 @@ WizardNav prompt_seed(std::istream& input, std::ostream& output, core::LaunchCon
 WizardNav prompt_summary(std::istream& input, std::ostream& output, core::LaunchConfig& draft) {
     const core::ValidationResult validation = core::validateLaunchConfig(draft);
 
-    output << "\nSummary\n";
+    print_step_header(output, 7, "Summary", validation.normalizedConfig);
     output << summary_text(validation.normalizedConfig);
     for (const auto& warning : validation.warnings) {
         output << "Warning [" << warning.field << "]: " << warning.message << "\n";
@@ -556,8 +627,8 @@ WizardNav prompt_summary(std::istream& input, std::ostream& output, core::Launch
 
     while (true) {
         const std::string raw = lowercase_copy(read_line(
-            input, output, "Select action (1=start, 2=back, 3=cancel): "));
-        if (raw == "1" || raw == "start") {
+            input, output, "Select action (Enter/start=run, 2/back, 3/cancel): "));
+        if (raw.empty() || raw == "1" || raw == "start") {
             if (!validation.ok()) {
                 output << "Cannot start until the validation errors are fixed.\n";
                 continue;
@@ -701,18 +772,30 @@ bool run_console_launch_wizard(
     const std::filesystem::path& last_launch_path,
     core::LaunchConfig& out_config) {
     const std::uint32_t seed = wizard_seed_now();
-    const core::LaunchConfig recommended = recommended_launch_config(seed);
+    const core::LaunchConfig recommended = launch_ui::recommended_launch_config(seed);
     const std::optional<core::LaunchConfig> last_used = load_last_launch_config(last_launch_path);
 
     while (true) {
         output
             << "\nAGV Launch\n"
             << "  1. Recommended\n"
-            << "  2. Last Used\n"
+            << "     " << launch_ui::summarize_launch_config(recommended) << "\n"
+            << "     Balanced starter setup for quick validation runs.\n"
+            << "  2. Last Used\n";
+        if (last_used.has_value()) {
+            output << "     " << launch_ui::summarize_launch_config(*last_used) << "\n";
+            output << "     Reopen the most recent successful launch.\n";
+        } else {
+            output << "     unavailable - falls back to Recommended\n";
+        }
+        output
             << "  3. Guided Setup\n"
-            << "  4. Quit\n";
+            << "     Walk through each setting with validation and current-value hints.\n"
+            << "  4. Quit\n"
+            << "     Exit without starting a session.\n"
+            << "Tip: Press Enter to launch Recommended immediately.\n";
         const std::string raw = lowercase_copy(read_line(input, output, "Select option (1-4): "));
-        if (raw == "1" || raw == "recommended") {
+        if (raw.empty() || raw == "1" || raw == "recommended") {
             out_config = recommended;
             return true;
         }
@@ -731,8 +814,8 @@ bool run_console_launch_wizard(
                 out_config = draft;
                 return true;
             }
-            output << "Setup canceled.\n";
-            return false;
+            output << "Setup canceled. Returning to launch menu.\n";
+            continue;
         }
         if (raw == "4" || raw == "q" || raw == "quit") {
             return false;

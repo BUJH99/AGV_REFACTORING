@@ -392,8 +392,7 @@ void append_control_lines(std::vector<std::string>& lines) {
         std::string("[") + C_YEL + "P" + C_NRM + "]ause/Resume | [" + C_YEL + "S" + C_NRM +
         "]tep | [" + C_YEL + "+" + C_NRM + "]/[" + C_YEL + "-" + C_NRM +
         "] Speed | [" + C_YEL + "[" + C_NRM + "]/[" + C_YEL + "]" + C_NRM +
-        "] Render stride | [" + C_YEL + "F" + C_NRM + "]ast render | [" +
-        C_YEL + "C" + C_NRM + "]olor simple | [" + C_YEL + "M" + C_NRM +
+        "] Render stride | [" + C_YEL + "C" + C_NRM + "]olor simple | [" + C_YEL + "M" + C_NRM +
         "]enu (paused) | [" + C_YEL + "Q" + C_NRM + "]uit");
 }
 
@@ -584,11 +583,6 @@ void ui_handle_control_key(
             }
             logger_log_event(sim->logger, "Control", "Info", std::nullopt, std::nullopt,
                 "Render stride = %d", sim->render_state.render_stride);
-            break;
-        case 'f':
-            sim->render_state.fast_render = !sim->render_state.fast_render;
-            logger_log_event(sim->logger, "Control", "Info", std::nullopt, std::nullopt,
-                sim->render_state.fast_render ? "Fast render ON" : "Fast render OFF");
             break;
         case 'c':
             sim->render_state.simple_colors = !sim->render_state.simple_colors;

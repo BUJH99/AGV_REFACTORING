@@ -107,6 +107,8 @@ TEST(LaunchWorkflowTest, ConsoleLaunchWizardSupportsGuidedBackAndLastUsedFallbac
         agv::core::LaunchConfig chosen;
         ASSERT_TRUE(agv::internal::console::run_console_launch_wizard(input, output, last_used_path, chosen));
         EXPECT_EQ(chosen.seed, 456u);
+        EXPECT_NE(output.str().find("Current draft:"), std::string::npos);
+        EXPECT_NE(output.str().find("[1/7] Map Setup"), std::string::npos);
         EXPECT_NE(output.str().find("Map #1 capacity"), std::string::npos);
         EXPECT_NE(output.str().find("range 1~"), std::string::npos);
         EXPECT_TRUE(agv::internal::console::save_last_launch_config(last_used_path, chosen));
@@ -138,6 +140,25 @@ TEST(LaunchWorkflowTest, ConsoleLaunchWizardSupportsGuidedBackAndLastUsedFallbac
     std::filesystem::remove(last_used_path, error);
 }
 
+TEST(LaunchWorkflowTest, ConsoleLaunchWizardCancelReturnsToStartMenuBeforeQuit) {
+    const std::filesystem::path last_used_path = unique_temp_path("agv_last_launch_cancel");
+    std::error_code error;
+    std::filesystem::remove(last_used_path, error);
+
+    std::stringstream input;
+    input
+        << "3\n"  // Guided
+        << "q\n"  // Cancel guided setup
+        << "4\n"; // Quit from start menu
+    std::stringstream output;
+    agv::core::LaunchConfig chosen;
+    EXPECT_FALSE(agv::internal::console::run_console_launch_wizard(input, output, last_used_path, chosen));
+    EXPECT_NE(output.str().find("Setup canceled. Returning to launch menu."), std::string::npos);
+    EXPECT_NE(output.str().find("AGV Launch"), std::string::npos);
+
+    std::filesystem::remove(last_used_path, error);
+}
+
 TEST(LaunchWorkflowTest, RenderIpcProtocolV1SupportsSessionFlowAndSessionErrors) {
     agv::ipc::RenderIpcServer server;
 
@@ -150,6 +171,17 @@ TEST(LaunchWorkflowTest, RenderIpcProtocolV1SupportsSessionFlowAndSessionErrors)
     EXPECT_TRUE(capabilities.front()["ok"].get<bool>());
     EXPECT_EQ(capabilities.front()["protocolVersion"], 1);
     EXPECT_EQ(capabilities.front()["requestId"], "cap");
+    ASSERT_TRUE(capabilities.front().contains("capabilities"));
+    const auto& capability_payload = capabilities.front()["capabilities"];
+    EXPECT_EQ(capability_payload["platform"], "windows");
+    EXPECT_TRUE(capability_payload["recommendedLaunchConfig"].is_object());
+    EXPECT_EQ(capability_payload["recommendedPreset"]["seedStrategy"], "timestamp_seconds");
+    EXPECT_TRUE(capability_payload["maps"].is_array());
+    EXPECT_TRUE(capability_payload["algorithms"].is_array());
+    EXPECT_TRUE(capability_payload["modes"].is_array());
+    EXPECT_TRUE(capability_payload["wizardSteps"].is_array());
+    EXPECT_EQ(capability_payload["wizardSteps"].front()["id"], "map");
+    EXPECT_EQ(capability_payload["launchSchema"]["customPhases"]["taskCountCapacityField"], "maps[].capacity");
 
     const auto start = server.processRequest(nlohmann::json{
         {"protocolVersion", 1},

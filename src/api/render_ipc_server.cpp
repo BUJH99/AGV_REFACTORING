@@ -1,7 +1,9 @@
 #include "agv/render_ipc_server.hpp"
 #include "agv/internal/engine_internal.hpp"
+#include "agv/internal/launch_ui_metadata.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <istream>
 #include <ostream>
 #include <stdexcept>
@@ -233,6 +235,40 @@ json to_json_value(const core::ValidationIssue& issue) {
         {"field", issue.field},
         {"code", issue.code},
         {"message", issue.message},
+    };
+}
+
+json to_json_value(const agv::internal::launch_ui::MapOption& option) {
+    return json{
+        {"id", option.id},
+        {"key", option.key},
+        {"label", option.label},
+        {"description", option.description},
+        {"capacity", option.capacity},
+    };
+}
+
+json to_json_value(const agv::internal::launch_ui::AlgorithmOption& option) {
+    return json{
+        {"id", option.key},
+        {"label", option.label},
+        {"description", option.description},
+    };
+}
+
+json to_json_value(const agv::internal::launch_ui::ModeOption& option) {
+    return json{
+        {"id", option.key},
+        {"label", option.label},
+        {"description", option.description},
+    };
+}
+
+json to_json_value(const agv::internal::launch_ui::WizardStepOption& option) {
+    return json{
+        {"id", option.key},
+        {"title", option.title},
+        {"description", option.description},
     };
 }
 
@@ -772,6 +808,29 @@ std::vector<json> RenderIpcServer::processRequest(const json& request) {
     };
 
     if (command == "getCapabilities") {
+        json maps = json::array();
+        for (const auto& option : agv::internal::launch_ui::map_options()) {
+            maps.push_back(to_json_value(option));
+        }
+
+        json algorithms = json::array();
+        for (const auto& option : agv::internal::launch_ui::algorithm_options()) {
+            algorithms.push_back(to_json_value(option));
+        }
+
+        json modes = json::array();
+        for (const auto& option : agv::internal::launch_ui::mode_options()) {
+            modes.push_back(to_json_value(option));
+        }
+
+        json wizard_steps = json::array();
+        for (const auto& option : agv::internal::launch_ui::wizard_steps()) {
+            wizard_steps.push_back(to_json_value(option));
+        }
+
+        const auto now = std::chrono::system_clock::now();
+        const auto seed = static_cast<std::uint32_t>(std::chrono::system_clock::to_time_t(now));
+        const core::LaunchConfig recommended = agv::internal::launch_ui::recommended_launch_config(seed);
         json response = base_response(request, command, true);
         response["capabilities"] = {
             {"platform", "windows"},
@@ -799,8 +858,50 @@ std::vector<json> RenderIpcServer::processRequest(const json& request) {
                 "resume",
             })},
             {"mapIdRange", {{"min", 1}, {"max", 7}}},
-            {"algorithms", json::array({"default", "astar", "dstar"})},
-            {"modes", json::array({"custom", "realtime"})},
+            {"recommendedLaunchConfig", to_json_value(recommended)},
+            {"recommendedPreset", {
+                {"id", "recommended"},
+                {"label", "Recommended"},
+                {"description", "Balanced starter setup for quick validation runs."},
+                {"seedStrategy", "timestamp_seconds"},
+            }},
+            {"wizardFlow", json::array({"map", "algorithm", "mode", "scenario", "speed", "seed", "summary"})},
+            {"wizardSteps", std::move(wizard_steps)},
+            {"maps", std::move(maps)},
+            {"algorithms", std::move(algorithms)},
+            {"modes", std::move(modes)},
+            {"launchSchema", {
+                {"seed", {
+                    {"type", "uint32"},
+                    {"min", 0},
+                    {"max", 4294967295ull},
+                    {"note", "Same seed and config reproduce the same random run."},
+                    {"defaultStrategy", "timestamp_seconds"},
+                }},
+                {"speedMultiplier", {
+                    {"type", "double"},
+                    {"min", 0.0},
+                    {"max", static_cast<double>(MAX_SPEED_MULTIPLIER)},
+                    {"default", 0.0},
+                    {"note", "0.0 keeps the simulation at full speed without deliberate sleep."},
+                }},
+                {"customPhases", {
+                    {"minCount", 0},
+                    {"maxCount", MAX_PHASES},
+                    {"emptyBehavior", "normalize_to_single_park_x1"},
+                    {"taskCountUsesSelectedMapCapacity", true},
+                    {"taskCountCapacityField", "maps[].capacity"},
+                }},
+                {"realtimeChances", {
+                    {"min", 0},
+                    {"max", 100},
+                    {"sumMax", 100},
+                }},
+                {"persistence", {
+                    {"lastUsedVersion", 1},
+                    {"pathHint", "%LOCALAPPDATA%\\\\AGVRefactor\\\\last_launch.json"},
+                }},
+            }},
             {"maxSpeedMultiplier", static_cast<double>(MAX_SPEED_MULTIPLIER)},
             {"supportsFrameDeltaEvent", true},
             {"supportsStructuredLogs", true},

@@ -358,7 +358,6 @@ struct RuntimeTuningState {
 
 struct RendererState {
     int render_stride{1};
-    bool fast_render{false};
     bool simple_colors{false};
     bool suppress_flush{false};
     bool force_next_flush{false};
