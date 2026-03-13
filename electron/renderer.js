@@ -33,6 +33,62 @@ function createDefaultCustomPhases(maxCount = Number.MAX_SAFE_INTEGER) {
   );
 }
 
+const kScenarioPresetStorageKey = "agv.scenarioPresets.v1";
+const kViewportModes = ["live", "map", "metrics"];
+const kUnsavedScenarioPresetId = "unsaved";
+const kBuiltInScenarioPresets = Object.freeze([
+  {
+    id: "builtin-balanced-flow",
+    name: "Balanced Flow",
+    mode: "custom",
+    speedMultiplier: 0,
+    customPhases: [
+      { type: "park", taskCount: 8 },
+      { type: "exit", taskCount: 4 },
+    ],
+    realtimeParkChance: 12,
+    realtimeExitChance: 8,
+  },
+  {
+    id: "builtin-parking-rush",
+    name: "Parking Rush",
+    mode: "custom",
+    speedMultiplier: 0,
+    customPhases: [
+      { type: "park", taskCount: 12 },
+      { type: "park", taskCount: 8 },
+      { type: "exit", taskCount: 4 },
+    ],
+    realtimeParkChance: 12,
+    realtimeExitChance: 8,
+  },
+  {
+    id: "builtin-exit-rush",
+    name: "Exit Rush",
+    mode: "custom",
+    speedMultiplier: 0,
+    customPhases: [
+      { type: "park", taskCount: 4 },
+      { type: "exit", taskCount: 8 },
+      { type: "exit", taskCount: 6 },
+    ],
+    realtimeParkChance: 12,
+    realtimeExitChance: 8,
+  },
+  {
+    id: "builtin-realtime-balanced",
+    name: "Realtime Balanced",
+    mode: "realtime",
+    speedMultiplier: 0,
+    customPhases: [
+      { type: "park", taskCount: 8 },
+      { type: "exit", taskCount: 4 },
+    ],
+    realtimeParkChance: 12,
+    realtimeExitChance: 8,
+  },
+]);
+
 const kLogRingSize = 8;
 const kStatusRingSize = 8;
 const kRunStepsPerTick = 1;
@@ -235,6 +291,7 @@ const state = {
   frame: null,
   metrics: null,
   metricHistory: [],
+  viewportMode: "live",
   paused: true,
   busy: false,
   running: false,
@@ -242,6 +299,11 @@ const state = {
   lastLogSeq: 0,
   statusLines: [],
   customPhases: createDefaultCustomPhases(),
+  savedScenarioPresets: [],
+  selectedScenarioPresetId: null,
+  scenarioPresetDraftName: "",
+  pendingStepCount: 0,
+  stepQueueActive: false,
   selectedAgentId: null,
   hoveredAgentId: null,
   showLayers: {
@@ -287,6 +349,7 @@ const elements = {
   rightStack: document.getElementById("right-stack"),
   sceneLegend: document.getElementById("scene-legend"),
   floatingDock: document.getElementById("floating-dock"),
+  launchForm: document.getElementById("launch-form"),
   mapId: document.getElementById("map-id"),
   algorithm: document.getElementById("algorithm"),
   mode: document.getElementById("mode"),
@@ -304,6 +367,11 @@ const elements = {
   addParkPhaseButton: document.getElementById("add-park-phase"),
   addExitPhaseButton: document.getElementById("add-exit-phase"),
   resetPhasesButton: document.getElementById("reset-phases"),
+  presetStatusBadge: document.getElementById("preset-status-badge"),
+  scenarioPresetSelect: document.getElementById("scenario-preset-select"),
+  scenarioPresetName: document.getElementById("scenario-preset-name"),
+  scenarioPresetSaveButton: document.getElementById("scenario-preset-save"),
+  scenarioPresetDeleteButton: document.getElementById("scenario-preset-delete"),
   viewportEmpty: document.getElementById("viewport-empty"),
   viewportStartButton: document.getElementById("viewport-start-button"),
   viewportSetupButton: document.getElementById("viewport-setup-button"),
@@ -382,6 +450,14 @@ const elements = {
   closeSetupButton: document.getElementById("close-setup-button"),
   setupBackdrop: document.getElementById("setup-backdrop"),
   setupDrawer: document.getElementById("setup-drawer"),
+  metricsOverview: document.getElementById("metrics-overview"),
+  metricsOverviewPill: document.getElementById("metrics-overview-pill"),
+  metricsOverviewHero: document.getElementById("metrics-overview-hero"),
+  metricsOverviewStatus: document.getElementById("metrics-overview-status"),
+  metricsOverviewQueue: document.getElementById("metrics-overview-queue"),
+  metricsOverviewPlanner: document.getElementById("metrics-overview-planner"),
+  metricsOverviewDistribution: document.getElementById("metrics-overview-distribution"),
+  metricsOverviewTrends: document.getElementById("metrics-overview-trends"),
   metricsBackdrop: document.getElementById("metrics-backdrop"),
   metricsModal: document.getElementById("metrics-modal"),
   mapLayerButton: document.getElementById("map-layer-button"),
@@ -434,6 +510,14 @@ const kLayerButtonSpecs = [
   { key: "conflictCounts", element: "conflictCountLayerButton", tone: "warning", requiresDebug: true },
   { key: "swapWaits", element: "swapLayerButton", tone: "danger", requiresDebug: true },
 ];
+const kFocusableSelector = [
+  "button",
+  "input",
+  "select",
+  "textarea",
+  "a[href]",
+  "[tabindex]:not([tabindex='-1'])",
+].join(", ");
 const kShortcutEditableSelector = [
   "input",
   "select",
@@ -1575,6 +1659,232 @@ function modeValue() {
   return elements.mode.value || "custom";
 }
 
+function clampPercentValue(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return 0;
+  }
+  return Math.max(0, Math.min(100, numeric));
+}
+
+function normalizeScenarioPresetRecord(record) {
+  const normalized = record || {};
+  return {
+    id: String(normalized.id || `saved-${Date.now()}`),
+    name: String(normalized.name || "Untitled Preset").trim() || "Untitled Preset",
+    mode: normalized.mode === "realtime" ? "realtime" : "custom",
+    speedMultiplier: Number(normalized.speedMultiplier || 0),
+    customPhases: normalizePhases(normalized.customPhases, currentMapCapacity()),
+    realtimeParkChance: clampPercentValue(normalized.realtimeParkChance),
+    realtimeExitChance: clampPercentValue(normalized.realtimeExitChance),
+    createdAt: String(normalized.createdAt || new Date().toISOString()),
+    updatedAt: String(normalized.updatedAt || new Date().toISOString()),
+  };
+}
+
+function currentScenarioPresetRecord() {
+  return normalizeScenarioPresetRecord({
+    id: state.selectedScenarioPresetId || kUnsavedScenarioPresetId,
+    name: state.scenarioPresetDraftName || "Custom",
+    mode: modeValue(),
+    speedMultiplier: Number(elements.speedMultiplier.value || 0),
+    customPhases: state.customPhases,
+    realtimeParkChance: Number(elements.realtimePark.value || 0),
+    realtimeExitChance: Number(elements.realtimeExit.value || 0),
+  });
+}
+
+function scenarioPresetSignature(record) {
+  const normalized = normalizeScenarioPresetRecord(record);
+  return JSON.stringify({
+    mode: normalized.mode,
+    speedMultiplier: normalized.speedMultiplier,
+    customPhases: normalized.customPhases,
+    realtimeParkChance: normalized.realtimeParkChance,
+    realtimeExitChance: normalized.realtimeExitChance,
+  });
+}
+
+function builtInScenarioPresets() {
+  return kBuiltInScenarioPresets.map((preset) => normalizeScenarioPresetRecord(preset));
+}
+
+function allScenarioPresets() {
+  return [...builtInScenarioPresets(), ...state.savedScenarioPresets.map((preset) => normalizeScenarioPresetRecord(preset))];
+}
+
+function isBuiltInScenarioPreset(presetId) {
+  return builtInScenarioPresets().some((preset) => preset.id === presetId);
+}
+
+function findScenarioPresetById(presetId) {
+  if (!presetId || presetId === kUnsavedScenarioPresetId) {
+    return null;
+  }
+  return allScenarioPresets().find((preset) => preset.id === presetId) || null;
+}
+
+function persistScenarioPresets() {
+  try {
+    window.localStorage.setItem(
+      kScenarioPresetStorageKey,
+      JSON.stringify({
+        version: 1,
+        presets: state.savedScenarioPresets.map((preset) => normalizeScenarioPresetRecord(preset)),
+      }),
+    );
+  } catch (error) {
+    appendStatus(`Preset save failed: ${error.message}`);
+  }
+}
+
+function loadSavedScenarioPresets() {
+  try {
+    const raw = window.localStorage.getItem(kScenarioPresetStorageKey);
+    if (!raw) {
+      state.savedScenarioPresets = [];
+      return;
+    }
+
+    const parsed = JSON.parse(raw);
+    const presets = Array.isArray(parsed?.presets) ? parsed.presets : [];
+    state.savedScenarioPresets = presets.map((preset) => normalizeScenarioPresetRecord(preset));
+  } catch (error) {
+    state.savedScenarioPresets = [];
+    appendStatus(`Preset load failed: ${error.message}`);
+  }
+}
+
+function syncScenarioPresetSelection(options = {}) {
+  const preserveDraftName = Boolean(options.preserveDraftName);
+  const currentSignature = scenarioPresetSignature(currentScenarioPresetRecord());
+  const matchingPreset = allScenarioPresets().find((preset) => scenarioPresetSignature(preset) === currentSignature) || null;
+
+  state.selectedScenarioPresetId = matchingPreset?.id || null;
+  if (matchingPreset && !preserveDraftName) {
+    state.scenarioPresetDraftName = matchingPreset.name;
+  }
+}
+
+function renderScenarioPresetControls() {
+  const selectedPreset = findScenarioPresetById(state.selectedScenarioPresetId);
+  const selectedValue = selectedPreset?.id || kUnsavedScenarioPresetId;
+
+  elements.scenarioPresetSelect.innerHTML = "";
+
+  const customOption = document.createElement("option");
+  customOption.value = kUnsavedScenarioPresetId;
+  customOption.textContent = "Custom (unsaved)";
+  elements.scenarioPresetSelect.append(customOption);
+
+  const builtInGroup = document.createElement("optgroup");
+  builtInGroup.label = "Built-in";
+  builtInScenarioPresets().forEach((preset) => {
+    const option = document.createElement("option");
+    option.value = preset.id;
+    option.textContent = preset.name;
+    builtInGroup.append(option);
+  });
+  elements.scenarioPresetSelect.append(builtInGroup);
+
+  if (state.savedScenarioPresets.length > 0) {
+    const savedGroup = document.createElement("optgroup");
+    savedGroup.label = "Saved";
+    state.savedScenarioPresets.forEach((preset) => {
+      const option = document.createElement("option");
+      option.value = preset.id;
+      option.textContent = preset.name;
+      savedGroup.append(option);
+    });
+    elements.scenarioPresetSelect.append(savedGroup);
+  }
+
+  elements.scenarioPresetSelect.value = selectedValue;
+  if (document.activeElement !== elements.scenarioPresetName) {
+    elements.scenarioPresetName.value = state.scenarioPresetDraftName || "";
+  }
+
+  elements.presetStatusBadge.textContent = selectedPreset?.name || "Custom";
+  elements.scenarioPresetSaveButton.disabled =
+    state.busy || !String(state.scenarioPresetDraftName || "").trim();
+  elements.scenarioPresetDeleteButton.disabled =
+    state.busy || !selectedPreset || isBuiltInScenarioPreset(selectedPreset.id);
+}
+
+function refreshScenarioPresetState(options = {}) {
+  syncScenarioPresetSelection(options);
+  renderScenarioPresetControls();
+}
+
+function applyScenarioPreset(preset, options = {}) {
+  const normalized = normalizeScenarioPresetRecord(preset);
+  elements.mode.value = normalized.mode;
+  elements.speedMultiplier.value = String(normalized.speedMultiplier);
+  elements.realtimePark.value = String(normalized.realtimeParkChance);
+  elements.realtimeExit.value = String(normalized.realtimeExitChance);
+  state.customPhases = normalizePhases(normalized.customPhases, currentMapCapacity());
+  state.selectedScenarioPresetId = normalized.id;
+  state.scenarioPresetDraftName = normalized.name;
+
+  syncModeVisibility();
+  updateMapCapacityUi();
+  renderPhaseEditor();
+  renderLaunchSummaries();
+  refreshScenarioPresetState();
+  syncInteractiveState();
+  renderScene();
+
+  if (options.announce !== false) {
+    appendStatus(`Scenario preset applied: ${normalized.name}.`);
+  }
+}
+
+function saveCurrentScenarioPreset() {
+  const name = String(state.scenarioPresetDraftName || "").trim();
+  if (!name) {
+    appendStatus("Preset name is required before saving.");
+    elements.scenarioPresetName.focus();
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const current = currentScenarioPresetRecord();
+  const nameKey = name.toLowerCase();
+  const existing = state.savedScenarioPresets.find((preset) => preset.name.trim().toLowerCase() === nameKey);
+  const presetId = existing?.id || `saved-${Date.now()}`;
+  const createdAt = existing?.createdAt || now;
+
+  const nextPreset = normalizeScenarioPresetRecord({
+    ...current,
+    id: presetId,
+    name,
+    createdAt,
+    updatedAt: now,
+  });
+
+  state.savedScenarioPresets = [
+    ...state.savedScenarioPresets.filter((preset) => preset.id !== presetId),
+    nextPreset,
+  ].sort((left, right) => left.name.localeCompare(right.name));
+  state.selectedScenarioPresetId = nextPreset.id;
+  state.scenarioPresetDraftName = nextPreset.name;
+  persistScenarioPresets();
+  renderScenarioPresetControls();
+  appendStatus(`Scenario preset saved: ${nextPreset.name}.`);
+}
+
+function deleteSelectedScenarioPreset() {
+  const preset = findScenarioPresetById(state.selectedScenarioPresetId);
+  if (!preset || isBuiltInScenarioPreset(preset.id)) {
+    return;
+  }
+
+  state.savedScenarioPresets = state.savedScenarioPresets.filter((entry) => entry.id !== preset.id);
+  persistScenarioPresets();
+  refreshScenarioPresetState();
+  appendStatus(`Scenario preset deleted: ${preset.name}.`);
+}
+
 function phaseStats() {
   return state.customPhases.reduce(
     (totals, phase) => {
@@ -1682,6 +1992,7 @@ function syncCustomPhasesForMap(options = {}) {
   updateMapCapacityUi();
   renderPhaseEditor();
   renderLaunchSummaries();
+  refreshScenarioPresetState({ preserveDraftName: true });
   if (options.announce && before !== after) {
     appendStatus(`Scenario counts were clamped to this map's per-phase limit of ${maxCount}.`);
   }
@@ -1698,6 +2009,7 @@ function updatePhase(index, updates) {
   );
   renderPhaseEditor();
   renderLaunchSummaries();
+  refreshScenarioPresetState({ preserveDraftName: true });
 }
 
 function addPhase(type) {
@@ -1713,6 +2025,7 @@ function addPhase(type) {
   );
   renderPhaseEditor();
   renderLaunchSummaries();
+  refreshScenarioPresetState({ preserveDraftName: true });
 }
 
 function removePhase(index) {
@@ -1720,6 +2033,7 @@ function removePhase(index) {
   state.customPhases = normalizePhases(state.customPhases, currentMapCapacity());
   renderPhaseEditor();
   renderLaunchSummaries();
+  refreshScenarioPresetState({ preserveDraftName: true });
 }
 
 function movePhase(index, direction) {
@@ -1734,6 +2048,7 @@ function movePhase(index, direction) {
   state.customPhases = phases;
   renderPhaseEditor();
   renderLaunchSummaries();
+  refreshScenarioPresetState({ preserveDraftName: true });
 }
 
 function createMiniButton(label, title, disabled, onClick) {
@@ -1817,6 +2132,7 @@ function renderPhaseEditor() {
     countInput.max = String(maxCount);
     countInput.step = "1";
     countInput.inputMode = "numeric";
+    countInput.dataset.commitOnEnter = "phase-count";
     countInput.value = String(phase.taskCount);
     const commitCount = () => {
       updatePhase(index, {
@@ -1829,7 +2145,7 @@ function renderPhaseEditor() {
       if (event.key === "Enter") {
         event.preventDefault();
         commitCount();
-        countInput.blur();
+        elements.launchForm.requestSubmit();
       }
     });
 
@@ -2099,10 +2415,145 @@ function setMetricsOpen(open) {
   elements.metricsModal.classList.toggle("hidden", !state.isMetricsOpen);
 }
 
+function syncViewportMode() {
+  elements.appShell.classList.remove("viewport-live", "viewport-map", "viewport-metrics");
+  elements.appShell.classList.add(`viewport-${state.viewportMode}`);
+  elements.metricsOverview.classList.toggle("hidden", state.viewportMode !== "metrics");
+  elements.metricsOverviewPill.textContent =
+    state.viewportMode === "metrics" ? "Viewport metrics" : "Viewport live";
+  elements.viewportEmpty.classList.toggle(
+    "hidden",
+    state.viewportMode !== "live" || Boolean(state.sessionId),
+  );
+}
+
+function setViewportMode(mode) {
+  const nextMode = kViewportModes.includes(mode) ? mode : "live";
+  state.viewportMode = nextMode;
+  if (nextMode !== "live") {
+    setSetupOpen(false);
+    setMetricsOpen(false);
+  }
+  syncViewportMode();
+}
+
+function cycleViewportMode(direction) {
+  const index = kViewportModes.indexOf(state.viewportMode);
+  const nextIndex = (index + direction + kViewportModes.length) % kViewportModes.length;
+  setViewportMode(kViewportModes[nextIndex]);
+  renderAll();
+}
+
 function setDebugExpanded(open) {
   state.isDebugExpanded = Boolean(open);
   elements.debugOutput.classList.toggle("hidden", !state.isDebugExpanded);
   elements.debugToggleButton.textContent = state.isDebugExpanded ? "Hide" : "Show";
+}
+
+function renderMetricsOverview() {
+  elements.metricsOverviewHero.innerHTML = "";
+  elements.metricsOverviewStatus.innerHTML = "";
+  elements.metricsOverviewQueue.innerHTML = "";
+  elements.metricsOverviewPlanner.innerHTML = "";
+  elements.metricsOverviewDistribution.innerHTML = "";
+  elements.metricsOverviewTrends.innerHTML = "";
+
+  if (!state.metrics) {
+    const empty = createEmptyState(
+      "No metrics available",
+      "Load a session to populate the global metrics overview.",
+    );
+    elements.metricsOverviewHero.append(empty);
+    return;
+  }
+
+  const metrics = state.metrics;
+  const heroTiles = [
+    ["Recorded Steps", formatInteger(metrics.recordedSteps), "primary"],
+    ["Throughput", formatNumber(metrics.throughput, 2), "primary"],
+    ["Outstanding", formatInteger(metrics.outstandingTaskCount), "warning"],
+    [
+      "Deadlocks",
+      formatInteger(metrics.deadlockCount),
+      Number(metrics.deadlockCount || 0) > 0 ? "danger" : "neutral",
+    ],
+  ];
+  heroTiles.forEach(([label, value, tone]) => {
+    elements.metricsOverviewHero.append(createMetricTile(label, value, tone));
+  });
+
+  [
+    ["Active", `${activeAgentCount()}`, "primary"],
+    ["Waiting", `${waitingAgentCount()}`, waitingAgentCount() > 0 ? "warning" : "neutral"],
+    ["Stuck", `${stuckAgentCount()}`, stuckAgentCount() > 0 ? "danger" : "neutral"],
+    ["Oscillating", `${oscillatingAgentCount()}`, oscillatingAgentCount() > 0 ? "warning" : "neutral"],
+  ].forEach(([label, value, tone]) => {
+    elements.metricsOverviewStatus.append(createMetricTile(label, value, tone));
+  });
+
+  [
+    ["Queued", formatInteger(metrics.queuedTaskCount), "warning"],
+    ["In flight", formatInteger(metrics.inFlightTaskCount), "primary"],
+    ["Oldest queued age", formatInteger(metrics.oldestQueuedRequestAge), "danger"],
+    ["Steps since completion", formatInteger(metrics.stepsSinceLastTaskCompletion), "warning"],
+  ].forEach(([label, value, tone]) => {
+    elements.metricsOverviewQueue.append(createMetricTile(label, value, tone));
+  });
+
+  [
+    ["Avg plan ms", `${formatNumber(metrics.avgPlanningTimeMs, 2)} ms`, "primary"],
+    ["Max plan ms", `${formatNumber(metrics.maxPlanningTimeMs, 2)} ms`, "primary"],
+    ["Wait edges / step", formatNumber(metrics.plannerWaitEdgesPerStep, 2), "warning"],
+    [
+      "CBS success rate",
+      Number(metrics.plannerCbsAttemptCount || 0) > 0 ? formatPercent(metrics.plannerCbsSuccessRate, 1) : "0.0%",
+      "success",
+    ],
+  ].forEach(([label, value, tone]) => {
+    elements.metricsOverviewPlanner.append(createMetricTile(label, value, tone));
+  });
+
+  [
+    createDistributionCard(
+      "Tasks / Agent Spread",
+      "Fairness across completed task assignments.",
+      metrics.tasksPerAgentSpread,
+      formatInteger,
+    ),
+    createDistributionCard(
+      "Distance / Agent Spread",
+      "Travel cost balance across the active fleet.",
+      metrics.distancePerAgentSpread,
+      (value) => formatNumber(value, 1),
+    ),
+    createDistributionCard(
+      "Idle Steps Spread",
+      "How unevenly idle time is distributed.",
+      metrics.idleStepsPerAgentSpread,
+      formatInteger,
+    ),
+  ].forEach((card) => {
+    elements.metricsOverviewDistribution.append(card);
+  });
+
+  trendDeckSpecs
+    .filter((spec) =>
+      ["throughput", "outstandingTaskCount", "avgPlanningTimeMs"].includes(spec.key),
+    )
+    .concat([
+      {
+        key: "deadlockCount",
+        label: "Deadlocks",
+        tone: "danger",
+        formatter: formatInteger,
+        deltaFormatter: (value) => formatSigned(value, 0),
+        improvesWhen: "down",
+        footnote: "deadlock events across the session",
+      },
+    ])
+    .forEach((spec) => {
+      elements.metricsOverviewTrends.append(createTrendCard(spec));
+    });
 }
 
 function normalizeSelection() {
@@ -2180,6 +2631,7 @@ function syncInteractiveState() {
 
 function setBusy(isBusy) {
   state.busy = isBusy;
+  renderScenarioPresetControls();
   syncInteractiveState();
 }
 
@@ -3946,6 +4398,7 @@ function handleSync(sync) {
 }
 
 function clearSessionView() {
+  clearPendingSteps();
   state.scene = null;
   state.frame = null;
   updateMetricHistory(null);
@@ -3961,6 +4414,7 @@ function clearSessionView() {
 
 function renderAll() {
   normalizeSelection();
+  syncViewportMode();
   syncUiSectionClasses();
   syncRightStackOffset();
   setFleetView(state.fleetView, { animate: false });
@@ -3977,6 +4431,7 @@ function renderAll() {
   renderPriorityBoard();
   renderModalSummary();
   renderMetrics();
+  renderMetricsOverview();
   renderLogs();
   renderRouteHud();
   renderDebugPanel();
@@ -4013,6 +4468,8 @@ async function ensurePaused(paused) {
 }
 
 async function startSession() {
+  clearPendingSteps();
+  setViewportMode("live");
   state.running = false;
   if (state.sessionId) {
     await window.agvShell.resetSession();
@@ -4077,6 +4534,7 @@ async function runContinuously() {
     return;
   }
 
+  clearPendingSteps();
   state.running = true;
   state.paused = false;
   syncInteractiveState();
@@ -4135,6 +4593,8 @@ async function stepOnce() {
 }
 
 async function resetToSetup() {
+  clearPendingSteps();
+  setViewportMode("live");
   state.running = false;
   if (state.sessionId) {
     await window.agvShell.resetSession();
@@ -4164,6 +4624,51 @@ async function runBusyAction(action, failurePrefix) {
   }
 }
 
+function clearPendingSteps() {
+  state.pendingStepCount = 0;
+}
+
+async function pumpPendingSteps() {
+  if (state.stepQueueActive) {
+    return;
+  }
+  if (!state.sessionId || state.running || !state.paused) {
+    return;
+  }
+
+  state.stepQueueActive = true;
+  try {
+    while (state.pendingStepCount > 0 && state.sessionId && !state.running && state.paused) {
+      state.pendingStepCount = Math.max(0, state.pendingStepCount - 1);
+      await runBusyAction(stepOnce, "Step failed:");
+    }
+  } finally {
+    state.stepQueueActive = false;
+  }
+}
+
+function enqueueStepRequest() {
+  if (!state.sessionId || state.running || (!state.paused && !state.stepQueueActive)) {
+    return;
+  }
+  state.pendingStepCount += 1;
+  void pumpPendingSteps();
+}
+
+function toggleLiveLaunchSetup() {
+  if (state.viewportMode !== "live") {
+    return;
+  }
+  setSetupOpen(!state.isSetupOpen);
+}
+
+function toggleLiveMetrics() {
+  if (state.viewportMode !== "live") {
+    return;
+  }
+  setMetricsOpen(!state.isMetricsOpen);
+}
+
 function interactiveShortcutTarget(target) {
   const candidate = target instanceof Element ? target : document.activeElement;
   if (!(candidate instanceof Element)) {
@@ -4175,7 +4680,6 @@ function interactiveShortcutTarget(target) {
 function shouldIgnoreShortcut(event) {
   return Boolean(
     event.defaultPrevented ||
-      event.repeat ||
       event.altKey ||
       event.ctrlKey ||
       event.metaKey ||
@@ -4187,6 +4691,7 @@ function triggerRun() {
   if (!state.sessionId || state.running || state.busy) {
     return;
   }
+  clearPendingSteps();
   void runContinuously();
 }
 
@@ -4198,25 +4703,34 @@ function triggerPause() {
 }
 
 function triggerStep() {
-  if (!state.sessionId || state.busy || state.running || !state.paused) {
-    return;
-  }
-  void runBusyAction(stepOnce, "Step failed:");
+  enqueueStepRequest();
 }
 
 function triggerReset() {
   if (!state.sessionId || state.busy || state.running) {
     return;
   }
+  clearPendingSteps();
   void runBusyAction(resetToSetup, "Reset failed:");
 }
 
 function handleGlobalShortcut(event) {
-  if (shouldIgnoreShortcut(event) || !state.sessionId) {
+  if (shouldIgnoreShortcut(event)) {
+    return;
+  }
+  if (event.repeat && event.code !== "KeyS") {
     return;
   }
 
   switch (event.code) {
+    case "ArrowLeft":
+      event.preventDefault();
+      cycleViewportMode(-1);
+      break;
+    case "ArrowRight":
+      event.preventDefault();
+      cycleViewportMode(1);
+      break;
     case "Space":
       event.preventDefault();
       if (state.running || !state.paused) {
@@ -4226,11 +4740,19 @@ function handleGlobalShortcut(event) {
       }
       break;
     case "KeyS":
-      if (!state.paused || state.running) {
+      if (state.running || (!state.paused && !state.stepQueueActive)) {
         return;
       }
       event.preventDefault();
       triggerStep();
+      break;
+    case "KeyL":
+      event.preventDefault();
+      toggleLiveLaunchSetup();
+      break;
+    case "KeyM":
+      event.preventDefault();
+      toggleLiveMetrics();
       break;
     case "KeyR":
       event.preventDefault();
@@ -4289,12 +4811,15 @@ async function bootstrap() {
   elements.captureLevel.value = "frame";
   elements.seed.value = "7";
 
+  loadSavedScenarioPresets();
   state.customPhases = createDefaultCustomPhases(currentMapCapacity());
   syncModeVisibility();
   updateMapCapacityUi();
   renderPhaseEditor();
   renderLaunchSummaries();
+  refreshScenarioPresetState();
   setUiVisible(true);
+  setViewportMode("live");
   setSetupOpen(true);
   setMetricsOpen(false);
   setDebugExpanded(false);
@@ -4315,11 +4840,13 @@ async function bootstrap() {
 ].forEach((element) => {
   element.addEventListener("input", () => {
     renderLaunchSummaries();
+    refreshScenarioPresetState({ preserveDraftName: true });
     syncInteractiveState();
     renderScene();
   });
   element.addEventListener("change", () => {
     renderLaunchSummaries();
+    refreshScenarioPresetState({ preserveDraftName: true });
     syncInteractiveState();
     renderScene();
   });
@@ -4332,6 +4859,7 @@ elements.mapId.addEventListener("change", () => {
 elements.mode.addEventListener("change", () => {
   syncModeVisibility();
   renderLaunchSummaries();
+  refreshScenarioPresetState({ preserveDraftName: true });
 });
 
 elements.addParkPhaseButton.addEventListener("click", () => addPhase("park"));
@@ -4340,7 +4868,34 @@ elements.resetPhasesButton.addEventListener("click", () => {
   state.customPhases = createDefaultCustomPhases(currentMapCapacity());
   renderPhaseEditor();
   renderLaunchSummaries();
+  refreshScenarioPresetState({ preserveDraftName: true });
   appendStatus("Scenario plan reset to the default custom template.");
+});
+
+elements.scenarioPresetSelect.addEventListener("change", (event) => {
+  const presetId = event.target.value;
+  if (!presetId || presetId === kUnsavedScenarioPresetId) {
+    state.selectedScenarioPresetId = null;
+    renderScenarioPresetControls();
+    return;
+  }
+  const preset = findScenarioPresetById(presetId);
+  if (preset) {
+    applyScenarioPreset(preset);
+  }
+});
+
+elements.scenarioPresetName.addEventListener("input", (event) => {
+  state.scenarioPresetDraftName = event.target.value;
+  renderScenarioPresetControls();
+});
+
+elements.scenarioPresetSaveButton.addEventListener("click", () => {
+  saveCurrentScenarioPreset();
+});
+
+elements.scenarioPresetDeleteButton.addEventListener("click", () => {
+  deleteSelectedScenarioPreset();
 });
 
 elements.validateButton.addEventListener("click", async () => {
@@ -4351,8 +4906,27 @@ async function loadSessionFromUi() {
   await runBusyAction(startSession, "Load failed:");
 }
 
-elements.startButton.addEventListener("click", loadSessionFromUi);
 elements.viewportStartButton.addEventListener("click", loadSessionFromUi);
+
+elements.launchForm.addEventListener("keydown", (event) => {
+  if (event.defaultPrevented || event.key !== "Enter") {
+    return;
+  }
+  const target = event.target instanceof Element ? event.target : null;
+  if (!target) {
+    return;
+  }
+  if (target.closest("button") || target.tagName === "TEXTAREA") {
+    return;
+  }
+  event.preventDefault();
+  elements.launchForm.requestSubmit(elements.startButton);
+});
+
+elements.launchForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void loadSessionFromUi();
+});
 
 elements.viewportSetupButton.addEventListener("click", () => {
   setSetupOpen(true);
@@ -4443,6 +5017,7 @@ elements.uiAllOffButton.addEventListener("click", () => {
 });
 
 elements.openMetricsButton.addEventListener("click", () => {
+  setViewportMode("live");
   setMetricsOpen(true);
 });
 
@@ -4455,6 +5030,7 @@ elements.metricsBackdrop.addEventListener("click", () => {
 });
 
 elements.openSetupButton.addEventListener("click", () => {
+  setViewportMode("live");
   setSetupOpen(true);
 });
 

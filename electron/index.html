@@ -532,6 +532,24 @@ No debug snapshot requested yet.</pre
           <span class="legend-chip agv">AGV</span>
         </div>
 
+        <section id="metrics-overview" class="metrics-overview hidden">
+          <div class="metrics-overview-shell glass-card">
+            <div class="metrics-overview-head">
+              <div>
+                <p class="section-kicker">Global Metrics</p>
+                <h2>Metrics Overview</h2>
+              </div>
+              <span id="metrics-overview-pill" class="pill neutral">Viewport metrics</span>
+            </div>
+            <div id="metrics-overview-hero" class="metrics-overview-hero"></div>
+            <div id="metrics-overview-status" class="metrics-overview-grid"></div>
+            <div id="metrics-overview-queue" class="metrics-overview-grid"></div>
+            <div id="metrics-overview-planner" class="metrics-overview-grid"></div>
+            <div id="metrics-overview-distribution" class="metrics-overview-distribution"></div>
+            <div id="metrics-overview-trends" class="metrics-overview-trends"></div>
+          </div>
+        </section>
+
         <div id="floating-dock" class="floating-dock">
           <button id="toggle-ui-button" class="dock-button" type="button">
             Hide UI
@@ -590,6 +608,40 @@ No debug snapshot requested yet.</pre
           </p>
 
           <form id="launch-form" class="launch-form">
+            <section class="mode-group preset-builder">
+              <div class="section-head">
+                <div>
+                  <p class="section-kicker">Scenario Preset</p>
+                  <h3>Preset Library</h3>
+                </div>
+                <span id="preset-status-badge" class="pill neutral">Custom</span>
+              </div>
+              <div class="launch-grid preset-grid">
+                <label>
+                  <span>Preset</span>
+                  <select id="scenario-preset-select" name="scenarioPreset"></select>
+                </label>
+                <label>
+                  <span>Preset name</span>
+                  <input
+                    id="scenario-preset-name"
+                    name="scenarioPresetName"
+                    type="text"
+                    maxlength="48"
+                    placeholder="Save current scenario as..."
+                  />
+                </label>
+              </div>
+              <div class="preset-actions">
+                <button id="scenario-preset-save" class="ghost-button" type="button">
+                  Save Preset
+                </button>
+                <button id="scenario-preset-delete" class="ghost-button" type="button">
+                  Delete Preset
+                </button>
+              </div>
+            </section>
+
             <div class="launch-grid">
               <label>
                 <span>Map</span>
@@ -709,7 +761,12 @@ No debug snapshot requested yet.</pre
           <button id="validate-button" class="ghost-button" type="button">
             Validate
           </button>
-          <button id="start-button" class="primary-button" type="button">
+          <button
+            id="start-button"
+            class="primary-button"
+            type="submit"
+            form="launch-form"
+          >
             Load Session
           </button>
         </div>
