@@ -46,7 +46,11 @@
           </div>
         </div>
 
-        <div id="route-hud" class="route-hud glass-card hidden ui-layer">
+        <div
+          id="route-hud"
+          class="route-hud glass-card hidden ui-layer"
+          data-ui-anchor="left"
+        >
           <p class="section-kicker">Selected Route</p>
           <h3 id="route-agent-title">No agent selected</h3>
           <p id="route-goal" class="route-copy">Goal -</p>
@@ -64,7 +68,11 @@
           </div>
         </div>
 
-        <div class="top-bar glass-card ui-layer">
+        <div
+          id="top-bar"
+          class="top-bar glass-card ui-layer"
+          data-ui-anchor="top"
+        >
           <div class="mission-block">
             <div id="live-indicator" class="live-indicator idle"></div>
             <div class="mission-copy">
@@ -157,7 +165,11 @@
           </div>
         </div>
 
-        <div class="map-tools glass-card ui-layer">
+        <div
+          id="map-tools"
+          class="map-tools glass-card ui-layer"
+          data-ui-anchor="right"
+        >
           <div class="tool-panel-head">
             <div>
               <span class="tool-label">Layers</span>
@@ -250,20 +262,84 @@
           </div>
         </div>
 
-        <aside class="left-stack ui-layer">
-          <section class="glass-card roster-card">
+        <aside
+          id="left-stack"
+          class="left-stack ui-layer"
+          data-ui-anchor="left"
+        >
+          <section class="glass-card fleet-card">
             <div class="section-head">
               <div>
                 <p class="section-kicker">Fleet</p>
-                <h2>Agent Roster</h2>
+                <h2>Fleet Console</h2>
               </div>
               <span id="fleet-summary" class="pill neutral">0 agents</span>
             </div>
-            <div id="agent-roster-list" class="agent-roster-list"></div>
+
+            <div class="fleet-view-tabs" role="tablist" aria-label="Fleet views">
+              <button
+                id="fleet-roster-tab"
+                class="fleet-tab active"
+                type="button"
+                role="tab"
+                aria-selected="true"
+                aria-controls="fleet-roster-pane"
+              >
+                Agent Roster
+              </button>
+              <button
+                id="fleet-priority-tab"
+                class="fleet-tab"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="fleet-priority-pane"
+              >
+                Priority Board
+              </button>
+            </div>
+
+            <div class="fleet-stage">
+              <section
+                id="fleet-roster-pane"
+                class="fleet-pane"
+                role="tabpanel"
+                aria-labelledby="fleet-roster-tab"
+              >
+                <div class="fleet-pane-head">
+                  <div>
+                    <p class="section-kicker">Roster Live</p>
+                    <h3>Agent Roster</h3>
+                  </div>
+                </div>
+                <div id="agent-roster-list" class="agent-roster-list"></div>
+              </section>
+
+              <section
+                id="fleet-priority-pane"
+                class="fleet-pane hidden"
+                role="tabpanel"
+                aria-labelledby="fleet-priority-tab"
+              >
+                <div class="fleet-pane-head">
+                  <div>
+                    <p class="section-kicker">Routing Order</p>
+                    <h3>Priority Board</h3>
+                  </div>
+                  <span id="priority-board-summary" class="pill neutral">No agents</span>
+                </div>
+                <div id="priority-summary-strip" class="priority-summary-strip"></div>
+                <div id="priority-board" class="priority-board"></div>
+              </section>
+            </div>
           </section>
         </aside>
 
-        <aside class="right-stack ui-layer">
+        <aside
+          id="right-stack"
+          class="right-stack ui-layer"
+          data-ui-anchor="right"
+        >
           <section class="glass-card telemetry-card">
             <div class="section-head">
               <div>
@@ -272,6 +348,17 @@
               </div>
             </div>
             <div id="telemetry-content" class="telemetry-content"></div>
+          </section>
+
+          <section class="glass-card planner-card">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">Planning</p>
+                <h2>Planner Summary</h2>
+              </div>
+            </div>
+            <div id="planner-summary-grid" class="planner-summary-grid"></div>
+            <div id="planner-trend-strip" class="planner-trend-strip"></div>
           </section>
 
           <section id="debug-card" class="glass-card debug-card">
@@ -297,42 +384,61 @@
 No debug snapshot requested yet.</pre
             >
           </section>
-
-          <section class="glass-card planner-card">
-            <div class="section-head">
-              <div>
-                <p class="section-kicker">Planning</p>
-                <h2>Planner Summary</h2>
-              </div>
-            </div>
-            <div id="planner-summary-grid" class="planner-summary-grid"></div>
-            <div id="planner-trend-strip" class="planner-trend-strip"></div>
-          </section>
         </aside>
 
-        <div class="bottom-strip ui-layer">
-          <section class="glass-card tail-card">
+        <div
+          id="bottom-strip"
+          class="bottom-strip ui-layer"
+          data-ui-anchor="bottom"
+        >
+          <section id="tail-card" class="glass-card tail-card">
             <div class="section-head">
               <div>
                 <p class="section-kicker">System Events</p>
                 <h2>Important Tail</h2>
               </div>
+              <div class="header-actions">
+                <button
+                  id="tail-visibility-button"
+                  class="ghost-button compact-button"
+                  type="button"
+                  aria-controls="logs-list"
+                  aria-expanded="true"
+                >
+                  Lower
+                </button>
+              </div>
             </div>
             <div id="logs-list" class="logs-list"></div>
           </section>
 
-          <section class="glass-card diagnostics-card">
+          <section id="diagnostics-card" class="glass-card diagnostics-card">
             <div class="section-head">
               <div>
                 <p class="section-kicker">Diagnostics</p>
                 <h2>Status Feed</h2>
+              </div>
+              <div class="header-actions">
+                <button
+                  id="diagnostics-visibility-button"
+                  class="ghost-button compact-button"
+                  type="button"
+                  aria-controls="status-list"
+                  aria-expanded="true"
+                >
+                  Lower
+                </button>
               </div>
             </div>
             <div id="status-list" class="status-list"></div>
           </section>
         </div>
 
-        <div class="scene-legend ui-layer">
+        <div
+          id="scene-legend"
+          class="scene-legend ui-layer"
+          data-ui-anchor="bottom"
+        >
           <span class="legend-chip wall">Wall</span>
           <span class="legend-chip lane">Lane</span>
           <span class="legend-chip goal">Goal</span>
@@ -341,9 +447,18 @@ No debug snapshot requested yet.</pre
           <span class="legend-chip agv">AGV</span>
         </div>
 
-        <div class="floating-dock">
+        <div id="floating-dock" class="floating-dock">
           <button id="toggle-ui-button" class="dock-button" type="button">
             Hide UI
+          </button>
+          <button
+            id="ui-visibility-button"
+            class="dock-button"
+            type="button"
+            aria-expanded="false"
+            aria-controls="ui-visibility-panel"
+          >
+            UI Controls
           </button>
           <button id="open-metrics-button" class="dock-button" type="button">
             Metrics
@@ -352,6 +467,25 @@ No debug snapshot requested yet.</pre
             Launch Setup
           </button>
         </div>
+
+        <section id="ui-visibility-panel" class="glass-card ui-visibility-panel hidden">
+          <div class="section-head">
+            <div>
+              <p class="section-kicker">Visibility</p>
+              <h2>UI Controls</h2>
+            </div>
+            <span id="ui-visibility-summary" class="pill neutral">0/0 on</span>
+          </div>
+          <div class="ui-visibility-actions">
+            <button id="ui-all-on-button" class="ghost-button compact-button" type="button">
+              All On
+            </button>
+            <button id="ui-all-off-button" class="ghost-button compact-button" type="button">
+              All Off
+            </button>
+          </div>
+          <div id="ui-visibility-grid" class="ui-visibility-grid"></div>
+        </section>
       </section>
 
       <div id="setup-backdrop" class="overlay-backdrop hidden"></div>
@@ -561,6 +695,7 @@ No debug snapshot requested yet.</pre
       </section>
     </div>
 
+    <script src="./motion-runtime.js"></script>
     <script src="./renderer.js"></script>
   </body>
 </html>

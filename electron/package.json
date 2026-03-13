@@ -10,5 +10,8 @@
   },
   "devDependencies": {
     "electron": "^30.5.1"
+  },
+  "dependencies": {
+    "motion": "^12.36.0"
   }
 }

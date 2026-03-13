@@ -39,6 +39,24 @@ const kRunStepsPerTick = 1;
 const kRunFrameDelayMs = 48;
 const kMetricHistoryLimit = 72;
 const kChargeDistanceThreshold = 300.0;
+const kPriorityReturningWithCar = 3;
+const kPriorityGoingToCharge = 2;
+const kPriorityMovingTask = 1;
+const kPriorityDeadlockThreshold = 5;
+const kPriorityStuckBoostMult = 10;
+const kPriorityStuckBoostHard = 1000;
+const kPriorityLayoutSpring = Object.freeze({
+  type: "spring",
+  stiffness: 520,
+  damping: 34,
+  mass: 0.78,
+});
+const kPriorityEntrySpring = Object.freeze({
+  type: "spring",
+  stiffness: 460,
+  damping: 30,
+  mass: 0.82,
+});
 const kImportantLogCategories = new Set(["Control", "Scenario", "Deadlock", "Charge"]);
 const kAgentPalette = [
   "#2563eb",
@@ -238,6 +256,21 @@ const state = {
     swapWaits: true,
   },
   uiVisible: true,
+  uiSections: {
+    topBar: true,
+    leftStack: true,
+    rightStack: true,
+    mapTools: true,
+    routeHud: true,
+    bottomStrip: true,
+    sceneLegend: true,
+  },
+  bottomPanels: {
+    tail: true,
+    diagnostics: true,
+  },
+  fleetView: "roster",
+  isUiVisibilityPanelOpen: false,
   isSetupOpen: true,
   isMetricsOpen: false,
   isDebugExpanded: false,
@@ -246,6 +279,12 @@ const state = {
 
 const elements = {
   appShell: document.getElementById("app-shell"),
+  topBar: document.getElementById("top-bar"),
+  mapTools: document.getElementById("map-tools"),
+  leftStack: document.getElementById("left-stack"),
+  rightStack: document.getElementById("right-stack"),
+  sceneLegend: document.getElementById("scene-legend"),
+  floatingDock: document.getElementById("floating-dock"),
   mapId: document.getElementById("map-id"),
   algorithm: document.getElementById("algorithm"),
   mode: document.getElementById("mode"),
@@ -278,7 +317,12 @@ const elements = {
   plannerSummaryGrid: document.getElementById("planner-summary-grid"),
   plannerTrendStrip: document.getElementById("planner-trend-strip"),
   fleetSummary: document.getElementById("fleet-summary"),
+  fleetRosterTab: document.getElementById("fleet-roster-tab"),
+  fleetPriorityTab: document.getElementById("fleet-priority-tab"),
+  fleetRosterPane: document.getElementById("fleet-roster-pane"),
+  fleetPriorityPane: document.getElementById("fleet-priority-pane"),
   agentRosterList: document.getElementById("agent-roster-list"),
+  prioritySummaryStrip: document.getElementById("priority-summary-strip"),
   telemetryContent: document.getElementById("telemetry-content"),
   modalSummaryGrid: document.getElementById("modal-summary-grid"),
   metricsHeroGrid: document.getElementById("metrics-hero-grid"),
@@ -286,6 +330,11 @@ const elements = {
   metricsDistributionGrid: document.getElementById("metrics-distribution-grid"),
   metricsFairnessList: document.getElementById("metrics-fairness-list"),
   metricsSections: document.getElementById("metrics-sections"),
+  priorityBoard: document.getElementById("priority-board"),
+  priorityBoardSummary: document.getElementById("priority-board-summary"),
+  bottomStrip: document.getElementById("bottom-strip"),
+  tailCard: document.getElementById("tail-card"),
+  diagnosticsCard: document.getElementById("diagnostics-card"),
   logsList: document.getElementById("logs-list"),
   statusList: document.getElementById("status-list"),
   debugCard: document.getElementById("debug-card"),
@@ -308,7 +357,15 @@ const elements = {
   resetSessionButton: document.getElementById("reset-session-button"),
   debugButton: document.getElementById("debug-button"),
   debugToggleButton: document.getElementById("debug-toggle-button"),
+  tailVisibilityButton: document.getElementById("tail-visibility-button"),
+  diagnosticsVisibilityButton: document.getElementById("diagnostics-visibility-button"),
   toggleUiButton: document.getElementById("toggle-ui-button"),
+  uiVisibilityButton: document.getElementById("ui-visibility-button"),
+  uiVisibilityPanel: document.getElementById("ui-visibility-panel"),
+  uiVisibilitySummary: document.getElementById("ui-visibility-summary"),
+  uiVisibilityGrid: document.getElementById("ui-visibility-grid"),
+  uiAllOnButton: document.getElementById("ui-all-on-button"),
+  uiAllOffButton: document.getElementById("ui-all-off-button"),
   openMetricsButton: document.getElementById("open-metrics-button"),
   closeMetricsButton: document.getElementById("close-metrics-button"),
   openSetupButton: document.getElementById("open-setup-button"),
@@ -329,7 +386,33 @@ const elements = {
 };
 
 const rosterRows = new Map();
+const priorityRows = new Map();
 const kPlannerLayerKeys = ["plannedPaths", "cbsPaths", "conflictCells", "conflictCounts", "swapWaits"];
+const kUiSectionSpecs = [
+  { key: "topBar", element: "topBar", label: "Top Bar" },
+  { key: "leftStack", element: "leftStack", label: "Fleet Panel" },
+  { key: "rightStack", element: "rightStack", label: "Right Panel" },
+  { key: "mapTools", element: "mapTools", label: "Map Tools" },
+  { key: "routeHud", element: "routeHud", label: "Route HUD" },
+  { key: "bottomStrip", element: "bottomStrip", label: "Bottom Panels" },
+  { key: "sceneLegend", element: "sceneLegend", label: "Legend" },
+];
+const kBottomPanelSpecs = [
+  {
+    key: "tail",
+    card: "tailCard",
+    button: "tailVisibilityButton",
+    content: "logsList",
+    label: "Important Tail",
+  },
+  {
+    key: "diagnostics",
+    card: "diagnosticsCard",
+    button: "diagnosticsVisibilityButton",
+    content: "statusList",
+    label: "Status Feed",
+  },
+];
 const kLayerButtonSpecs = [
   { key: "map", element: "mapLayerButton", tone: "primary" },
   { key: "semantic", element: "semanticLayerButton", tone: "primary" },
@@ -383,6 +466,124 @@ function formatMemory(value) {
   return `${numeric.toFixed(0)} KB`;
 }
 
+function reducedMotionPreferred() {
+  return Boolean(window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
+}
+
+function motionRuntime() {
+  return window.motionRuntime?.animate ? window.motionRuntime : null;
+}
+
+function stopAnimations(target) {
+  if (target?.getAnimations) {
+    target.getAnimations().forEach((animation) => {
+      try {
+        animation.commitStyles?.();
+      } catch (_error) {
+        // Some animation implementations don't support commitStyles().
+      }
+      animation.cancel();
+    });
+  }
+}
+
+function animateElement(target, keyframes, options = {}) {
+  const runtime = motionRuntime();
+  if (!runtime || reducedMotionPreferred() || !target) {
+    return null;
+  }
+  stopAnimations(target);
+  return runtime.animate(target, keyframes, {
+    duration: 0.24,
+    easing: [0.22, 1, 0.36, 1],
+    ...options,
+  });
+}
+
+function captureChildPositions(container, selector) {
+  const positions = new Map();
+  if (!container) {
+    return positions;
+  }
+
+  container.querySelectorAll(selector).forEach((node) => {
+    const key = node.dataset.agentId || node.dataset.panelKey || node.id;
+    if (!key) {
+      return;
+    }
+    positions.set(key, node.getBoundingClientRect());
+  });
+  return positions;
+}
+
+function animateChildLayout(container, selector, previousPositions) {
+  if (!container || reducedMotionPreferred()) {
+    return;
+  }
+
+  const runtime = motionRuntime();
+  if (!runtime) {
+    return;
+  }
+
+  Array.from(container.querySelectorAll(selector)).forEach((node, index) => {
+    const clearMotionState = () => {
+      node.classList.remove("layout-moving", "layout-entering");
+    };
+    const key = node.dataset.agentId || node.dataset.panelKey || node.id;
+    const previous = key ? previousPositions.get(key) : null;
+    const next = node.getBoundingClientRect();
+    const previousRank = Number(node.dataset.previousRank ?? node.dataset.rank ?? index);
+    const nextRank = Number(node.dataset.rank ?? index);
+    const rankShift = Math.max(1, Math.abs(previousRank - nextRank));
+
+    if (previous) {
+      const deltaX = previous.left - next.left;
+      const deltaY = previous.top - next.top;
+      const travel = Math.hypot(deltaX, deltaY);
+      if (travel > 1) {
+        node.classList.remove("layout-entering");
+        node.classList.add("layout-moving");
+        animateElement(
+          node,
+          {
+            x: [deltaX, 0],
+            y: [deltaY, 0],
+            opacity: [0.94, 1],
+            scale: [1.018 + Math.min(rankShift, 3) * 0.012, 1],
+          },
+          {
+            ...kPriorityLayoutSpring,
+            stiffness: Math.max(360, kPriorityLayoutSpring.stiffness - Math.min(rankShift * 28, 120)),
+            damping: kPriorityLayoutSpring.damping + Math.min(rankShift * 2, 8),
+            delay: Math.min(index * 0.008, 0.04),
+            onComplete: clearMotionState,
+          },
+        );
+      } else {
+        clearMotionState();
+      }
+      return;
+    }
+
+    node.classList.remove("layout-moving");
+    node.classList.add("layout-entering");
+    animateElement(
+      node,
+      {
+        opacity: [0, 1],
+        y: [20, 0],
+        scale: [0.97, 1],
+      },
+      {
+        ...kPriorityEntrySpring,
+        delay: index * 0.014,
+        onComplete: clearMotionState,
+      },
+    );
+  });
+}
+
 function toneColor(tone = "neutral") {
   switch (tone) {
     case "primary":
@@ -408,6 +609,76 @@ function titleCase(value) {
   return String(value)
     .replace(/_/g, " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function priorityBaseWeight(agent) {
+  switch (agent?.state) {
+    case "returning_with_car":
+      return kPriorityReturningWithCar;
+    case "going_to_charge":
+    case "returning_home_maintenance":
+      return kPriorityGoingToCharge;
+    case "going_to_park":
+    case "going_to_collect":
+      return kPriorityMovingTask;
+    default:
+      return 0;
+  }
+}
+
+function priorityBaseLabel(agent) {
+  switch (agent?.state) {
+    case "returning_with_car":
+      return "Return Car";
+    case "going_to_charge":
+      return "Charge Run";
+    case "returning_home_maintenance":
+      return "Maintenance";
+    case "going_to_park":
+      return "Park Task";
+    case "going_to_collect":
+      return "Collect Task";
+    default:
+      return "Idle";
+  }
+}
+
+function priorityTone(agent) {
+  const stuckSteps = Number(agent?.stuckSteps || 0);
+  if (stuckSteps >= kPriorityDeadlockThreshold) {
+    return "danger";
+  }
+  switch (priorityBaseWeight(agent)) {
+    case kPriorityReturningWithCar:
+      return "primary";
+    case kPriorityGoingToCharge:
+      return "warning";
+    case kPriorityMovingTask:
+      return "success";
+    default:
+      return "neutral";
+  }
+}
+
+function priorityStuckBoost(agent) {
+  const stuckSteps = Math.max(0, Number(agent?.stuckSteps || 0));
+  return stuckSteps >= kPriorityDeadlockThreshold
+    ? kPriorityStuckBoostHard
+    : stuckSteps * kPriorityStuckBoostMult;
+}
+
+function prioritySnapshot(agent) {
+  const baseWeight = priorityBaseWeight(agent);
+  const stuckBoost = priorityStuckBoost(agent);
+  const numericId = Number(agent?.id || 0);
+  return {
+    baseWeight,
+    baseLabel: priorityBaseLabel(agent),
+    stuckBoost,
+    score: baseWeight * 100 + stuckBoost - numericId,
+    tone: priorityTone(agent),
+    escalated: stuckBoost >= kPriorityStuckBoostHard,
+  };
 }
 
 function mapPillText(mapId) {
@@ -543,6 +814,32 @@ function shouldIncludeConsoleTail(entry) {
 
 function currentAgents() {
   return Array.isArray(state.frame?.agents) ? state.frame.agents : [];
+}
+
+function uiSectionVisible(key) {
+  return state.uiSections[key] !== false;
+}
+
+function visibleUiSectionCount() {
+  return kUiSectionSpecs.reduce(
+    (count, spec) => count + (uiSectionVisible(spec.key) ? 1 : 0),
+    0,
+  );
+}
+
+function anyUiSectionsVisible() {
+  return visibleUiSectionCount() > 0;
+}
+
+function allUiSectionsVisible() {
+  return visibleUiSectionCount() === kUiSectionSpecs.length;
+}
+
+function visibleBottomPanelCount() {
+  return kBottomPanelSpecs.reduce(
+    (count, spec) => count + (state.bottomPanels[spec.key] ? 1 : 0),
+    0,
+  );
 }
 
 function currentMapOption() {
@@ -1553,10 +1850,136 @@ function buildLaunchConfig() {
   return launchConfig;
 }
 
-function setUiVisible(visible) {
-  state.uiVisible = Boolean(visible);
+function syncUiSectionClasses() {
+  kUiSectionSpecs.forEach((spec) => {
+    const element = elements[spec.element];
+    if (!element) {
+      return;
+    }
+    element.classList.toggle("is-hidden", !uiSectionVisible(spec.key));
+  });
+
+  state.uiVisible = anyUiSectionsVisible();
   elements.appShell.classList.toggle("ui-hidden", !state.uiVisible);
   elements.toggleUiButton.textContent = state.uiVisible ? "Hide UI" : "Show UI";
+  elements.toggleUiButton.title = state.uiVisible
+    ? "Hide every overlay panel"
+    : "Restore every overlay panel";
+}
+
+function renderUiVisibilityPanel() {
+  const enabledCount = visibleUiSectionCount();
+  elements.uiVisibilitySummary.textContent =
+    `${enabledCount}/${kUiSectionSpecs.length} on`;
+  elements.uiVisibilityButton.setAttribute(
+    "aria-expanded",
+    String(state.isUiVisibilityPanelOpen),
+  );
+
+  elements.uiVisibilityGrid.innerHTML = "";
+  kUiSectionSpecs.forEach((spec) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ui-control-chip";
+    if (uiSectionVisible(spec.key)) {
+      button.classList.add("active");
+    }
+    button.dataset.uiSection = spec.key;
+    button.setAttribute("aria-pressed", String(uiSectionVisible(spec.key)));
+    button.textContent = spec.label;
+    button.addEventListener("click", () => {
+      setUiSectionVisible(spec.key, !uiSectionVisible(spec.key));
+    });
+    elements.uiVisibilityGrid.append(button);
+  });
+
+  elements.uiAllOnButton.disabled = allUiSectionsVisible();
+  elements.uiAllOffButton.disabled = !anyUiSectionsVisible();
+}
+
+function setUiVisibilityPanelOpen(open) {
+  state.isUiVisibilityPanelOpen = Boolean(open);
+  elements.uiVisibilityPanel.classList.toggle("hidden", !state.isUiVisibilityPanelOpen);
+  renderUiVisibilityPanel();
+  if (state.isUiVisibilityPanelOpen) {
+    animateElement(
+      elements.uiVisibilityPanel,
+      {
+        opacity: [0, 1],
+        y: [18, 0],
+        scale: [0.985, 1],
+      },
+      { duration: 0.22 },
+    );
+  }
+}
+
+function setAllUiSections(visible) {
+  kUiSectionSpecs.forEach((spec) => {
+    state.uiSections[spec.key] = Boolean(visible);
+  });
+  syncUiSectionClasses();
+  renderUiVisibilityPanel();
+  layoutViewportEmpty();
+  renderScene();
+  renderRouteHud();
+}
+
+function setUiSectionVisible(key, visible) {
+  if (!Object.prototype.hasOwnProperty.call(state.uiSections, key)) {
+    return;
+  }
+  state.uiSections[key] = Boolean(visible);
+  syncUiSectionClasses();
+  renderUiVisibilityPanel();
+  layoutViewportEmpty();
+  renderScene();
+  renderRouteHud();
+}
+
+function setUiVisible(visible) {
+  setAllUiSections(Boolean(visible));
+}
+
+function setFleetView(view, options = {}) {
+  const nextView = view === "priority" ? "priority" : "roster";
+  state.fleetView = nextView;
+
+  const rosterActive = nextView === "roster";
+  elements.fleetRosterTab.classList.toggle("active", rosterActive);
+  elements.fleetPriorityTab.classList.toggle("active", !rosterActive);
+  elements.fleetRosterTab.setAttribute("aria-selected", String(rosterActive));
+  elements.fleetPriorityTab.setAttribute("aria-selected", String(!rosterActive));
+  elements.fleetRosterPane.classList.toggle("hidden", !rosterActive);
+  elements.fleetPriorityPane.classList.toggle("hidden", rosterActive);
+
+  if (options.animate !== false) {
+    const activePane = rosterActive ? elements.fleetRosterPane : elements.fleetPriorityPane;
+    animateElement(
+      activePane,
+      {
+        opacity: [0, 1],
+        y: [16, 0],
+      },
+      { duration: 0.2 },
+    );
+
+    const rowSelector = rosterActive ? ".roster-row" : ".priority-row";
+    activePane.querySelectorAll(rowSelector).forEach((row, index) => {
+      animateElement(
+        row,
+        {
+          opacity: [0, 1],
+          y: [12, 0],
+          scale: [0.99, 1],
+        },
+        {
+          duration: 0.22,
+          delay: index * 0.015,
+        },
+      );
+    });
+  }
 }
 
 function setSetupOpen(open) {
@@ -1852,6 +2275,310 @@ function renderMetrics() {
   metricSectionSpecs.forEach((section) => {
     elements.metricsSections.append(createMetricSection(section));
   });
+}
+
+function priorityWaitTone(waitReason) {
+  switch (waitReason) {
+    case "stuck":
+    case "oscillating":
+      return "danger";
+    case "priority_yield":
+    case "blocked_by_stationary":
+    case "rotation":
+      return "warning";
+    case "goal_action":
+    case "charging":
+      return "success";
+    default:
+      return "neutral";
+  }
+}
+
+function renderBottomPanels() {
+  const tailVisible = state.bottomPanels.tail;
+  const diagnosticsVisible = state.bottomPanels.diagnostics;
+
+  elements.tailCard.classList.toggle("panel-collapsed", !tailVisible);
+  elements.diagnosticsCard.classList.toggle("panel-collapsed", !diagnosticsVisible);
+
+  kBottomPanelSpecs.forEach((spec) => {
+    const button = elements[spec.button];
+    const visible = state.bottomPanels[spec.key];
+    const content = elements[spec.content];
+    button.textContent = visible ? "Lower" : "Raise";
+    button.setAttribute("aria-expanded", String(visible));
+    button.title = visible ? `Lower ${spec.label}` : `Raise ${spec.label}`;
+    if (content) {
+      content.setAttribute("aria-hidden", String(!visible));
+    }
+  });
+}
+
+function setBottomPanelVisible(key, visible) {
+  const spec = kBottomPanelSpecs.find((item) => item.key === key);
+  if (!spec || state.bottomPanels[key] === visible) {
+    return;
+  }
+
+  state.bottomPanels[key] = visible;
+  renderBottomPanels();
+  layoutViewportEmpty();
+  renderScene();
+}
+
+function createPriorityRow(agentId) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "priority-row";
+  button.dataset.agentId = String(agentId);
+  button.addEventListener("mousedown", (event) => {
+    event.preventDefault();
+  });
+  button.addEventListener("click", () => {
+    const nextId = Number(button.dataset.agentId);
+    state.selectedAgentId = Number.isFinite(nextId) ? nextId : null;
+    renderAll();
+  });
+  button.addEventListener("mouseenter", () => {
+    const nextId = Number(button.dataset.agentId);
+    state.hoveredAgentId = Number.isFinite(nextId) ? nextId : null;
+    renderRouteHud();
+    renderScene();
+  });
+  button.addEventListener("mouseleave", () => {
+    const nextId = Number(button.dataset.agentId);
+    if (state.hoveredAgentId === nextId) {
+      state.hoveredAgentId = null;
+      renderRouteHud();
+      renderScene();
+    }
+  });
+
+  const head = document.createElement("div");
+  head.className = "priority-row-head";
+
+  const lead = document.createElement("div");
+  lead.className = "priority-row-lead";
+
+  const rank = document.createElement("span");
+  rank.className = "priority-rank";
+
+  const avatar = document.createElement("div");
+  avatar.className = "priority-avatar";
+
+  const copy = document.createElement("div");
+  copy.className = "priority-copy";
+
+  const title = document.createElement("div");
+  title.className = "priority-title";
+
+  const subtitle = document.createElement("div");
+  subtitle.className = "priority-subtitle";
+
+  copy.append(title, subtitle);
+  lead.append(rank, avatar, copy);
+
+  const score = document.createElement("span");
+  score.className = "priority-score";
+  head.append(lead, score);
+
+  const chipRow = document.createElement("div");
+  chipRow.className = "priority-chip-row";
+
+  const baseChip = document.createElement("span");
+  const boostChip = document.createElement("span");
+  const waitChip = document.createElement("span");
+  chipRow.append(baseChip, boostChip, waitChip);
+
+  const meter = document.createElement("div");
+  meter.className = "priority-meter";
+
+  const fill = document.createElement("div");
+  fill.className = "priority-meter-fill";
+  meter.append(fill);
+
+  const meta = document.createElement("div");
+  meta.className = "priority-row-meta";
+
+  const baseMeta = document.createElement("span");
+  const liveMeta = document.createElement("span");
+  meta.append(baseMeta, liveMeta);
+
+  button.append(head, chipRow, meter, meta);
+
+  return {
+    button,
+    rank,
+    avatar,
+    title,
+    subtitle,
+    score,
+    baseChip,
+    boostChip,
+    waitChip,
+    fill,
+    baseMeta,
+    liveMeta,
+  };
+}
+
+function updatePriorityRow(row, agent, priority, rank, scoreFloor, scoreRange) {
+  const previousRank = Number(row.button.dataset.rank ?? rank);
+  const rankShift = previousRank - rank;
+  row.button.dataset.agentId = String(agent.id);
+  row.button.dataset.previousRank = String(previousRank);
+  row.button.dataset.rank = String(rank);
+  row.button.className = "priority-row";
+  row.button.style.zIndex = String(Math.max(1, 200 - rank));
+  row.button.classList.toggle("promoted", rankShift > 0);
+  row.button.classList.toggle("demoted", rankShift < 0);
+  if (agent.id === state.selectedAgentId) {
+    row.button.classList.add("selected");
+  }
+  if (rank === 0) {
+    row.button.classList.add("leader");
+  }
+
+  const color = deterministicAgentColor(agent);
+  const normalizedScore = Math.max(
+    0.04,
+    Math.min(1, (priority.score - scoreFloor) / Math.max(1, scoreRange)),
+  );
+
+  row.rank.className = "priority-rank";
+  if (rank === 0) {
+    row.rank.classList.add("leader");
+  }
+  row.rank.textContent = `#${rank + 1}`;
+  row.avatar.style.background = `linear-gradient(135deg, ${color}, ${color}cc)`;
+  row.avatar.textContent = agent.symbol || "?";
+  row.title.textContent = `Agent ${agent.symbol || "?"}`;
+  row.subtitle.textContent = `${priority.baseLabel} · ${coordText(agent.position)} → ${coordText(agent.goal)}`;
+  row.score.textContent = `PRI ${formatInteger(priority.score)}`;
+
+  row.baseChip.className = `priority-chip ${priority.tone}`;
+  row.baseChip.textContent = priority.baseLabel;
+
+  row.boostChip.className = `priority-chip ${priority.escalated ? "danger" : "neutral"}`;
+  row.boostChip.textContent = `Boost +${formatInteger(priority.stuckBoost)}`;
+
+  row.waitChip.className = `priority-chip ${priorityWaitTone(agent.waitReason)}`;
+  row.waitChip.textContent = `Wait ${waitReasonShortLabel(agent.waitReason)}`;
+
+  row.fill.className = `priority-meter-fill ${priority.tone}`;
+  row.fill.style.transform = `scaleX(${normalizedScore})`;
+
+  row.baseMeta.textContent = `base ${formatInteger(priority.baseWeight * 100)} · tie-break -${formatInteger(agent.id)}`;
+  row.liveMeta.textContent = `${agentStateShortLabel(agent.state)} · stk ${formatInteger(agent.stuckSteps || 0)} · osc ${formatInteger(agent.oscillationSteps || 0)}`;
+}
+
+function renderPrioritySummaryStrip(rankedAgents) {
+  elements.prioritySummaryStrip.innerHTML = "";
+
+  if (rankedAgents.length === 0) {
+    return;
+  }
+
+  const leader = rankedAgents[0];
+  const nextLeader = rankedAgents[1] || null;
+  const criticalCount = rankedAgents.filter(
+    ({ agent }) => Number(agent.stuckSteps || 0) >= kPriorityDeadlockThreshold,
+  ).length;
+
+  elements.prioritySummaryStrip.append(
+    createMiniMetric("Leader", `Agent ${leader.agent.symbol || "?"}`, "active"),
+    createMiniMetric(
+      "Gap",
+      nextLeader
+        ? formatInteger(leader.priority.score - nextLeader.priority.score)
+        : formatInteger(leader.priority.score),
+      nextLeader ? "warning" : "neutral",
+    ),
+    createMiniMetric(
+      "Critical",
+      formatInteger(criticalCount),
+      criticalCount > 0 ? "danger" : "neutral",
+    ),
+  );
+}
+
+function renderPriorityBoard() {
+  const rankedAgents = currentAgents()
+    .map((agent) => ({
+      agent,
+      priority: prioritySnapshot(agent),
+    }))
+    .sort((left, right) => right.priority.score - left.priority.score);
+
+  if (rankedAgents.length === 0) {
+    priorityRows.forEach((row) => {
+      row.button.remove();
+    });
+    priorityRows.clear();
+    elements.priorityBoardSummary.textContent = "No agents";
+    elements.prioritySummaryStrip.innerHTML = "";
+    elements.priorityBoard.replaceChildren(
+      createEmptyState(
+        "Priority board offline",
+        "Load a session to inspect how the planner currently orders AGVs.",
+      ),
+    );
+    return;
+  }
+
+  elements.priorityBoardSummary.textContent =
+    `Lead ${rankedAgents[0].agent.symbol || "?"} · ${formatInteger(rankedAgents.length)} tracked`;
+  renderPrioritySummaryStrip(rankedAgents);
+
+  Array.from(elements.priorityBoard.children).forEach((child) => {
+    if (!child.classList.contains("priority-row")) {
+      child.remove();
+    }
+  });
+
+  const previous = captureChildPositions(elements.priorityBoard, ".priority-row");
+  const activeIds = new Set();
+  const scoreFloor = Math.min(
+    0,
+    rankedAgents.reduce((minimum, entry) => Math.min(minimum, entry.priority.score), 0),
+  );
+  const scoreCeiling = rankedAgents.reduce(
+    (maximum, entry) => Math.max(maximum, entry.priority.score),
+    scoreFloor,
+  );
+  const scoreRange = Math.max(1, scoreCeiling - scoreFloor);
+
+  rankedAgents.forEach(({ agent, priority }, index) => {
+    activeIds.add(agent.id);
+    let row = priorityRows.get(agent.id);
+    if (!row) {
+      row = createPriorityRow(agent.id);
+      priorityRows.set(agent.id, row);
+    }
+
+    updatePriorityRow(row, agent, priority, index, scoreFloor, scoreRange);
+
+    const sibling = elements.priorityBoard.children[index] || null;
+    if (row.button !== sibling) {
+      elements.priorityBoard.insertBefore(row.button, sibling);
+    }
+  });
+
+  const staleIds = [];
+  priorityRows.forEach((row, agentId) => {
+    if (activeIds.has(agentId)) {
+      return;
+    }
+    row.button.remove();
+    staleIds.push(agentId);
+  });
+  staleIds.forEach((agentId) => {
+    priorityRows.delete(agentId);
+  });
+
+  if (state.fleetView === "priority" && uiSectionVisible("leftStack")) {
+    animateChildLayout(elements.priorityBoard, ".priority-row", previous);
+  }
 }
 
 function createRosterRow(agentId) {
@@ -2331,7 +3058,12 @@ function renderRouteHudDebug(agent) {
 function renderRouteHud() {
   const agent = displayedAgent();
 
-  if (!agent || !state.sessionId || !state.uiVisible || !state.showLayers.routeHud) {
+  if (
+    !agent ||
+    !state.sessionId ||
+    !uiSectionVisible("routeHud") ||
+    !state.showLayers.routeHud
+  ) {
     elements.routeHud.classList.add("hidden");
     return;
   }
@@ -2394,10 +3126,41 @@ function viewportSize() {
 }
 
 function computeViewportSafeArea(viewportWidth, viewportHeight) {
-  const left = Math.min(430, Math.max(220, Math.floor(viewportWidth * 0.24)));
-  const right = Math.min(430, Math.max(220, Math.floor(viewportWidth * 0.24)));
-  const top = Math.min(190, Math.max(124, Math.floor(viewportHeight * 0.16)));
-  const bottom = Math.min(270, Math.max(172, Math.floor(viewportHeight * 0.23)));
+  if (!anyUiSectionsVisible()) {
+    const insetX = Math.min(96, Math.max(32, Math.floor(viewportWidth * 0.06)));
+    const insetY = Math.min(92, Math.max(28, Math.floor(viewportHeight * 0.05)));
+    return {
+      left: insetX,
+      right: insetX,
+      top: insetY,
+      bottom: insetY,
+      availableWidth: Math.max(240, viewportWidth - insetX * 2),
+      availableHeight: Math.max(220, viewportHeight - insetY * 2),
+    };
+  }
+
+  const left = uiSectionVisible("leftStack") || uiSectionVisible("routeHud")
+    ? Math.min(430, Math.max(220, Math.floor(viewportWidth * 0.24)))
+    : Math.min(92, Math.max(28, Math.floor(viewportWidth * 0.06)));
+  const right = uiSectionVisible("rightStack") || uiSectionVisible("mapTools")
+    ? Math.min(430, Math.max(220, Math.floor(viewportWidth * 0.24)))
+    : Math.min(92, Math.max(28, Math.floor(viewportWidth * 0.06)));
+  const top = uiSectionVisible("topBar") || uiSectionVisible("routeHud") || uiSectionVisible("mapTools")
+    ? Math.min(190, Math.max(124, Math.floor(viewportHeight * 0.16)))
+    : Math.min(84, Math.max(28, Math.floor(viewportHeight * 0.06)));
+
+  let bottom = Math.min(72, Math.max(32, Math.floor(viewportHeight * 0.05)));
+  if (uiSectionVisible("bottomStrip")) {
+    const bottomPanelCount = visibleBottomPanelCount();
+    bottom = bottomPanelCount === 0
+      ? Math.min(126, Math.max(60, Math.floor(viewportHeight * 0.09)))
+      : bottomPanelCount === 1
+        ? Math.min(210, Math.max(118, Math.floor(viewportHeight * 0.17)))
+        : Math.min(270, Math.max(172, Math.floor(viewportHeight * 0.23)));
+  } else if (uiSectionVisible("sceneLegend")) {
+    bottom = Math.min(126, Math.max(78, Math.floor(viewportHeight * 0.11)));
+  }
+
   return {
     left,
     right,
@@ -3061,6 +3824,9 @@ function clearSessionView() {
 
 function renderAll() {
   normalizeSelection();
+  syncUiSectionClasses();
+  setFleetView(state.fleetView, { animate: false });
+  renderBottomPanels();
   layoutViewportEmpty();
   elements.viewportEmpty.classList.toggle("hidden", Boolean(state.sessionId));
   renderLaunchSummaries();
@@ -3068,6 +3834,7 @@ function renderAll() {
   renderPlannerSummary();
   renderRoster();
   renderTelemetry();
+  renderPriorityBoard();
   renderModalSummary();
   renderMetrics();
   renderLogs();
@@ -3398,9 +4165,42 @@ elements.debugToggleButton.addEventListener("click", () => {
   setDebugExpanded(!state.isDebugExpanded);
 });
 
+elements.tailVisibilityButton.addEventListener("click", () => {
+  void setBottomPanelVisible("tail", !state.bottomPanels.tail);
+});
+
+elements.diagnosticsVisibilityButton.addEventListener("click", () => {
+  void setBottomPanelVisible("diagnostics", !state.bottomPanels.diagnostics);
+});
+
+elements.fleetRosterTab.addEventListener("click", () => {
+  setFleetView("roster");
+});
+
+elements.fleetPriorityTab.addEventListener("click", () => {
+  setFleetView("priority");
+});
+
 elements.toggleUiButton.addEventListener("click", () => {
-  setUiVisible(!state.uiVisible);
-  renderRouteHud();
+  setUiVisible(!anyUiSectionsVisible());
+  renderAll();
+});
+
+elements.uiVisibilityButton.addEventListener("click", (event) => {
+  event.stopPropagation();
+  setUiVisibilityPanelOpen(!state.isUiVisibilityPanelOpen);
+});
+
+elements.uiVisibilityPanel.addEventListener("click", (event) => {
+  event.stopPropagation();
+});
+
+elements.uiAllOnButton.addEventListener("click", () => {
+  setAllUiSections(true);
+});
+
+elements.uiAllOffButton.addEventListener("click", () => {
+  setAllUiSections(false);
 });
 
 elements.openMetricsButton.addEventListener("click", () => {
@@ -3467,6 +4267,12 @@ window.addEventListener("resize", () => {
   renderAll();
 });
 
+document.addEventListener("click", () => {
+  if (state.isUiVisibilityPanelOpen) {
+    setUiVisibilityPanelOpen(false);
+  }
+});
+
 window.agvShell.onEvent((event) => {
   if (event.type === "backend-ready") {
     appendStatus(`Backend process started at ${event.backendPath}.`);
@@ -3479,6 +4285,13 @@ window.agvShell.onEvent((event) => {
   if (event.type === "backend-exit") {
     appendStatus(`Backend exited with code ${event.code}.`);
   }
+});
+
+window.motionRuntimeReady?.then(() => {
+  syncUiSectionClasses();
+  renderUiVisibilityPanel();
+  renderBottomPanels();
+  renderPriorityBoard();
 });
 
 bootstrap().catch((error) => {
