@@ -390,11 +390,12 @@ textarea {
   top: 28px;
   left: 50%;
   z-index: 30;
-  width: min(1260px, calc(100% - 300px));
-  padding: 18px;
+  width: min(1410px, calc(100% - 92px));
+  padding: 15px 20px;
   display: grid;
-  grid-template-columns: minmax(260px, 320px) minmax(240px, 1fr) auto;
-  gap: 16px;
+  grid-template-columns: minmax(390px, 470px) minmax(420px, 1fr) auto;
+  gap: 18px;
+  align-items: center;
   transform: translateX(-50%);
 }
 
@@ -402,6 +403,7 @@ textarea {
   display: flex;
   gap: 14px;
   align-items: flex-start;
+  min-width: 0;
 }
 
 .live-indicator {
@@ -440,13 +442,29 @@ textarea {
 
 .mission-copy {
   display: grid;
-  gap: 10px;
+  gap: 8px;
+  min-width: 0;
+}
+
+.top-bar .section-kicker {
+  margin-bottom: 6px;
+  font-size: 0.8rem;
+  letter-spacing: 0.18em;
 }
 
 .mission-pills {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  flex-wrap: nowrap;
+  gap: 10px;
+  min-width: 0;
+}
+
+.mission-pills .pill {
+  min-height: 40px;
+  padding: 0 16px;
+  font-size: 0.96rem;
+  font-weight: 800;
+  white-space: nowrap;
 }
 
 .mission-help,
@@ -459,17 +477,19 @@ textarea {
 }
 
 .mission-help {
-  font-size: 0.88rem;
+  display: none;
 }
 
 .top-stat-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(4, minmax(104px, 1fr));
+  gap: 14px;
+  min-width: 0;
 }
 
 .mini-stat {
-  padding: 10px 12px;
+  min-width: 0;
+  padding: 13px 15px;
   border-radius: 20px;
   background: rgba(255, 255, 255, 0.62);
   border: 1px solid rgba(255, 255, 255, 0.72);
@@ -477,15 +497,16 @@ textarea {
 
 .mini-stat-label {
   color: var(--ink-muted);
-  font-size: 0.68rem;
+  font-size: 0.79rem;
   font-weight: 800;
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
 .mini-stat-value {
-  margin-top: 6px;
-  font-size: 1.18rem;
+  margin-top: 8px;
+  font-size: 1.62rem;
+  line-height: 1;
   font-weight: 800;
 }
 
@@ -505,7 +526,9 @@ textarea {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding-left: 18px;
+  justify-self: end;
+  align-self: stretch;
+  padding-left: 20px;
   border-left: 1px solid rgba(148, 163, 184, 0.22);
 }
 
@@ -2653,8 +2676,8 @@ textarea {
 
 @media (max-width: 1580px) {
   .top-bar {
-    width: min(1140px, calc(100% - 220px));
-    grid-template-columns: minmax(240px, 300px) minmax(220px, 1fr) auto;
+    width: min(1320px, calc(100% - 84px));
+    grid-template-columns: minmax(340px, 1.08fr) minmax(320px, 0.92fr) auto;
   }
 
   .left-stack,
@@ -2668,13 +2691,22 @@ textarea {
   }
 }
 
-@media (max-width: 1400px) {
+@media (max-width: 1360px) {
   .top-bar {
     width: calc(100% - 120px);
     grid-template-columns: 1fr;
   }
 
   .control-cluster {
+    flex-wrap: wrap;
+    justify-self: start;
+    padding-top: 8px;
+    padding-left: 0;
+    border-top: 1px solid rgba(148, 163, 184, 0.22);
+    border-left: 0;
+  }
+
+  .mission-pills {
     flex-wrap: wrap;
   }
 

@@ -434,6 +434,14 @@ const kLayerButtonSpecs = [
   { key: "conflictCounts", element: "conflictCountLayerButton", tone: "warning", requiresDebug: true },
   { key: "swapWaits", element: "swapLayerButton", tone: "danger", requiresDebug: true },
 ];
+const kShortcutEditableSelector = [
+  "input",
+  "select",
+  "textarea",
+  "button",
+  "[contenteditable]",
+  "[role='textbox']",
+].join(", ");
 
 function formatNumber(value, fractionDigits = 1) {
   if (value === null || value === undefined || Number.isNaN(value)) {
@@ -2156,18 +2164,18 @@ function syncInteractiveState() {
 
   if (state.running) {
     elements.runControlHelp.textContent =
-      "Continuous run is active. Pause to inspect the map or reset back to setup.";
+      "Continuous run is active. Press Space to pause, or let the session play until completion.";
     return;
   }
 
   if (state.paused) {
     elements.runControlHelp.textContent =
-      "Session loaded and paused. Use Single step for CLI-style stepping or Run for playback.";
+      "Session loaded and paused. Press Space to run, S to step, or R to reset to setup.";
     return;
   }
 
   elements.runControlHelp.textContent =
-    "Session is live. Press Pause to freeze it or Reset to setup to discard it.";
+    "Session is live. Press Space to pause or R to reset to setup.";
 }
 
 function setBusy(isBusy) {
@@ -4156,6 +4164,83 @@ async function runBusyAction(action, failurePrefix) {
   }
 }
 
+function interactiveShortcutTarget(target) {
+  const candidate = target instanceof Element ? target : document.activeElement;
+  if (!(candidate instanceof Element)) {
+    return null;
+  }
+  return candidate.closest(kShortcutEditableSelector);
+}
+
+function shouldIgnoreShortcut(event) {
+  return Boolean(
+    event.defaultPrevented ||
+      event.repeat ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      interactiveShortcutTarget(event.target),
+  );
+}
+
+function triggerRun() {
+  if (!state.sessionId || state.running || state.busy) {
+    return;
+  }
+  void runContinuously();
+}
+
+function triggerPause() {
+  if (!state.sessionId || state.busy || (!state.running && state.paused)) {
+    return;
+  }
+  void pauseRun();
+}
+
+function triggerStep() {
+  if (!state.sessionId || state.busy || state.running || !state.paused) {
+    return;
+  }
+  void runBusyAction(stepOnce, "Step failed:");
+}
+
+function triggerReset() {
+  if (!state.sessionId || state.busy || state.running) {
+    return;
+  }
+  void runBusyAction(resetToSetup, "Reset failed:");
+}
+
+function handleGlobalShortcut(event) {
+  if (shouldIgnoreShortcut(event) || !state.sessionId) {
+    return;
+  }
+
+  switch (event.code) {
+    case "Space":
+      event.preventDefault();
+      if (state.running || !state.paused) {
+        triggerPause();
+      } else {
+        triggerRun();
+      }
+      break;
+    case "KeyS":
+      if (!state.paused || state.running) {
+        return;
+      }
+      event.preventDefault();
+      triggerStep();
+      break;
+    case "KeyR":
+      event.preventDefault();
+      triggerReset();
+      break;
+    default:
+      break;
+  }
+}
+
 function updateHoveredAgentFromEvent(event) {
   if (!state.scene) {
     return;
@@ -4274,19 +4359,19 @@ elements.viewportSetupButton.addEventListener("click", () => {
 });
 
 elements.runButton.addEventListener("click", () => {
-  void runContinuously();
+  triggerRun();
 });
 
 elements.pauseButton.addEventListener("click", () => {
-  void pauseRun();
+  triggerPause();
 });
 
-elements.stepButton.addEventListener("click", async () => {
-  await runBusyAction(stepOnce, "Step failed:");
+elements.stepButton.addEventListener("click", () => {
+  triggerStep();
 });
 
-elements.resetSessionButton.addEventListener("click", async () => {
-  await runBusyAction(resetToSetup, "Reset failed:");
+elements.resetSessionButton.addEventListener("click", () => {
+  triggerReset();
 });
 
 elements.debugButton.addEventListener("click", async () => {
@@ -4419,6 +4504,10 @@ elements.canvas.addEventListener("mouseleave", () => {
 
 window.addEventListener("resize", () => {
   renderAll();
+});
+
+document.addEventListener("keydown", (event) => {
+  handleGlobalShortcut(event);
 });
 
 document.addEventListener("click", () => {
