@@ -111,7 +111,7 @@
               title="Pause"
               aria-label="Pause"
             >
-              <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <svg class="control-icon pause-icon" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M8 6h3v12H8zM13 6h3v12h-3z"></path>
               </svg>
               <span class="sr-only">Pause</span>
@@ -321,12 +321,40 @@
                 role="tabpanel"
                 aria-labelledby="fleet-priority-tab"
               >
-                <div class="fleet-pane-head">
+                <div class="fleet-pane-head priority-pane-head">
                   <div>
                     <p class="section-kicker">Routing Order</p>
                     <h3>Priority Board</h3>
                   </div>
-                  <span id="priority-board-summary" class="pill neutral">No agents</span>
+                  <div class="priority-pane-tools">
+                    <div
+                      class="priority-mode-tabs"
+                      role="tablist"
+                      aria-label="Priority board display modes"
+                    >
+                      <button
+                        id="priority-detailed-tab"
+                        class="priority-mode-tab active"
+                        type="button"
+                        role="tab"
+                        aria-selected="true"
+                        aria-controls="priority-board"
+                      >
+                        Detailed
+                      </button>
+                      <button
+                        id="priority-minimal-tab"
+                        class="priority-mode-tab"
+                        type="button"
+                        role="tab"
+                        aria-selected="false"
+                        aria-controls="priority-board"
+                      >
+                        Minimal
+                      </button>
+                    </div>
+                    <span id="priority-board-summary" class="pill neutral">No agents</span>
+                  </div>
                 </div>
                 <div id="priority-summary-strip" class="priority-summary-strip"></div>
                 <div id="priority-board" class="priority-board"></div>
@@ -340,7 +368,54 @@
           class="right-stack ui-layer"
           data-ui-anchor="right"
         >
-          <section class="glass-card telemetry-card">
+          <section class="glass-card right-tab-card">
+            <div class="section-head">
+              <div>
+                <p class="section-kicker">Inspector</p>
+                <h2>Right Panel</h2>
+              </div>
+            </div>
+
+            <div class="right-view-tabs" role="tablist" aria-label="Right panel views">
+              <button
+                id="right-telemetry-tab"
+                class="fleet-tab right-view-tab active"
+                type="button"
+                role="tab"
+                aria-selected="true"
+                aria-controls="right-telemetry-pane"
+              >
+                Telemetry
+              </button>
+              <button
+                id="right-planner-tab"
+                class="fleet-tab right-view-tab"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="right-planner-pane"
+              >
+                Planner
+              </button>
+              <button
+                id="right-debug-tab"
+                class="fleet-tab right-view-tab"
+                type="button"
+                role="tab"
+                aria-selected="false"
+                aria-controls="right-debug-pane"
+              >
+                Debug
+              </button>
+            </div>
+          </section>
+
+          <section
+            id="right-telemetry-pane"
+            class="glass-card telemetry-card right-pane"
+            role="tabpanel"
+            aria-labelledby="right-telemetry-tab"
+          >
             <div class="section-head">
               <div>
                 <p class="section-kicker">Telemetry</p>
@@ -350,7 +425,12 @@
             <div id="telemetry-content" class="telemetry-content"></div>
           </section>
 
-          <section class="glass-card planner-card">
+          <section
+            id="right-planner-pane"
+            class="glass-card planner-card right-pane hidden"
+            role="tabpanel"
+            aria-labelledby="right-planner-tab"
+          >
             <div class="section-head">
               <div>
                 <p class="section-kicker">Planning</p>
@@ -361,7 +441,12 @@
             <div id="planner-trend-strip" class="planner-trend-strip"></div>
           </section>
 
-          <section id="debug-card" class="glass-card debug-card">
+          <section
+            id="right-debug-pane"
+            class="glass-card debug-card right-pane hidden"
+            role="tabpanel"
+            aria-labelledby="right-debug-tab"
+          >
             <div class="section-head">
               <div>
                 <p class="section-kicker">Developer</p>

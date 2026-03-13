@@ -270,6 +270,8 @@ const state = {
     diagnostics: true,
   },
   fleetView: "roster",
+  rightStackView: "telemetry",
+  priorityBoardMode: "detailed",
   isUiVisibilityPanelOpen: false,
   isSetupOpen: true,
   isMetricsOpen: false,
@@ -321,8 +323,16 @@ const elements = {
   fleetPriorityTab: document.getElementById("fleet-priority-tab"),
   fleetRosterPane: document.getElementById("fleet-roster-pane"),
   fleetPriorityPane: document.getElementById("fleet-priority-pane"),
+  priorityDetailedTab: document.getElementById("priority-detailed-tab"),
+  priorityMinimalTab: document.getElementById("priority-minimal-tab"),
   agentRosterList: document.getElementById("agent-roster-list"),
   prioritySummaryStrip: document.getElementById("priority-summary-strip"),
+  rightTelemetryTab: document.getElementById("right-telemetry-tab"),
+  rightPlannerTab: document.getElementById("right-planner-tab"),
+  rightDebugTab: document.getElementById("right-debug-tab"),
+  rightTelemetryPane: document.getElementById("right-telemetry-pane"),
+  rightPlannerPane: document.getElementById("right-planner-pane"),
+  rightDebugPane: document.getElementById("right-debug-pane"),
   telemetryContent: document.getElementById("telemetry-content"),
   modalSummaryGrid: document.getElementById("modal-summary-grid"),
   metricsHeroGrid: document.getElementById("metrics-hero-grid"),
@@ -337,7 +347,7 @@ const elements = {
   diagnosticsCard: document.getElementById("diagnostics-card"),
   logsList: document.getElementById("logs-list"),
   statusList: document.getElementById("status-list"),
-  debugCard: document.getElementById("debug-card"),
+  debugCard: document.getElementById("right-debug-pane"),
   debugOutput: document.getElementById("debug-output"),
   canvas: document.getElementById("scene-canvas"),
   routeHud: document.getElementById("route-hud"),
@@ -898,6 +908,15 @@ function isGridCoordValid(coord) {
 
 function agentById(agentId) {
   return currentAgents().find((agent) => agent.id === agentId) || null;
+}
+
+function agentSymbol(agent) {
+  const rawSymbol = String(agent?.symbol || "").trim();
+  return rawSymbol || "?";
+}
+
+function agentCallsign(agent) {
+  return agentSymbol(agent);
 }
 
 function agentTag(agentId) {
@@ -1982,6 +2001,84 @@ function setFleetView(view, options = {}) {
   }
 }
 
+function setRightStackView(view, options = {}) {
+  const nextView = view === "planner" || view === "debug" ? view : "telemetry";
+  state.rightStackView = nextView;
+
+  const specs = [
+    {
+      name: "telemetry",
+      tab: elements.rightTelemetryTab,
+      pane: elements.rightTelemetryPane,
+      rowSelector: ".telemetry-grid > *, .telemetry-empty",
+    },
+    {
+      name: "planner",
+      tab: elements.rightPlannerTab,
+      pane: elements.rightPlannerPane,
+      rowSelector: ".planner-summary-grid > *, .planner-trend-strip > *",
+    },
+    {
+      name: "debug",
+      tab: elements.rightDebugTab,
+      pane: elements.rightDebugPane,
+      rowSelector: ".debug-output, .header-actions > *",
+    },
+  ];
+
+  specs.forEach((spec) => {
+    const active = spec.name === nextView;
+    spec.tab.classList.toggle("active", active);
+    spec.tab.setAttribute("aria-selected", String(active));
+    spec.pane.classList.toggle("hidden", !active);
+  });
+
+  if (options.animate === false) {
+    return;
+  }
+
+  const activeSpec = specs.find((spec) => spec.name === nextView);
+  if (!activeSpec) {
+    return;
+  }
+
+  animateElement(
+    activeSpec.pane,
+    {
+      opacity: [0, 1],
+      y: [16, 0],
+    },
+    { duration: 0.2 },
+  );
+
+  activeSpec.pane.querySelectorAll(activeSpec.rowSelector).forEach((node, index) => {
+    animateElement(
+      node,
+      {
+        opacity: [0, 1],
+        y: [10, 0],
+      },
+      {
+        duration: 0.18,
+        delay: index * 0.012,
+      },
+    );
+  });
+}
+
+function setPriorityBoardMode(mode) {
+  const nextMode = mode === "minimal" ? "minimal" : "detailed";
+  const detailed = nextMode === "detailed";
+  state.priorityBoardMode = nextMode;
+
+  elements.priorityDetailedTab.classList.toggle("active", detailed);
+  elements.priorityMinimalTab.classList.toggle("active", !detailed);
+  elements.priorityDetailedTab.setAttribute("aria-selected", String(detailed));
+  elements.priorityMinimalTab.setAttribute("aria-selected", String(!detailed));
+  elements.priorityBoard.classList.toggle("minimal", !detailed);
+  elements.prioritySummaryStrip.classList.toggle("hidden", !detailed);
+}
+
 function setSetupOpen(open) {
   state.isSetupOpen = Boolean(open);
   elements.setupBackdrop.classList.toggle("hidden", !state.isSetupOpen);
@@ -2295,35 +2392,59 @@ function priorityWaitTone(waitReason) {
 }
 
 function renderBottomPanels() {
-  const tailVisible = state.bottomPanels.tail;
-  const diagnosticsVisible = state.bottomPanels.diagnostics;
+  const bottomPanelsVisible = state.bottomPanels.tail || state.bottomPanels.diagnostics;
 
-  elements.tailCard.classList.toggle("panel-collapsed", !tailVisible);
-  elements.diagnosticsCard.classList.toggle("panel-collapsed", !diagnosticsVisible);
+  elements.tailCard.classList.toggle("panel-collapsed", !bottomPanelsVisible);
+  elements.diagnosticsCard.classList.toggle("panel-collapsed", !bottomPanelsVisible);
 
   kBottomPanelSpecs.forEach((spec) => {
     const button = elements[spec.button];
-    const visible = state.bottomPanels[spec.key];
     const content = elements[spec.content];
-    button.textContent = visible ? "Lower" : "Raise";
-    button.setAttribute("aria-expanded", String(visible));
-    button.title = visible ? `Lower ${spec.label}` : `Raise ${spec.label}`;
+    button.textContent = bottomPanelsVisible ? "Lower" : "Raise";
+    button.setAttribute("aria-expanded", String(bottomPanelsVisible));
+    button.title = bottomPanelsVisible ? "Lower bottom panels" : "Raise bottom panels";
     if (content) {
-      content.setAttribute("aria-hidden", String(!visible));
+      content.setAttribute("aria-hidden", String(!bottomPanelsVisible));
     }
   });
 }
 
 function setBottomPanelVisible(key, visible) {
   const spec = kBottomPanelSpecs.find((item) => item.key === key);
-  if (!spec || state.bottomPanels[key] === visible) {
+  const nextVisible = Boolean(visible);
+  if (!spec || ((state.bottomPanels.tail || state.bottomPanels.diagnostics) === nextVisible)) {
     return;
   }
 
-  state.bottomPanels[key] = visible;
+  state.bottomPanels.tail = nextVisible;
+  state.bottomPanels.diagnostics = nextVisible;
   renderBottomPanels();
   layoutViewportEmpty();
   renderScene();
+}
+
+function syncRightStackOffset() {
+  if (!elements.rightStack || !elements.mapTools) {
+    return;
+  }
+
+  if (!uiSectionVisible("rightStack")) {
+    elements.rightStack.style.top = "";
+    return;
+  }
+
+  const mapToolsVisible = uiSectionVisible("mapTools") && !elements.mapTools.classList.contains("is-hidden");
+  if (!mapToolsVisible) {
+    elements.rightStack.style.top = "";
+    return;
+  }
+
+  const appRect = elements.appShell.getBoundingClientRect();
+  const mapToolsRect = elements.mapTools.getBoundingClientRect();
+  const clearSpacing = window.innerWidth <= 1120 ? 18 : 16;
+  const baseTop = window.innerWidth <= 1400 ? 260 : 178;
+  const nextTop = Math.max(baseTop, Math.round(mapToolsRect.bottom - appRect.top + clearSpacing));
+  elements.rightStack.style.top = `${nextTop}px`;
 }
 
 function createPriorityRow(agentId) {
@@ -2423,6 +2544,8 @@ function createPriorityRow(agentId) {
 }
 
 function updatePriorityRow(row, agent, priority, rank, scoreFloor, scoreRange) {
+  const minimalMode = state.priorityBoardMode === "minimal";
+  const symbol = agentSymbol(agent);
   const previousRank = Number(row.button.dataset.rank ?? rank);
   const rankShift = previousRank - rank;
   row.button.dataset.agentId = String(agent.id);
@@ -2430,6 +2553,7 @@ function updatePriorityRow(row, agent, priority, rank, scoreFloor, scoreRange) {
   row.button.dataset.rank = String(rank);
   row.button.className = "priority-row";
   row.button.style.zIndex = String(Math.max(1, 200 - rank));
+  row.button.classList.toggle("minimal", minimalMode);
   row.button.classList.toggle("promoted", rankShift > 0);
   row.button.classList.toggle("demoted", rankShift < 0);
   if (agent.id === state.selectedAgentId) {
@@ -2438,6 +2562,11 @@ function updatePriorityRow(row, agent, priority, rank, scoreFloor, scoreRange) {
   if (rank === 0) {
     row.button.classList.add("leader");
   }
+  row.button.title = minimalMode ? `${rank + 1}. ${symbol}` : "";
+  row.button.setAttribute(
+    "aria-label",
+    `${rank === 0 ? "Leader" : `Priority ${rank + 1}`} ${symbol}, ${agentStateShortLabel(agent.state)}`,
+  );
 
   const color = deterministicAgentColor(agent);
   const normalizedScore = Math.max(
@@ -2451,8 +2580,8 @@ function updatePriorityRow(row, agent, priority, rank, scoreFloor, scoreRange) {
   }
   row.rank.textContent = `#${rank + 1}`;
   row.avatar.style.background = `linear-gradient(135deg, ${color}, ${color}cc)`;
-  row.avatar.textContent = agent.symbol || "?";
-  row.title.textContent = `Agent ${agent.symbol || "?"}`;
+  row.avatar.textContent = symbol;
+  row.title.textContent = rank === 0 ? "Leader" : `Agent ${symbol}`;
   row.subtitle.textContent = `${priority.baseLabel} · ${coordText(agent.position)} → ${coordText(agent.goal)}`;
   row.score.textContent = `PRI ${formatInteger(priority.score)}`;
 
@@ -2486,7 +2615,7 @@ function renderPrioritySummaryStrip(rankedAgents) {
   ).length;
 
   elements.prioritySummaryStrip.append(
-    createMiniMetric("Leader", `Agent ${leader.agent.symbol || "?"}`, "active"),
+    createMiniMetric("Leader", agentCallsign(leader.agent), "active"),
     createMiniMetric(
       "Gap",
       nextLeader
@@ -2527,7 +2656,7 @@ function renderPriorityBoard() {
   }
 
   elements.priorityBoardSummary.textContent =
-    `Lead ${rankedAgents[0].agent.symbol || "?"} · ${formatInteger(rankedAgents.length)} tracked`;
+    `${agentCallsign(rankedAgents[0].agent)} · ${formatInteger(rankedAgents.length)} tracked`;
   renderPrioritySummaryStrip(rankedAgents);
 
   Array.from(elements.priorityBoard.children).forEach((child) => {
@@ -3825,7 +3954,10 @@ function clearSessionView() {
 function renderAll() {
   normalizeSelection();
   syncUiSectionClasses();
+  syncRightStackOffset();
   setFleetView(state.fleetView, { animate: false });
+  setRightStackView(state.rightStackView, { animate: false });
+  setPriorityBoardMode(state.priorityBoardMode);
   renderBottomPanels();
   layoutViewportEmpty();
   elements.viewportEmpty.classList.toggle("hidden", Boolean(state.sessionId));
@@ -4179,6 +4311,28 @@ elements.fleetRosterTab.addEventListener("click", () => {
 
 elements.fleetPriorityTab.addEventListener("click", () => {
   setFleetView("priority");
+});
+
+elements.priorityDetailedTab.addEventListener("click", () => {
+  setPriorityBoardMode("detailed");
+  renderPriorityBoard();
+});
+
+elements.priorityMinimalTab.addEventListener("click", () => {
+  setPriorityBoardMode("minimal");
+  renderPriorityBoard();
+});
+
+elements.rightTelemetryTab.addEventListener("click", () => {
+  setRightStackView("telemetry");
+});
+
+elements.rightPlannerTab.addEventListener("click", () => {
+  setRightStackView("planner");
+});
+
+elements.rightDebugTab.addEventListener("click", () => {
+  setRightStackView("debug");
 });
 
 elements.toggleUiButton.addEventListener("click", () => {

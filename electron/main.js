@@ -13,6 +13,17 @@ const kDefaultFrameOptions = Object.freeze({
 });
 
 const repoRoot = path.resolve(__dirname, "..");
+let isAppQuitInFlight = false;
+
+function isIgnorablePipeError(error) {
+  const code = String(error?.code || "");
+  return (
+    code === "EPIPE" ||
+    code === "ECONNRESET" ||
+    code === "ERR_STREAM_DESTROYED" ||
+    code === "ERR_STREAM_WRITE_AFTER_END"
+  );
+}
 
 function resolveBackendPath() {
   const requested = process.env.AGV_RENDER_IPC_PATH;
@@ -48,6 +59,7 @@ class AgvBackendClient {
     this.nextRequestId = 1;
     this.backendPath = null;
     this.eventSink = null;
+    this.isShuttingDown = false;
   }
 
   setEventSink(callback) {
@@ -60,11 +72,38 @@ class AgvBackendClient {
     }
   }
 
+  childIsAlive() {
+    return Boolean(
+      this.child &&
+        !this.child.killed &&
+        this.child.exitCode === null &&
+        this.child.signalCode === null,
+    );
+  }
+
+  stdinIsWritable() {
+    return Boolean(
+      this.child?.stdin &&
+        !this.child.stdin.destroyed &&
+        !this.child.stdin.writableEnded &&
+        !this.child.stdin.errored,
+    );
+  }
+
+  clearChildReferences() {
+    this.stdoutReader?.close();
+    this.stderrReader?.close();
+    this.child = null;
+    this.stdoutReader = null;
+    this.stderrReader = null;
+  }
+
   async ensureStarted() {
-    if (this.child && !this.child.killed) {
+    if (this.childIsAlive() && this.stdinIsWritable()) {
       return;
     }
 
+    this.isShuttingDown = false;
     this.backendPath = resolveBackendPath();
     this.child = spawn(this.backendPath, [], {
       cwd: path.dirname(this.backendPath),
@@ -79,6 +118,13 @@ class AgvBackendClient {
     this.stderrReader.on("line", (line) => {
       this.emit({ type: "backend-stderr", line });
     });
+    this.child.stdin.on("error", (error) => {
+      if (this.isShuttingDown && isIgnorablePipeError(error)) {
+        return;
+      }
+      this.rejectAllPending(error);
+      this.emit({ type: "backend-error", message: error.message });
+    });
 
     this.child.on("error", (error) => {
       this.rejectAllPending(error);
@@ -90,9 +136,7 @@ class AgvBackendClient {
         `Backend exited with code ${code ?? "null"} and signal ${signal ?? "null"}.`,
       );
       this.rejectAllPending(error);
-      this.child = null;
-      this.stdoutReader = null;
-      this.stderrReader = null;
+      this.clearChildReferences();
       this.emit({
         type: "backend-exit",
         code,
@@ -160,6 +204,9 @@ class AgvBackendClient {
 
   async request(command, payload = {}) {
     await this.ensureStarted();
+    if (!this.childIsAlive() || !this.stdinIsWritable()) {
+      throw new Error("Backend connection is no longer writable.");
+    }
 
     const requestId = `${command}-${this.nextRequestId++}`;
     const request = {
@@ -171,28 +218,36 @@ class AgvBackendClient {
 
     return await new Promise((resolve, reject) => {
       this.pending.set(requestId, { resolve, reject });
-      this.child.stdin.write(`${JSON.stringify(request)}\n`, (error) => {
-        if (!error) {
-          return;
-        }
+      try {
+        this.child.stdin.write(`${JSON.stringify(request)}\n`, (error) => {
+          if (!error) {
+            return;
+          }
+          this.pending.delete(requestId);
+          reject(error);
+        });
+      } catch (error) {
         this.pending.delete(requestId);
         reject(error);
-      });
+      }
     });
   }
 
   async shutdown() {
-    if (!this.child || this.child.killed) {
+    if (!this.childIsAlive()) {
       return;
     }
 
+    this.isShuttingDown = true;
     try {
       await this.request("shutdown");
     } catch (_error) {
       // Ignore shutdown races during app exit.
     }
 
-    this.child.stdin.end();
+    if (this.stdinIsWritable()) {
+      this.child.stdin.end();
+    }
   }
 }
 
@@ -294,6 +349,9 @@ function createWindow() {
   });
 
   backend.setEventSink((event) => {
+    if (window.isDestroyed() || window.webContents.isDestroyed()) {
+      return;
+    }
     window.webContents.send("agv:event", event);
   });
 
@@ -406,11 +464,12 @@ app.whenReady().then(() => {
 });
 
 app.on("before-quit", async (event) => {
-  if (!backend.child || backend.child.killed) {
+  if (isAppQuitInFlight || !backend.childIsAlive()) {
     return;
   }
 
   event.preventDefault();
+  isAppQuitInFlight = true;
   try {
     await backend.shutdown();
   } finally {

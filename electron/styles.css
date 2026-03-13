@@ -511,6 +511,9 @@ textarea {
 
 .icon-control {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 56px;
   height: 56px;
   min-height: 56px;
@@ -525,10 +528,19 @@ textarea {
 }
 
 .icon-control .control-icon {
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
   display: block;
   fill: currentColor;
+}
+
+.icon-control .play-icon {
+  transform: translateX(1.5px) scale(1.08);
+}
+
+.icon-control .pause-icon {
+  transform: scale(1.12);
 }
 
 .icon-control.primary-control {
@@ -670,6 +682,10 @@ textarea {
   flex: 0 0 auto;
 }
 
+.right-tab-card {
+  padding: 14px;
+}
+
 .planner-card,
 .roster-card,
 .fleet-card,
@@ -720,6 +736,27 @@ textarea {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
 }
 
+.right-view-tabs {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 6px;
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+}
+
+.right-view-tab {
+  min-height: 40px;
+  padding: 0 10px;
+  font-size: 0.78rem;
+}
+
+.right-pane.hidden {
+  display: none !important;
+}
+
 .fleet-stage {
   margin-top: 14px;
   flex: 1 1 auto;
@@ -743,6 +780,45 @@ textarea {
   justify-content: space-between;
   gap: 10px;
   margin-bottom: 14px;
+}
+
+.priority-pane-head {
+  align-items: center;
+}
+
+.priority-pane-tools {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.priority-mode-tabs {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 5px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.56);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+}
+
+.priority-mode-tab {
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--ink-muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.priority-mode-tab.active {
+  background: rgba(37, 99, 235, 0.12);
+  color: var(--blue);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
 }
 
 .telemetry-card,
@@ -1216,6 +1292,11 @@ textarea {
   gap: 10px;
 }
 
+.priority-board.minimal {
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+  gap: 12px;
+}
+
 .priority-row {
   width: 100%;
   padding: 14px;
@@ -1233,6 +1314,16 @@ textarea {
     background 180ms ease,
     border-color 180ms ease,
     box-shadow 180ms ease;
+}
+
+.priority-row.minimal {
+  min-height: 76px;
+  padding: 10px;
+  border-radius: 24px;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  gap: 0;
 }
 
 .priority-row.promoted {
@@ -1263,6 +1354,12 @@ textarea {
     inset 0 0 0 1px rgba(37, 99, 235, 0.12);
 }
 
+.priority-row.minimal.leader {
+  box-shadow:
+    0 18px 34px rgba(37, 99, 235, 0.14),
+    inset 0 0 0 1px rgba(37, 99, 235, 0.22);
+}
+
 .priority-row-head,
 .priority-row-meta {
   display: flex;
@@ -1276,6 +1373,11 @@ textarea {
   align-items: center;
   gap: 12px;
   min-width: 0;
+}
+
+.priority-row.minimal .priority-row-head,
+.priority-row.minimal .priority-row-lead {
+  justify-content: center;
 }
 
 .priority-rank {
@@ -1307,6 +1409,14 @@ textarea {
   color: #fff;
   font-weight: 800;
   box-shadow: 0 12px 24px rgba(15, 23, 42, 0.16);
+}
+
+.priority-row.minimal .priority-avatar {
+  width: 52px;
+  height: 52px;
+  border-radius: 20px;
+  font-size: 1.18rem;
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.2);
 }
 
 .priority-copy {
@@ -1426,6 +1536,15 @@ textarea {
   color: var(--ink-muted);
   font-size: 0.76rem;
   font-weight: 700;
+}
+
+.priority-row.minimal .priority-rank,
+.priority-row.minimal .priority-copy,
+.priority-row.minimal .priority-score,
+.priority-row.minimal .priority-chip-row,
+.priority-row.minimal .priority-meter,
+.priority-row.minimal .priority-row-meta {
+  display: none !important;
 }
 
 .telemetry-empty {
@@ -2634,6 +2753,10 @@ textarea {
 
   .tool-button-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .right-view-tabs {
+    grid-template-columns: 1fr;
   }
 
   .scene-legend {
