@@ -973,6 +973,11 @@ textarea {
   border-color: rgba(220, 63, 106, 0.14);
 }
 
+.metric-tile[data-tone="success"] {
+  background: rgba(15, 155, 113, 0.08);
+  border-color: rgba(15, 155, 113, 0.14);
+}
+
 .metric-label {
   color: var(--ink-muted);
   font-size: 0.7rem;
@@ -2209,6 +2214,16 @@ textarea {
   gap: 16px;
 }
 
+.preset-grid {
+  align-items: end;
+}
+
+.preset-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .launch-grid,
 .realtime-grid,
 .phase-row-grid {
@@ -2346,6 +2361,88 @@ textarea {
 
 .drawer-summary {
   padding: 18px;
+}
+
+.app-shell.viewport-map .ui-layer,
+.app-shell.viewport-map .floating-dock,
+.app-shell.viewport-map .ui-visibility-panel,
+.app-shell.viewport-map .viewport-empty {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.app-shell.viewport-metrics .ui-layer,
+.app-shell.viewport-metrics .floating-dock,
+.app-shell.viewport-metrics .ui-visibility-panel,
+.app-shell.viewport-metrics .viewport-empty,
+.app-shell.viewport-metrics .canvas-shell {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.metrics-overview {
+  position: absolute;
+  inset: 22px;
+  z-index: 34;
+  overflow: auto;
+  padding: 20px;
+}
+
+.metrics-overview-shell {
+  min-height: 100%;
+  padding: 26px;
+  display: grid;
+  gap: 18px;
+}
+
+.metrics-overview-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.metrics-overview-hero,
+.metrics-overview-grid,
+.metrics-overview-distribution,
+.metrics-overview-trends {
+  display: grid;
+  gap: 14px;
+}
+
+.metrics-overview-hero {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.metrics-overview-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.metrics-overview-distribution {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.metrics-overview-trends {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.metrics-overview .metric-tile {
+  padding: 18px;
+  border-radius: 24px;
+}
+
+.metrics-overview .metric-label {
+  font-size: 0.76rem;
+}
+
+.metrics-overview .metric-value {
+  margin-top: 10px;
+  font-size: 1.5rem;
+}
+
+.metrics-overview .distribution-card,
+.metrics-overview .metric-trend-card {
+  background: rgba(255, 255, 255, 0.66);
 }
 
 .drawer-footer {
@@ -2762,6 +2859,13 @@ textarea {
   .phase-actions {
     grid-template-columns: 1fr;
   }
+
+  .metrics-overview-hero,
+  .metrics-overview-grid,
+  .metrics-overview-distribution,
+  .metrics-overview-trends {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 1120px) {
@@ -2794,6 +2898,15 @@ textarea {
   .scene-legend {
     display: none;
   }
+
+  .metrics-overview {
+    inset: 14px;
+    padding: 14px;
+  }
+
+  .metrics-overview-shell {
+    padding: 20px;
+  }
 }
 
 @media (max-width: 920px) {
@@ -2801,7 +2914,11 @@ textarea {
   .metrics-infographics-grid,
   .metrics-distribution-grid,
   .metric-section-grid,
-  .distribution-summary {
+  .distribution-summary,
+  .metrics-overview-hero,
+  .metrics-overview-grid,
+  .metrics-overview-distribution,
+  .metrics-overview-trends {
     grid-template-columns: 1fr;
   }
 
