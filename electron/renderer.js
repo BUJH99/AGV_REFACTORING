@@ -227,9 +227,15 @@ const state = {
   selectedAgentId: null,
   hoveredAgentId: null,
   showLayers: {
+    map: true,
     semantic: true,
     agents: true,
-    debug: true,
+    routeHud: true,
+    plannedPaths: true,
+    cbsPaths: true,
+    conflictCells: true,
+    conflictCounts: true,
+    swapWaits: true,
   },
   uiVisible: true,
   isSetupOpen: true,
@@ -290,6 +296,10 @@ const elements = {
   routeGoal: document.getElementById("route-goal"),
   routeMeta: document.getElementById("route-meta"),
   routeWarning: document.getElementById("route-warning"),
+  routeDebugPanel: document.getElementById("route-debug-panel"),
+  routeDebugMeta: document.getElementById("route-debug-meta"),
+  routeDebugBadges: document.getElementById("route-debug-badges"),
+  routeDebugLegend: document.getElementById("route-debug-legend"),
   validateButton: document.getElementById("validate-button"),
   startButton: document.getElementById("start-button"),
   runButton: document.getElementById("run-button"),
@@ -307,10 +317,30 @@ const elements = {
   setupDrawer: document.getElementById("setup-drawer"),
   metricsBackdrop: document.getElementById("metrics-backdrop"),
   metricsModal: document.getElementById("metrics-modal"),
+  mapLayerButton: document.getElementById("map-layer-button"),
   semanticLayerButton: document.getElementById("semantic-layer-button"),
   agentLayerButton: document.getElementById("agent-layer-button"),
-  debugLayerButton: document.getElementById("debug-layer-button"),
+  routeHudLayerButton: document.getElementById("route-hud-layer-button"),
+  plannedLayerButton: document.getElementById("planned-layer-button"),
+  cbsLayerButton: document.getElementById("cbs-layer-button"),
+  conflictLayerButton: document.getElementById("conflict-layer-button"),
+  conflictCountLayerButton: document.getElementById("conflict-count-layer-button"),
+  swapLayerButton: document.getElementById("swap-layer-button"),
 };
+
+const rosterRows = new Map();
+const kPlannerLayerKeys = ["plannedPaths", "cbsPaths", "conflictCells", "conflictCounts", "swapWaits"];
+const kLayerButtonSpecs = [
+  { key: "map", element: "mapLayerButton", tone: "primary" },
+  { key: "semantic", element: "semanticLayerButton", tone: "primary" },
+  { key: "agents", element: "agentLayerButton", tone: "primary" },
+  { key: "routeHud", element: "routeHudLayerButton", tone: "primary" },
+  { key: "plannedPaths", element: "plannedLayerButton", tone: "primary", requiresDebug: true },
+  { key: "cbsPaths", element: "cbsLayerButton", tone: "planner", requiresDebug: true },
+  { key: "conflictCells", element: "conflictLayerButton", tone: "warning", requiresDebug: true },
+  { key: "conflictCounts", element: "conflictCountLayerButton", tone: "warning", requiresDebug: true },
+  { key: "swapWaits", element: "swapLayerButton", tone: "danger", requiresDebug: true },
+];
 
 function formatNumber(value, fractionDigits = 1) {
   if (value === null || value === undefined || Number.isNaN(value)) {
@@ -541,6 +571,49 @@ function displayedAgent() {
   return hoveredAgent() || selectedAgent();
 }
 
+function currentOverlay() {
+  return state.frame?.plannerOverlay?.available ? state.frame.plannerOverlay : null;
+}
+
+function plannerLayersVisible() {
+  return kPlannerLayerKeys.some((key) => state.showLayers[key]);
+}
+
+function overlayIncludesAgent(agentIds, agentId) {
+  return Array.isArray(agentIds) && agentIds.includes(agentId);
+}
+
+function overlayPathForAgent(paths, agentId) {
+  return Array.isArray(paths)
+    ? paths.find((path) => path.agentId === agentId) || null
+    : null;
+}
+
+function isGridCoordValid(coord) {
+  return Boolean(
+    coord &&
+      Number.isFinite(coord.x) &&
+      Number.isFinite(coord.y) &&
+      coord.x >= 0 &&
+      coord.y >= 0,
+  );
+}
+
+function agentById(agentId) {
+  return currentAgents().find((agent) => agent.id === agentId) || null;
+}
+
+function agentTag(agentId) {
+  const agent = agentById(agentId);
+  if (agent?.symbol) {
+    return String(agent.symbol);
+  }
+  if (Number.isFinite(agentId) && agentId >= 0) {
+    return String(agentId);
+  }
+  return "-";
+}
+
 function activeAgentCount() {
   return currentAgents().filter((agent) => agent.isActive).length;
 }
@@ -622,6 +695,31 @@ function createSummaryPill(text) {
   pill.className = "pill neutral";
   pill.textContent = text;
   return pill;
+}
+
+function createRouteDebugBadge(text, tone = "neutral") {
+  const badge = document.createElement("span");
+  badge.className = "route-debug-badge";
+  badge.dataset.tone = tone;
+  badge.textContent = text;
+  return badge;
+}
+
+function createRouteLegendItem(kind, label, active = true) {
+  const item = document.createElement("div");
+  item.className = "route-debug-legend-item";
+  item.classList.toggle("inactive", !active);
+
+  const swatch = document.createElement("span");
+  swatch.className = "route-legend-swatch";
+  swatch.dataset.kind = kind;
+  swatch.setAttribute("aria-hidden", "true");
+
+  const text = document.createElement("span");
+  text.textContent = label;
+
+  item.append(swatch, text);
+  return item;
 }
 
 function createMiniMetric(label, value, tone = "neutral") {
@@ -1504,17 +1602,20 @@ function setSessionState(sessionId, captureLevel) {
 }
 
 function syncLayerButtons() {
-  elements.semanticLayerButton.classList.toggle("active", state.showLayers.semantic);
-  elements.agentLayerButton.classList.toggle("active", state.showLayers.agents);
-  elements.debugLayerButton.classList.toggle("active", state.showLayers.debug);
-
-  const effectiveCapture = elements.captureLevel.value || state.captureLevel;
-  elements.debugLayerButton.disabled = effectiveCapture !== "debug" && state.captureLevel !== "debug";
+  const debugEnabled = effectiveDebugCaptureEnabled();
+  kLayerButtonSpecs.forEach((spec) => {
+    const button = elements[spec.element];
+    if (!button) {
+      return;
+    }
+    button.classList.toggle("active", Boolean(state.showLayers[spec.key]));
+    button.dataset.tone = spec.tone || "primary";
+    button.disabled = Boolean(spec.requiresDebug && !debugEnabled);
+  });
 }
 
 function syncInteractiveState() {
   const hasSession = Boolean(state.sessionId);
-  const effectiveCapture = elements.captureLevel.value || state.captureLevel;
 
   elements.validateButton.disabled = state.busy || state.running;
   elements.startButton.disabled = state.busy || state.running;
@@ -1524,7 +1625,6 @@ function syncInteractiveState() {
   elements.stepButton.disabled = state.busy || state.running || !hasSession;
   elements.resetSessionButton.disabled = state.busy || state.running || !hasSession;
   elements.debugButton.disabled = state.busy || state.running || !hasSession;
-  elements.debugLayerButton.disabled = effectiveCapture !== "debug" && state.captureLevel !== "debug";
 
   syncLayerButtons();
 
@@ -1754,174 +1854,239 @@ function renderMetrics() {
   });
 }
 
+function createRosterRow(agentId) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "roster-row";
+  button.dataset.agentId = String(agentId);
+  button.addEventListener("mousedown", (event) => {
+    event.preventDefault();
+  });
+  button.addEventListener("click", () => {
+    const nextId = Number(button.dataset.agentId);
+    state.selectedAgentId = Number.isFinite(nextId) ? nextId : null;
+    renderAll();
+  });
+  button.addEventListener("mouseenter", () => {
+    const nextId = Number(button.dataset.agentId);
+    state.hoveredAgentId = Number.isFinite(nextId) ? nextId : null;
+    renderRouteHud();
+    renderScene();
+  });
+  button.addEventListener("mouseleave", () => {
+    const nextId = Number(button.dataset.agentId);
+    if (state.hoveredAgentId === nextId) {
+      state.hoveredAgentId = null;
+      renderRouteHud();
+      renderScene();
+    }
+  });
+
+  const head = document.createElement("div");
+  head.className = "roster-head";
+
+  const primary = document.createElement("div");
+  primary.className = "roster-primary";
+
+  const swatch = document.createElement("div");
+  swatch.className = "agent-swatch";
+
+  const textGroup = document.createElement("div");
+
+  const title = document.createElement("div");
+  title.className = "roster-title";
+
+  const subtitle = document.createElement("div");
+  subtitle.className = "roster-subtitle";
+
+  textGroup.append(title, subtitle);
+  primary.append(swatch, textGroup);
+
+  const wait = document.createElement("span");
+  head.append(primary, wait);
+
+  const body = document.createElement("div");
+  body.className = "roster-body";
+
+  const statusRow = document.createElement("div");
+  statusRow.className = "roster-status-row";
+
+  const stateText = document.createElement("div");
+  stateText.className = "roster-meta";
+
+  const signalGroup = document.createElement("div");
+  signalGroup.className = "roster-signal-group";
+
+  const taskChip = document.createElement("span");
+  const batteryChip = document.createElement("span");
+
+  signalGroup.append(taskChip, batteryChip);
+  statusRow.append(stateText, signalGroup);
+
+  const taskRail = document.createElement("div");
+  taskRail.className = "roster-task-rail";
+
+  const taskHead = document.createElement("div");
+  taskHead.className = "roster-task-head";
+
+  const taskLabel = document.createElement("span");
+  taskLabel.className = "roster-task-label";
+  taskLabel.textContent = "Task throughput";
+
+  const taskValue = document.createElement("span");
+  taskValue.className = "roster-task-value";
+
+  taskHead.append(taskLabel, taskValue);
+
+  const taskMeter = document.createElement("div");
+  taskMeter.className = "roster-task-meter";
+
+  const taskFill = document.createElement("div");
+  taskMeter.append(taskFill);
+
+  const taskMeta = document.createElement("div");
+  taskMeta.className = "roster-task-meta";
+
+  const shareText = document.createElement("span");
+  const countText = document.createElement("span");
+
+  taskMeta.append(shareText, countText);
+
+  const battery = document.createElement("div");
+  battery.className = "roster-battery";
+
+  const batteryMeta = document.createElement("div");
+  batteryMeta.className = "roster-battery-meta";
+
+  const batteryCopy = document.createElement("span");
+  const distText = document.createElement("span");
+
+  batteryMeta.append(batteryCopy, distText);
+
+  const meter = document.createElement("div");
+  meter.className = "battery-meter";
+
+  const fill = document.createElement("div");
+  meter.append(fill);
+
+  battery.append(batteryMeta, meter);
+  taskRail.append(taskHead, taskMeter, taskMeta);
+  body.append(statusRow, taskRail, battery);
+  button.append(head, body);
+
+  return {
+    button,
+    swatch,
+    title,
+    subtitle,
+    wait,
+    stateText,
+    taskChip,
+    batteryChip,
+    taskValue,
+    taskFill,
+    shareText,
+    countText,
+    batteryCopy,
+    distText,
+    fill,
+  };
+}
+
+function updateRosterRow(row, agent, maxTasksCompleted) {
+  row.button.dataset.agentId = String(agent.id);
+  row.button.className = "roster-row";
+  if (agent.id === state.selectedAgentId) {
+    row.button.classList.add("selected");
+  }
+  if (agent.waitReason && agent.waitReason !== "none") {
+    row.button.classList.add("waiting");
+  }
+
+  const color = deterministicAgentColor(agent);
+  const taskTone = agentTaskLoadTone(agent, maxTasksCompleted);
+
+  row.swatch.style.background = `linear-gradient(135deg, ${color}, ${color}cc)`;
+  row.swatch.textContent = agent.symbol || "?";
+  row.title.textContent = `Agent ${agent.symbol || "?"}`;
+  row.subtitle.textContent = `${coordText(agent.position)} → ${coordText(agent.goal)}`;
+  row.wait.className = `wait-badge ${waitReasonClass(agent.waitReason)}`;
+  row.wait.textContent = waitReasonShortLabel(agent.waitReason);
+  row.stateText.textContent = titleCase(agent.state || "idle");
+  row.taskChip.className = `task-chip ${taskTone}`;
+  row.taskChip.textContent = `TASK ${formatInteger(agentTasksCompleted(agent))}`;
+  row.batteryChip.className = `battery-chip ${chargeReserveTone(agent)}`;
+  row.batteryChip.textContent = `${
+    (agent.chargeTimer || 0) > 0 || agent.state === "charging" ? "CHG" : "BAT"
+  } ${chargeReservePercent(agent)}%`;
+  row.taskValue.textContent = `${formatNumber(agentTaskThroughput(agent), 2)} / 100 step`;
+  row.taskFill.className = `roster-task-fill ${taskTone}`;
+  row.taskFill.style.width = `${Math.max(
+    0,
+    Math.min(
+      100,
+      maxTasksCompleted > 0
+        ? (agentTasksCompleted(agent) / maxTasksCompleted) * 100
+        : 0,
+    ),
+  )}%`;
+  row.shareText.textContent = `share ${formatPercent(agentTaskShare(agent), 0)}`;
+  row.countText.textContent = `${formatInteger(agentTasksCompleted(agent))} completed`;
+  row.batteryCopy.textContent = chargeReserveMeta(agent);
+  row.distText.textContent = `${Number(agent.totalDistanceTraveled || 0).toFixed(1)} cells traveled`;
+  row.fill.className = `battery-fill ${chargeReserveTone(agent)}`;
+  row.fill.style.width = `${Math.max(8, chargeReservePercent(agent))}%`;
+}
+
 function renderRoster() {
   const agents = currentAgents();
   const maxTasksCompleted = maxFairnessValue("tasksCompleted");
-  elements.agentRosterList.innerHTML = "";
 
   if (agents.length === 0) {
+    rosterRows.forEach((row) => {
+      row.button.remove();
+    });
+    rosterRows.clear();
     const empty = document.createElement("div");
     empty.className = "telemetry-empty";
     empty.innerHTML = "<h3>No agents yet</h3><p>Load a session to inspect each AGV in the roster.</p>";
-    elements.agentRosterList.append(empty);
+    elements.agentRosterList.replaceChildren(empty);
     return;
   }
 
-  agents.forEach((agent) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "roster-row";
-    if (agent.id === state.selectedAgentId) {
-      button.classList.add("selected");
+  Array.from(elements.agentRosterList.children).forEach((child) => {
+    if (!child.classList.contains("roster-row")) {
+      child.remove();
     }
-    if (agent.waitReason && agent.waitReason !== "none") {
-      button.classList.add("waiting");
+  });
+
+  const activeIds = new Set();
+  agents.forEach((agent, index) => {
+    activeIds.add(agent.id);
+    let row = rosterRows.get(agent.id);
+    if (!row) {
+      row = createRosterRow(agent.id);
+      rosterRows.set(agent.id, row);
     }
 
-    const color = deterministicAgentColor(agent);
-    button.addEventListener("click", () => {
-      state.selectedAgentId = agent.id;
-      renderAll();
-    });
-    button.addEventListener("mouseenter", () => {
-      state.hoveredAgentId = agent.id;
-      renderRouteHud();
-      renderScene();
-    });
-    button.addEventListener("mouseleave", () => {
-      if (state.hoveredAgentId === agent.id) {
-        state.hoveredAgentId = null;
-        renderRouteHud();
-        renderScene();
-      }
-    });
+    updateRosterRow(row, agent, maxTasksCompleted);
 
-    const head = document.createElement("div");
-    head.className = "roster-head";
+    const sibling = elements.agentRosterList.children[index] || null;
+    if (row.button !== sibling) {
+      elements.agentRosterList.insertBefore(row.button, sibling);
+    }
+  });
 
-    const primary = document.createElement("div");
-    primary.className = "roster-primary";
-
-    const swatch = document.createElement("div");
-    swatch.className = "agent-swatch";
-    swatch.style.background = `linear-gradient(135deg, ${color}, ${color}cc)`;
-    swatch.textContent = agent.symbol || "?";
-
-    const textGroup = document.createElement("div");
-    const title = document.createElement("div");
-    title.className = "roster-title";
-    title.textContent = `Agent ${agent.symbol || "?"}`;
-
-    const subtitle = document.createElement("div");
-    subtitle.className = "roster-subtitle";
-    subtitle.textContent = `${coordText(agent.position)} → ${coordText(agent.goal)}`;
-
-    textGroup.append(title, subtitle);
-    primary.append(swatch, textGroup);
-
-    const wait = document.createElement("span");
-    wait.className = `wait-badge ${waitReasonClass(agent.waitReason)}`;
-    wait.textContent = waitReasonShortLabel(agent.waitReason);
-
-    head.append(primary, wait);
-
-    const body = document.createElement("div");
-    body.className = "roster-body";
-
-    const statusRow = document.createElement("div");
-    statusRow.className = "roster-status-row";
-
-    const stateText = document.createElement("div");
-    stateText.className = "roster-meta";
-    stateText.textContent = titleCase(agent.state || "idle");
-
-    const signalGroup = document.createElement("div");
-    signalGroup.className = "roster-signal-group";
-
-    const taskTone = agentTaskLoadTone(agent, maxTasksCompleted);
-
-    const taskChip = document.createElement("span");
-    taskChip.className = `task-chip ${taskTone}`;
-    taskChip.textContent = `TASK ${formatInteger(agentTasksCompleted(agent))}`;
-
-    const batteryChip = document.createElement("span");
-    batteryChip.className = `battery-chip ${chargeReserveTone(agent)}`;
-    batteryChip.textContent = `${
-      (agent.chargeTimer || 0) > 0 || agent.state === "charging" ? "CHG" : "BAT"
-    } ${chargeReservePercent(agent)}%`;
-
-    signalGroup.append(taskChip, batteryChip);
-    statusRow.append(stateText, signalGroup);
-
-    const taskRail = document.createElement("div");
-    taskRail.className = "roster-task-rail";
-
-    const taskHead = document.createElement("div");
-    taskHead.className = "roster-task-head";
-
-    const taskLabel = document.createElement("span");
-    taskLabel.className = "roster-task-label";
-    taskLabel.textContent = "Task throughput";
-
-    const taskValue = document.createElement("span");
-    taskValue.className = "roster-task-value";
-    taskValue.textContent = `${formatNumber(agentTaskThroughput(agent), 2)} / 100 step`;
-
-    taskHead.append(taskLabel, taskValue);
-
-    const taskMeter = document.createElement("div");
-    taskMeter.className = "roster-task-meter";
-
-    const taskFill = document.createElement("div");
-    taskFill.className = `roster-task-fill ${taskTone}`;
-    taskFill.style.width = `${Math.max(
-      0,
-      Math.min(
-        100,
-        maxTasksCompleted > 0
-          ? (agentTasksCompleted(agent) / maxTasksCompleted) * 100
-          : 0,
-      ),
-    )}%`;
-    taskMeter.append(taskFill);
-
-    const taskMeta = document.createElement("div");
-    taskMeta.className = "roster-task-meta";
-
-    const shareText = document.createElement("span");
-    shareText.textContent = `share ${formatPercent(agentTaskShare(agent), 0)}`;
-
-    const countText = document.createElement("span");
-    countText.textContent = `${formatInteger(agentTasksCompleted(agent))} completed`;
-
-    taskMeta.append(shareText, countText);
-
-    const battery = document.createElement("div");
-    battery.className = "roster-battery";
-
-    const batteryMeta = document.createElement("div");
-    batteryMeta.className = "roster-battery-meta";
-
-    const batteryCopy = document.createElement("span");
-    batteryCopy.textContent = chargeReserveMeta(agent);
-
-    const distText = document.createElement("span");
-    distText.textContent = `${Number(agent.totalDistanceTraveled || 0).toFixed(1)} cells traveled`;
-
-    batteryMeta.append(batteryCopy, distText);
-
-    const meter = document.createElement("div");
-    meter.className = "battery-meter";
-    const fill = document.createElement("div");
-    fill.className = `battery-fill ${chargeReserveTone(agent)}`;
-    fill.style.width = `${Math.max(8, chargeReservePercent(agent))}%`;
-    meter.append(fill);
-
-    battery.append(batteryMeta, meter);
-    taskRail.append(taskHead, taskMeter, taskMeta);
-    body.append(statusRow, taskRail, battery);
-    button.append(head, body);
-    elements.agentRosterList.append(button);
+  const staleIds = [];
+  rosterRows.forEach((row, agentId) => {
+    if (activeIds.has(agentId)) {
+      return;
+    }
+    row.button.remove();
+    staleIds.push(agentId);
+  });
+  staleIds.forEach((agentId) => {
+    rosterRows.delete(agentId);
   });
 }
 
@@ -2089,10 +2254,84 @@ function renderLogs() {
   });
 }
 
+function renderRouteHudDebug(agent) {
+  const overlay = currentOverlay();
+  const showDebug = Boolean(
+    agent &&
+      overlay &&
+      plannerLayersVisible() &&
+      effectiveDebugCaptureEnabled(),
+  );
+
+  elements.routeDebugPanel.classList.toggle("hidden", !showDebug);
+  if (!showDebug) {
+    elements.routeDebugMeta.textContent = "Planner overlay inactive.";
+    elements.routeDebugBadges.innerHTML = "";
+    elements.routeDebugLegend.innerHTML = "";
+    return;
+  }
+
+  const plannedPath = overlayPathForAgent(overlay.plannedPaths, agent.id);
+  const cbsPath = overlayPathForAgent(overlay.cbsPaths, agent.id);
+  const cbsPathCount = Array.isArray(overlay.cbsPaths) ? overlay.cbsPaths.length : 0;
+  const cbsSummary = overlay.usedCbs
+    ? cbsPathCount > 0
+      ? ` · CBS ${formatInteger(cbsPathCount)} route${cbsPathCount === 1 ? "" : "s"}`
+      : " · CBS live"
+    : "";
+
+  elements.routeDebugMeta.textContent =
+    `${titleCase(overlay.algorithm || "default")} · horizon ${formatInteger(overlay.horizon)} · waits ${formatInteger(overlay.waitEdgeCount)}${cbsSummary}`;
+
+  elements.routeDebugBadges.innerHTML = "";
+  if (overlay.leaderAgentId >= 0) {
+    elements.routeDebugBadges.append(
+      createRouteDebugBadge(
+        overlay.leaderAgentId === agent.id ? "Leader" : `Leader ${agentTag(overlay.leaderAgentId)}`,
+        overlay.leaderAgentId === agent.id ? "success" : "neutral",
+      ),
+    );
+  }
+  if (overlayIncludesAgent(overlay.sccParticipantAgentIds, agent.id)) {
+    elements.routeDebugBadges.append(createRouteDebugBadge("SCC cluster", "danger"));
+  }
+  if (overlayIncludesAgent(overlay.yieldAgentIds, agent.id)) {
+    elements.routeDebugBadges.append(createRouteDebugBadge("Yielding", "warning"));
+  }
+  if (overlayIncludesAgent(overlay.pullOverAgentIds, agent.id)) {
+    elements.routeDebugBadges.append(createRouteDebugBadge("Pull-over", "danger"));
+  }
+  if (plannedPath?.cells?.length >= 2) {
+    elements.routeDebugBadges.append(
+      createRouteDebugBadge(`Plan ${formatInteger(plannedPath.cells.length)} cells`, "primary"),
+    );
+  }
+  if (cbsPath?.cells?.length >= 2) {
+    elements.routeDebugBadges.append(
+      createRouteDebugBadge(`CBS ${formatInteger(cbsPath.cells.length)} cells`, "success"),
+    );
+  } else if (overlay.usedCbs) {
+    elements.routeDebugBadges.append(createRouteDebugBadge("CBS active", "success"));
+  }
+  if (elements.routeDebugBadges.childElementCount === 0) {
+    elements.routeDebugBadges.append(createRouteDebugBadge("Monitoring only", "neutral"));
+  }
+
+  elements.routeDebugLegend.innerHTML = "";
+  [
+    ["planned", "Planned path", state.showLayers.plannedPaths],
+    ["cbs", "CBS reroute", state.showLayers.cbsPaths],
+    ["vertex", "Conflict cell", state.showLayers.conflictCells || state.showLayers.conflictCounts],
+    ["swap", "Swap wait", state.showLayers.swapWaits],
+  ].forEach(([kind, label, active]) => {
+    elements.routeDebugLegend.append(createRouteLegendItem(kind, label, active));
+  });
+}
+
 function renderRouteHud() {
   const agent = displayedAgent();
 
-  if (!agent || !state.sessionId || !state.uiVisible) {
+  if (!agent || !state.sessionId || !state.uiVisible || !state.showLayers.routeHud) {
     elements.routeHud.classList.add("hidden");
     return;
   }
@@ -2113,6 +2352,8 @@ function renderRouteHud() {
     elements.routeWarning.classList.add("hidden");
     elements.routeWarning.textContent = "";
   }
+
+  renderRouteHudDebug(agent);
 }
 
 function renderDebugPanel() {
@@ -2275,55 +2516,258 @@ function drawEmptyViewport(ctx, width, height) {
   });
 }
 
+function cellCenter(cell, cellSize) {
+  return {
+    x: cell.x * cellSize + cellSize / 2,
+    y: cell.y * cellSize + cellSize / 2,
+  };
+}
+
+function traceOverlayPath(ctx, cells, cellSize) {
+  ctx.beginPath();
+  cells.forEach((cell, index) => {
+    const point = cellCenter(cell, cellSize);
+    if (index === 0) {
+      ctx.moveTo(point.x, point.y);
+    } else {
+      ctx.lineTo(point.x, point.y);
+    }
+  });
+}
+
+function drawOverlayPath(ctx, cells, cellSize, options = {}) {
+  if (!Array.isArray(cells) || cells.length < 2) {
+    return;
+  }
+
+  ctx.save();
+  if (options.shadowColor) {
+    ctx.shadowColor = options.shadowColor;
+    ctx.shadowBlur = options.shadowBlur || 0;
+  }
+
+  if (options.underlayStyle && options.underlayWidth) {
+    ctx.setLineDash([]);
+    ctx.strokeStyle = options.underlayStyle;
+    ctx.lineWidth = options.underlayWidth;
+    traceOverlayPath(ctx, cells, cellSize);
+    ctx.stroke();
+  }
+
+  ctx.setLineDash(options.dash || []);
+  ctx.strokeStyle = options.strokeStyle || "rgba(37, 99, 235, 0.82)";
+  ctx.lineWidth = options.lineWidth || Math.max(1.5, cellSize * 0.12);
+  traceOverlayPath(ctx, cells, cellSize);
+  ctx.stroke();
+
+  const endPoint = cellCenter(cells[cells.length - 1], cellSize);
+  if (options.endpointFill) {
+    ctx.setLineDash([]);
+    ctx.fillStyle = options.endpointFill;
+    ctx.beginPath();
+    ctx.arc(
+      endPoint.x,
+      endPoint.y,
+      options.endpointRadius || Math.max(2.5, cellSize * 0.11),
+      0,
+      Math.PI * 2,
+    );
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+function collectVertexWaitMarkers(waitEdges, focusAgentId) {
+  const markers = new Map();
+  (waitEdges || []).forEach((edge) => {
+    if (edge?.cause === "swap" || !isGridCoordValid(edge?.from)) {
+      return;
+    }
+
+    const key = `${edge.from.x},${edge.from.y}`;
+    const focused =
+      focusAgentId !== null &&
+      (edge.fromAgentId === focusAgentId || edge.toAgentId === focusAgentId);
+    const marker = markers.get(key) || {
+      cell: edge.from,
+      count: 0,
+      focused: false,
+    };
+
+    marker.count += 1;
+    marker.focused = marker.focused || focused;
+    markers.set(key, marker);
+  });
+  return Array.from(markers.values());
+}
+
+function drawVertexWaitMarker(ctx, marker, cellSize, options = {}) {
+  const showRing = options.showRing !== false;
+  const showCount = options.showCount !== false;
+  const cellLeft = marker.cell.x * cellSize;
+  const cellTop = marker.cell.y * cellSize;
+  const center = cellCenter(marker.cell, cellSize);
+  const ringRadius = Math.max(4, cellSize * (marker.focused ? 0.24 : 0.19));
+  const countBoost = Math.min(marker.count - 1, 4) * Math.max(0.7, cellSize * 0.018);
+  const outerRadius = ringRadius + countBoost;
+
+  if (!showRing && !(showCount && marker.count > 1 && cellSize >= 12)) {
+    return;
+  }
+
+  ctx.save();
+  if (showRing) {
+    ctx.fillStyle = marker.focused ? "rgba(220, 63, 106, 0.14)" : "rgba(217, 119, 6, 0.12)";
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, outerRadius * 1.28, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = marker.focused ? "rgba(220, 63, 106, 0.92)" : "rgba(217, 119, 6, 0.84)";
+    ctx.lineWidth = marker.focused ? Math.max(2, cellSize * 0.12) : Math.max(1.3, cellSize * 0.08);
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, outerRadius, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.fillStyle = marker.focused ? "rgba(220, 63, 106, 0.98)" : "rgba(217, 119, 6, 0.96)";
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, Math.max(2.4, cellSize * 0.085), 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  if (showCount && marker.count > 1 && cellSize >= 12) {
+    const badgeText = marker.count > 9 ? "9+" : String(marker.count);
+    const fontSize = Math.max(8, Math.floor(cellSize * 0.23));
+    const badgeHeight = Math.max(12, Math.round(cellSize * 0.28));
+    const horizontalPadding = Math.max(4, Math.round(cellSize * 0.08));
+    const badgeWidth = Math.max(
+      badgeHeight,
+      horizontalPadding * 2 + badgeText.length * Math.max(5, Math.round(fontSize * 0.58)),
+    );
+    const badgeX = cellLeft + cellSize - badgeWidth - Math.max(1, Math.round(cellSize * 0.08));
+    const badgeY = cellTop + Math.max(1, Math.round(cellSize * 0.08));
+
+    ctx.shadowColor = "rgba(255, 255, 255, 0.68)";
+    ctx.shadowBlur = Math.max(4, cellSize * 0.12);
+    ctx.fillStyle = marker.focused ? "rgba(255, 244, 247, 0.96)" : "rgba(255, 252, 244, 0.94)";
+    ctx.beginPath();
+    ctx.roundRect(badgeX, badgeY, badgeWidth, badgeHeight, badgeHeight / 2);
+    ctx.fill();
+
+    ctx.shadowBlur = 0;
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = marker.focused ? "rgba(220, 63, 106, 0.34)" : "rgba(217, 119, 6, 0.28)";
+    ctx.stroke();
+
+    ctx.fillStyle = marker.focused ? "rgba(220, 63, 106, 0.94)" : "rgba(176, 98, 16, 0.96)";
+    ctx.font = `800 ${fontSize}px "Segoe UI", sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(badgeText, badgeX + badgeWidth / 2, badgeY + badgeHeight / 2 + 0.5);
+  }
+
+  ctx.restore();
+}
+
 function drawPlannerOverlay(ctx, view) {
-  const overlay = state.frame?.plannerOverlay;
-  if (!overlay?.available || !state.showLayers.debug || !effectiveDebugCaptureEnabled()) {
+  const overlay = currentOverlay();
+  if (!overlay?.available || !plannerLayersVisible() || !effectiveDebugCaptureEnabled()) {
     return;
   }
 
   const focusAgentId = displayedAgent()?.id ?? null;
   const cellSize = view.cellSize;
+  const cbsAgentIds = new Set((overlay.cbsPaths || []).map((path) => path.agentId));
   ctx.save();
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
 
-  (overlay.plannedPaths || []).forEach((path) => {
-    if (!Array.isArray(path.cells) || path.cells.length < 2) {
-      return;
-    }
-    const focused = focusAgentId !== null && path.agentId === focusAgentId;
-    ctx.strokeStyle = focused ? "rgba(37, 99, 235, 0.92)" : "rgba(37, 99, 235, 0.28)";
-    ctx.lineWidth = focused ? Math.max(3, cellSize * 0.22) : Math.max(1.5, cellSize * 0.1);
-    ctx.beginPath();
-    path.cells.forEach((cell, index) => {
-      const centerX = cell.x * cellSize + cellSize / 2;
-      const centerY = cell.y * cellSize + cellSize / 2;
-      if (index === 0) {
-        ctx.moveTo(centerX, centerY);
-      } else {
-        ctx.lineTo(centerX, centerY);
+  if (state.showLayers.plannedPaths) {
+    (overlay.plannedPaths || []).forEach((path) => {
+      if (!Array.isArray(path.cells) || path.cells.length < 2) {
+        return;
       }
+
+      const focused = focusAgentId !== null && path.agentId === focusAgentId;
+      const hasCbsPath = cbsAgentIds.has(path.agentId);
+      drawOverlayPath(ctx, path.cells, cellSize, {
+        underlayStyle: focused ? "rgba(255, 255, 255, 0.64)" : "rgba(255, 255, 255, 0.24)",
+        underlayWidth: focused ? Math.max(4.2, cellSize * 0.33) : Math.max(2.4, cellSize * 0.18),
+        strokeStyle: focused
+          ? "rgba(37, 99, 235, 0.95)"
+          : hasCbsPath
+            ? "rgba(37, 99, 235, 0.16)"
+            : "rgba(37, 99, 235, 0.34)",
+        lineWidth: focused ? Math.max(2.6, cellSize * 0.2) : Math.max(1.5, cellSize * 0.1),
+        shadowColor: focused ? "rgba(37, 99, 235, 0.22)" : "rgba(37, 99, 235, 0.08)",
+        shadowBlur: focused ? cellSize * 0.78 : cellSize * 0.28,
+      });
     });
-    ctx.stroke();
-  });
+  }
 
-  (overlay.waitEdges || []).forEach((edge) => {
-    const fromX = edge.from.x * cellSize + cellSize / 2;
-    const fromY = edge.from.y * cellSize + cellSize / 2;
-    const toX = edge.to.x * cellSize + cellSize / 2;
-    const toY = edge.to.y * cellSize + cellSize / 2;
-    const focused =
-      focusAgentId !== null &&
-      (edge.fromAgentId === focusAgentId || edge.toAgentId === focusAgentId);
+  if (state.showLayers.cbsPaths) {
+    (overlay.cbsPaths || []).forEach((path) => {
+      if (!Array.isArray(path.cells) || path.cells.length < 2) {
+        return;
+      }
 
-    ctx.strokeStyle = focused ? "rgba(220, 63, 106, 0.9)" : "rgba(217, 119, 6, 0.3)";
-    ctx.lineWidth = focused ? Math.max(2, cellSize * 0.16) : Math.max(1, cellSize * 0.08);
-    ctx.setLineDash(focused ? [] : [cellSize * 0.18, cellSize * 0.16]);
-    ctx.beginPath();
-    ctx.moveTo(fromX, fromY);
-    ctx.lineTo(toX, toY);
-    ctx.stroke();
-  });
+      const focused = focusAgentId !== null && path.agentId === focusAgentId;
+      drawOverlayPath(ctx, path.cells, cellSize, {
+        underlayStyle: focused ? "rgba(255, 255, 255, 0.7)" : "rgba(255, 255, 255, 0.46)",
+        underlayWidth: focused ? Math.max(4.8, cellSize * 0.38) : Math.max(3.2, cellSize * 0.25),
+        strokeStyle: focused ? "rgba(15, 155, 113, 0.98)" : "rgba(15, 155, 113, 0.84)",
+        lineWidth: focused ? Math.max(3.2, cellSize * 0.22) : Math.max(2.2, cellSize * 0.15),
+        dash: [cellSize * 0.34, cellSize * 0.2],
+        endpointFill: focused ? "rgba(15, 155, 113, 0.98)" : "rgba(15, 155, 113, 0.88)",
+        endpointRadius: focused ? Math.max(3.2, cellSize * 0.13) : Math.max(2.4, cellSize * 0.1),
+        shadowColor: focused ? "rgba(15, 155, 113, 0.32)" : "rgba(15, 155, 113, 0.14)",
+        shadowBlur: focused ? cellSize * 0.92 : cellSize * 0.42,
+      });
+    });
+  }
+
+  if (state.showLayers.conflictCells || state.showLayers.conflictCounts) {
+    collectVertexWaitMarkers(overlay.waitEdges, focusAgentId).forEach((marker) => {
+      drawVertexWaitMarker(ctx, marker, cellSize, {
+        showRing: state.showLayers.conflictCells,
+        showCount: state.showLayers.conflictCounts,
+      });
+    });
+  }
+
+  if (state.showLayers.swapWaits) {
+    (overlay.waitEdges || []).forEach((edge) => {
+      if (edge?.cause !== "swap" || !isGridCoordValid(edge.from) || !isGridCoordValid(edge.to)) {
+        return;
+      }
+
+      const fromPoint = cellCenter(edge.from, cellSize);
+      const toPoint = cellCenter(edge.to, cellSize);
+      const focused =
+        focusAgentId !== null &&
+        (edge.fromAgentId === focusAgentId || edge.toAgentId === focusAgentId);
+
+      ctx.strokeStyle = focused ? "rgba(220, 63, 106, 0.9)" : "rgba(217, 119, 6, 0.42)";
+      ctx.lineWidth = focused ? Math.max(2.2, cellSize * 0.16) : Math.max(1.2, cellSize * 0.09);
+      ctx.setLineDash(focused ? [] : [cellSize * 0.18, cellSize * 0.16]);
+      ctx.beginPath();
+      ctx.moveTo(fromPoint.x, fromPoint.y);
+      ctx.lineTo(toPoint.x, toPoint.y);
+      ctx.stroke();
+
+      ctx.setLineDash([]);
+      ctx.fillStyle = focused ? "rgba(220, 63, 106, 0.94)" : "rgba(217, 119, 6, 0.88)";
+      ctx.beginPath();
+      ctx.arc(
+        toPoint.x,
+        toPoint.y,
+        focused ? Math.max(2.8, cellSize * 0.1) : Math.max(2.2, cellSize * 0.08),
+        0,
+        Math.PI * 2,
+      );
+      ctx.fill();
+    });
+  }
 
   ctx.restore();
 }
@@ -2385,8 +2829,10 @@ function renderScene() {
       const tile = baseTileAt(state.scene, x, y);
       const key = `${x},${y}`;
 
-      ctx.fillStyle = tileColor(tile);
-      ctx.fillRect(x * view.cellSize, y * view.cellSize, view.cellSize, view.cellSize);
+      if (state.showLayers.map) {
+        ctx.fillStyle = tileColor(tile);
+        ctx.fillRect(x * view.cellSize, y * view.cellSize, view.cellSize, view.cellSize);
+      }
 
       if (state.showLayers.semantic) {
         if (goals.has(key)) {
@@ -2439,11 +2885,13 @@ function renderScene() {
         }
       }
 
-      ctx.strokeStyle = tile === "+" || tile === "#" || tile === "X"
-        ? "rgba(255, 255, 255, 0.06)"
-        : "rgba(91, 111, 151, 0.1)";
-      ctx.lineWidth = 1;
-      ctx.strokeRect(x * view.cellSize, y * view.cellSize, view.cellSize, view.cellSize);
+      if (state.showLayers.map) {
+        ctx.strokeStyle = tile === "+" || tile === "#" || tile === "X"
+          ? "rgba(255, 255, 255, 0.06)"
+          : "rgba(91, 111, 151, 0.1)";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x * view.cellSize, y * view.cellSize, view.cellSize, view.cellSize);
+      }
     }
   }
 
@@ -2979,27 +3427,23 @@ elements.setupBackdrop.addEventListener("click", () => {
   setSetupOpen(false);
 });
 
-elements.semanticLayerButton.addEventListener("click", () => {
-  state.showLayers.semantic = !state.showLayers.semantic;
-  syncLayerButtons();
-  renderScene();
-});
-
-elements.agentLayerButton.addEventListener("click", () => {
-  state.showLayers.agents = !state.showLayers.agents;
-  syncLayerButtons();
-  renderScene();
-});
-
-elements.debugLayerButton.addEventListener("click", () => {
-  if (elements.debugLayerButton.disabled) {
-    appendStatus("Planner overlay is available only when the capture mode is set to debug.");
+kLayerButtonSpecs.forEach((spec) => {
+  const button = elements[spec.element];
+  if (!button) {
     return;
   }
-  state.showLayers.debug = !state.showLayers.debug;
-  syncLayerButtons();
-  renderScene();
+
+  button.addEventListener("click", () => {
+    if (button.disabled) {
+      appendStatus("Planner layers are available only when the capture mode is set to debug.");
+      return;
+    }
+
+    state.showLayers[spec.key] = !state.showLayers[spec.key];
+    renderAll();
+  });
 });
+
 elements.canvas.addEventListener("mousemove", updateHoveredAgentFromEvent);
 elements.canvas.addEventListener("click", (event) => {
   if (!state.scene) {

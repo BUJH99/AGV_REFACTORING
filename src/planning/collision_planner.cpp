@@ -64,18 +64,45 @@ void seed_next_positions_from_current(AgentManager* manager, AgentNodeSlots& nex
     }
 }
 
-void capture_ordered_overlay(
-    const PlanningContext& context,
+AgentDir dir_from_delta_preview(int dx, int dy) {
+    if (dx == 1 && dy == 0) return AgentDir::Right;
+    if (dx == -1 && dy == 0) return AgentDir::Left;
+    if (dx == 0 && dy == -1) return AgentDir::Up;
+    if (dx == 0 && dy == 1) return AgentDir::Down;
+    return AgentDir::None;
+}
+
+int dir_turn_steps_preview(AgentDir from, AgentDir to) {
+    if (from == AgentDir::None || to == AgentDir::None) return 0;
+    const int diff = (static_cast<int>(to) - static_cast<int>(from) + 4) % 4;
+    return diff <= 2 ? diff : 4 - diff;
+}
+
+Node* preview_rotated_move(const Agent& agent, Node* current, Node* desired) {
+    if (!current || !desired || desired == current) {
+        return current;
+    }
+
+    const AgentDir new_heading = dir_from_delta_preview(desired->x - current->x, desired->y - current->y);
+    if (new_heading == AgentDir::None) {
+        return current;
+    }
+    if (agent.heading == AgentDir::None) {
+        return desired;
+    }
+
+    return dir_turn_steps_preview(agent.heading, new_heading) == 1 ? current : desired;
+}
+
+void capture_ordered_overlay_into(
+    PlannerOverlayCapture* overlay,
+    AgentManager* agents,
     OrderedPlanningMetric metric_kind,
     const AgentNodeSlots& next_positions) {
-    if (!context.sim || !context.agents) {
+    if (!overlay || !agents) {
         return;
     }
 
-    PlannerOverlayCapture* overlay = planner_overlay(context);
-    if (!overlay) {
-        return;
-    }
     overlay->clear();
     overlay->valid = true;
     overlay->algorithm = (metric_kind == OrderedPlanningMetric::AStar)
@@ -84,12 +111,73 @@ void capture_ordered_overlay(
     overlay->horizon = 1;
 
     for (int agent_id = 0; agent_id < MAX_AGENTS; ++agent_id) {
-        const Agent& agent = context.agents->agents[agent_id];
+        const Agent& agent = agents->agents[agent_id];
         TimedNodePlan& plan = overlay->planned_paths[agent_id];
         plan.fill(nullptr);
         plan[0] = agent.pos;
         plan[1] = next_positions[agent_id];
     }
+}
+
+void capture_ordered_overlay(
+    const PlanningContext& context,
+    OrderedPlanningMetric metric_kind,
+    const AgentNodeSlots& next_positions) {
+    if (!context.sim || !context.agents) {
+        return;
+    }
+
+    capture_ordered_overlay_into(planner_overlay(context), context.agents, metric_kind, next_positions);
+}
+
+void capture_ordered_overlay_preview(
+    PlannerOverlayCapture* overlay,
+    AgentManager* manager,
+    GridMap* map,
+    OrderedPlanningMetric metric_kind) {
+    if (!overlay || !manager || !map) {
+        return;
+    }
+
+    AgentNodeSlots next_positions{};
+    seed_next_positions_from_current(manager, next_positions);
+
+    AgentOrder order{};
+    sort_agents_by_priority(manager, order);
+
+    ConflictResolutionPolicy conflict_resolution{};
+
+    for (int order_index = 0; order_index < MAX_AGENTS; ++order_index) {
+        const int agent_id = order[order_index];
+        Agent& agent = manager->agents[agent_id];
+        Node* current_pos = agent.pos;
+        if (!current_pos || should_skip_ordered_planning(&agent)) {
+            continue;
+        }
+
+        Pathfinder preview_pathfinder;
+        if (agent.pf) {
+            preview_pathfinder = *agent.pf;
+        } else {
+            preview_pathfinder = Pathfinder(agent.pos, agent.goal, &agent);
+        }
+        if (preview_pathfinder.goalNode() != agent.goal) {
+            preview_pathfinder.updateStart(agent.pos);
+            preview_pathfinder.reinitializeForGoal(agent.goal);
+        }
+
+        TempObstacleScope temp_scope(&preview_pathfinder, map, manager, true);
+        temp_scope.markOrderBlockers(manager, order, order_index, next_positions);
+        TemporaryGoalStateScope goal_scope(&agent, &preview_pathfinder, map, manager);
+
+        preview_pathfinder.updateStart(current_pos);
+        preview_pathfinder.computeShortestPath(map, manager);
+        Node* desired_move = preview_pathfinder.getNextStep(map, manager, current_pos);
+        next_positions[agent_id] = preview_rotated_move(agent, current_pos, desired_move);
+    }
+
+    conflict_resolution.resolve(manager, order, next_positions);
+    capture_ordered_overlay_into(overlay, manager, metric_kind, next_positions);
 }
 
 class OrderedPlannerBase : public PlannerStrategy {
@@ -199,5 +287,23 @@ Planner planner_from_pathalgo(PathAlgo algo) {
     case PathAlgo::Default:
     default:
         return Planner(std::make_unique<DefaultPlannerStrategy>());
+    }
+}
+
+void agv_refresh_ordered_planner_overlay_preview(Simulation* sim) {
+    if (!sim) {
+        return;
+    }
+
+    switch (sim->path_algo) {
+    case PathAlgo::AStarSimple:
+        capture_ordered_overlay_preview(&sim->planner_capture, sim->agent_manager, sim->map, OrderedPlanningMetric::AStar);
+        return;
+    case PathAlgo::DStarBasic:
+        capture_ordered_overlay_preview(&sim->planner_capture, sim->agent_manager, sim->map, OrderedPlanningMetric::DStar);
+        return;
+    case PathAlgo::Default:
+    default:
+        return;
     }
 }

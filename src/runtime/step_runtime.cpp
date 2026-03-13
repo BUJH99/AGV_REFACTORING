@@ -526,6 +526,7 @@ public:
 
         const bool moved_this_step = agv_apply_moves_and_update_stuck(sim, next_positions, previous_positions);
         finalize_move_state(sim, frame.step_label);
+        agv_refresh_ordered_planner_overlay_preview(sim);
         record_idle_agents_that_remained_idle_local(sim->agent_manager, idle_agents_at_step_start);
         finalize_frame(sim, frame, moved_this_step, is_paused);
     }

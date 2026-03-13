@@ -93,6 +93,38 @@ bool has_ansi_escape(const std::string& text) {
     return text.find('\x1b') != std::string::npos;
 }
 
+void expect_ordered_overlay_paths_anchor_to_current_positions(agv::core::PathAlgo algorithm) {
+    agv::core::SimulationEngine engine;
+    configure_engine(engine, algorithm, make_single_phase_custom_scenario(), 1);
+
+    agv::core::RenderQueryOptions options;
+    options.plannerOverlay = true;
+
+    bool found_moved_agent = false;
+    for (int step = 0; step < 96 && !found_moved_agent; ++step) {
+        engine.step();
+        const auto frame = engine.snapshotRenderFrame(options);
+
+        std::unordered_map<int, agv::core::AgentRenderState> agents_by_id;
+        for (const auto& agent : frame.agents) {
+            agents_by_id.emplace(agent.id, agent);
+        }
+
+        for (const auto& path : frame.plannerOverlay.plannedPaths) {
+            const auto agent_it = agents_by_id.find(path.agentId);
+            if (agent_it == agents_by_id.end() || !agent_it->second.movedLastStep || path.cells.empty()) {
+                continue;
+            }
+
+            found_moved_agent = true;
+            EXPECT_EQ(path.cells.front().x, agent_it->second.position.x);
+            EXPECT_EQ(path.cells.front().y, agent_it->second.position.y);
+        }
+    }
+
+    EXPECT_TRUE(found_moved_agent);
+}
+
 TEST(RenderModelTest, StaticSceneRemainsStableWithinSessionAndReloadsWithNewSession) {
     agv::core::SimulationEngine engine;
     configure_engine(engine, agv::core::PathAlgo::Default, make_single_phase_custom_scenario(), 1);
@@ -184,6 +216,14 @@ TEST(RenderModelTest, PlannerOverlayProvidesCoordinateBasedPaths) {
     EXPECT_FALSE(frame.plannerOverlay.plannedPaths.empty());
     EXPECT_TRUE(std::all_of(frame.plannerOverlay.plannedPaths.begin(), frame.plannerOverlay.plannedPaths.end(),
         [](const auto& path) { return !path.cells.empty(); }));
+}
+
+TEST(RenderModelTest, AStarOverlayAnchorsPreviewToCurrentAgentPosition) {
+    expect_ordered_overlay_paths_anchor_to_current_positions(agv::core::PathAlgo::AStarSimple);
+}
+
+TEST(RenderModelTest, DStarOverlayAnchorsPreviewToCurrentAgentPosition) {
+    expect_ordered_overlay_paths_anchor_to_current_positions(agv::core::PathAlgo::DStarBasic);
 }
 
 TEST(RenderModelTest, CaptureLevelNoneSkipsDeltaHistoryUntilEnabled) {

@@ -52,6 +52,16 @@
           <p id="route-goal" class="route-copy">Goal -</p>
           <p id="route-meta" class="route-copy muted">Select an AGV to inspect.</p>
           <div id="route-warning" class="route-warning hidden"></div>
+          <div id="route-debug-panel" class="route-debug-panel hidden">
+            <div class="route-debug-head">
+              <p class="route-debug-title">Debug Overlay</p>
+              <p id="route-debug-meta" class="route-debug-meta">
+                Planner overlay inactive.
+              </p>
+            </div>
+            <div id="route-debug-badges" class="route-debug-badges"></div>
+            <div id="route-debug-legend" class="route-debug-legend"></div>
+          </div>
         </div>
 
         <div class="top-bar glass-card ui-layer">
@@ -148,32 +158,95 @@
         </div>
 
         <div class="map-tools glass-card ui-layer">
-          <div class="tool-group">
-            <span class="tool-label">Layers</span>
-            <button
-              id="semantic-layer-button"
-              class="icon-button wide active"
-              type="button"
-              title="Toggle semantic cells"
-            >
-              Cells
-            </button>
-            <button
-              id="agent-layer-button"
-              class="icon-button wide active"
-              type="button"
-              title="Toggle agents"
-            >
-              AGV
-            </button>
-            <button
-              id="debug-layer-button"
-              class="icon-button wide active"
-              type="button"
-              title="Toggle planner overlay"
-            >
-              Debug
-            </button>
+          <div class="tool-panel-head">
+            <div>
+              <span class="tool-label">Layers</span>
+              <p class="tool-copy">Tune every visual layer in the viewport.</p>
+            </div>
+          </div>
+
+          <div class="tool-section">
+            <span class="tool-section-title">Scene</span>
+            <div class="tool-button-grid">
+              <button
+                id="map-layer-button"
+                class="icon-button wide active"
+                type="button"
+                title="Toggle map tiles and grid"
+              >
+                Map
+              </button>
+              <button
+                id="semantic-layer-button"
+                class="icon-button wide active"
+                type="button"
+                title="Toggle goals, homes, and chargers"
+              >
+                Cells
+              </button>
+              <button
+                id="agent-layer-button"
+                class="icon-button wide active"
+                type="button"
+                title="Toggle agents"
+              >
+                AGV
+              </button>
+              <button
+                id="route-hud-layer-button"
+                class="icon-button wide active"
+                type="button"
+                title="Toggle route HUD"
+              >
+                HUD
+              </button>
+            </div>
+          </div>
+
+          <div class="tool-section">
+            <span class="tool-section-title">Planner</span>
+            <div class="tool-button-grid">
+              <button
+                id="planned-layer-button"
+                class="icon-button wide active"
+                type="button"
+                title="Toggle planned paths"
+              >
+                Plan
+              </button>
+              <button
+                id="cbs-layer-button"
+                class="icon-button wide active"
+                type="button"
+                title="Toggle CBS reroute paths"
+              >
+                CBS
+              </button>
+              <button
+                id="conflict-layer-button"
+                class="icon-button wide active"
+                type="button"
+                title="Toggle conflict markers"
+              >
+                Conflict
+              </button>
+              <button
+                id="conflict-count-layer-button"
+                class="icon-button wide active"
+                type="button"
+                title="Toggle wait-edge counts"
+              >
+                Counts
+              </button>
+              <button
+                id="swap-layer-button"
+                class="icon-button wide active"
+                type="button"
+                title="Toggle swap wait edges"
+              >
+                Swap
+              </button>
+            </div>
           </div>
         </div>
 

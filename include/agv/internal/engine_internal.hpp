@@ -219,6 +219,7 @@ bool agv_apply_moves_and_update_stuck(Simulation* sim, AgentNodeSlots& next_posi
 void agv_update_deadlock_counter(Simulation* sim, const AgentNodeSlots& next_positions, bool moved_this_step, bool is_custom_mode);
 void agv_accumulate_wait_ticks_if_realtime(Simulation* sim);
 void agv_execute_step_service(Simulation* sim, bool is_paused);
+void agv_refresh_ordered_planner_overlay_preview(Simulation* sim);
 
 SimulationConfig default_simulation_config();
 bool apply_simulation_config(Simulation* sim, const SimulationConfig& config);
