@@ -36,6 +36,16 @@ function createDefaultCustomPhases(maxCount = Number.MAX_SAFE_INTEGER) {
 const kScenarioPresetStorageKey = "agv.scenarioPresets.v1";
 const kViewportModes = ["live", "map", "metrics"];
 const kUnsavedScenarioPresetId = "unsaved";
+const kIsReadmeDemo =
+  new URLSearchParams(window.location.search).get("readmeDemo") === "1";
+const kReadmeDemoSequence = Object.freeze({
+  emptyStateMs: 1000,
+  setupRevealMs: 900,
+  presetHoldMs: 900,
+  postLaunchMs: 900,
+  liveRunMs: 5000,
+  metricsHoldMs: 2000,
+});
 const kBuiltInScenarioPresets = Object.freeze([
   {
     id: "builtin-balanced-flow",
@@ -304,6 +314,7 @@ const state = {
   scenarioPresetDraftName: "",
   pendingStepCount: 0,
   stepQueueActive: false,
+  readmeDemoRunning: false,
   selectedAgentId: null,
   hoveredAgentId: null,
   showLayers: {
@@ -4529,6 +4540,82 @@ function waitForPlaybackFrame(delayMs = kRunFrameDelayMs) {
   });
 }
 
+function waitForDemoDelay(delayMs) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, delayMs);
+  });
+}
+
+async function completeReadmeDemo(payload) {
+  if (!kIsReadmeDemo) {
+    return;
+  }
+  await window.agvShell.completeReadmeDemo(payload);
+}
+
+async function runReadmeDemoSequence() {
+  if (!kIsReadmeDemo || state.readmeDemoRunning) {
+    return;
+  }
+
+  state.readmeDemoRunning = true;
+  appendStatus("README demo mode started.");
+
+  try {
+    setSetupOpen(false);
+    setMetricsOpen(false);
+    setViewportMode("live");
+    renderAll();
+
+    await waitForDemoDelay(kReadmeDemoSequence.emptyStateMs);
+
+    setSetupOpen(true);
+    renderAll();
+    await waitForDemoDelay(kReadmeDemoSequence.setupRevealMs);
+
+    const balancedFlowPreset = findScenarioPresetById("builtin-balanced-flow");
+    if (balancedFlowPreset) {
+      applyScenarioPreset(balancedFlowPreset, { announce: false });
+    }
+    elements.algorithm.value = "default";
+    elements.captureLevel.value = "frame";
+    renderLaunchSummaries();
+    renderAll();
+    await waitForDemoDelay(kReadmeDemoSequence.presetHoldMs);
+
+    await startSession();
+    await waitForDemoDelay(kReadmeDemoSequence.postLaunchMs);
+
+    void runContinuously();
+    await waitForDemoDelay(kReadmeDemoSequence.liveRunMs);
+    await pauseRun();
+
+    setMetricsOpen(false);
+    setViewportMode("metrics");
+    renderAll();
+    await waitForDemoDelay(kReadmeDemoSequence.metricsHoldMs);
+
+    await completeReadmeDemo({
+      success: true,
+      viewportMode: state.viewportMode,
+      frameId: state.frame?.frameId ?? 0,
+      sessionId: state.sessionId,
+    });
+  } catch (error) {
+    appendStatus(`README demo failed: ${error.message}`);
+    try {
+      await completeReadmeDemo({
+        success: false,
+        error: error.message,
+      });
+    } catch (_completeError) {
+      // Ignore completion races after a failed demo run.
+    }
+  } finally {
+    state.readmeDemoRunning = false;
+  }
+}
+
 async function runContinuously() {
   if (!state.sessionId || state.running) {
     return;
@@ -4820,13 +4907,18 @@ async function bootstrap() {
   refreshScenarioPresetState();
   setUiVisible(true);
   setViewportMode("live");
-  setSetupOpen(true);
+  setSetupOpen(!kIsReadmeDemo);
   setMetricsOpen(false);
   setDebugExpanded(false);
   renderStatusFeed();
   renderAll();
 
   appendStatus(`Backend discovered at ${state.backendPath}.`);
+  if (kIsReadmeDemo) {
+    appendStatus("README demo will auto-load the default walkthrough.");
+    void runReadmeDemoSequence();
+    return;
+  }
   appendStatus("Choose a scenario, then press Load Session to render the map.");
 }
 
