@@ -11,9 +11,20 @@ const kDefaultFrameOptions = Object.freeze({
   maxLogEntries: 120,
   plannerOverlay: false,
 });
+const kReadmeDemoCaptureIntervalMs = 150;
+const kReadmeDemoWindowBounds = Object.freeze({
+  width: 1440,
+  height: 900,
+});
 
 const repoRoot = path.resolve(__dirname, "..");
 let isAppQuitInFlight = false;
+const readmeDemoState = createReadmeDemoState();
+
+if (readmeDemoState.enabled) {
+  app.commandLine.appendSwitch("disable-background-timer-throttling");
+  app.commandLine.appendSwitch("disable-renderer-backgrounding");
+}
 
 function isIgnorablePipeError(error) {
   const code = String(error?.code || "");
@@ -47,6 +58,154 @@ function resolveBackendPath() {
       "Build the backend first with CMake or set AGV_RENDER_IPC_PATH.",
       `Checked: ${candidates.join(", ")}`,
     ].join(" "),
+  );
+}
+
+function parsePositiveInteger(value, fallbackValue) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallbackValue;
+  }
+  return parsed;
+}
+
+function createReadmeDemoState() {
+  const enabled = process.env.AGV_README_DEMO === "1";
+  return {
+    enabled,
+    captureIntervalMs: parsePositiveInteger(
+      process.env.AGV_README_DEMO_CAPTURE_INTERVAL_MS,
+      kReadmeDemoCaptureIntervalMs,
+    ),
+    captureDir: path.resolve(
+      process.env.AGV_README_DEMO_CAPTURE_DIR ||
+        path.join(repoRoot, "electron", "output", "readme-demo"),
+    ),
+    manifestPath: path.resolve(
+      process.env.AGV_README_DEMO_MANIFEST_PATH ||
+        path.join(repoRoot, "electron", "output", "readme-demo", "manifest.json"),
+    ),
+    windowWidth: parsePositiveInteger(
+      process.env.AGV_README_DEMO_WINDOW_WIDTH,
+      kReadmeDemoWindowBounds.width,
+    ),
+    windowHeight: parsePositiveInteger(
+      process.env.AGV_README_DEMO_WINDOW_HEIGHT,
+      kReadmeDemoWindowBounds.height,
+    ),
+    frameCount: 0,
+    frames: [],
+    timer: null,
+    capturePromise: Promise.resolve(),
+    stopping: false,
+    completed: false,
+    failed: false,
+    result: null,
+  };
+}
+
+async function prepareReadmeDemoArtifacts() {
+  await fs.promises.rm(readmeDemoState.captureDir, { recursive: true, force: true });
+  await fs.promises.mkdir(readmeDemoState.captureDir, { recursive: true });
+  await fs.promises.mkdir(path.dirname(readmeDemoState.manifestPath), { recursive: true });
+  readmeDemoState.frameCount = 0;
+  readmeDemoState.frames = [];
+  readmeDemoState.timer = null;
+  readmeDemoState.capturePromise = Promise.resolve();
+  readmeDemoState.stopping = false;
+  readmeDemoState.completed = false;
+  readmeDemoState.failed = false;
+  readmeDemoState.result = null;
+}
+
+async function captureReadmeDemoFrame(window, delayMs) {
+  if (!readmeDemoState.enabled) {
+    return;
+  }
+  if (window.isDestroyed() || window.webContents.isDestroyed()) {
+    return;
+  }
+
+  const image = await window.webContents.capturePage();
+  const size = image.getSize();
+  const frameIndex = String(++readmeDemoState.frameCount).padStart(4, "0");
+  const fileName = `frame_${frameIndex}.bgra`;
+  const framePath = path.join(readmeDemoState.captureDir, fileName);
+  await fs.promises.writeFile(framePath, image.toBitmap());
+  readmeDemoState.frames.push({
+    file: fileName,
+    width: size.width,
+    height: size.height,
+    delayMs: Math.max(20, Number(delayMs || readmeDemoState.captureIntervalMs)),
+  });
+}
+
+function scheduleReadmeDemoCapture(window) {
+  if (!readmeDemoState.enabled || readmeDemoState.stopping) {
+    return;
+  }
+
+  readmeDemoState.timer = setTimeout(() => {
+    readmeDemoState.capturePromise = readmeDemoState.capturePromise
+      .then(() => captureReadmeDemoFrame(window, readmeDemoState.captureIntervalMs))
+      .catch((error) => {
+        readmeDemoState.failed = true;
+        readmeDemoState.result = { success: false, error: error.message };
+        console.error("README demo capture failed:", error);
+      })
+      .finally(() => {
+        scheduleReadmeDemoCapture(window);
+      });
+  }, readmeDemoState.captureIntervalMs);
+}
+
+async function startReadmeDemoCapture(window) {
+  if (!readmeDemoState.enabled) {
+    return;
+  }
+
+  await prepareReadmeDemoArtifacts();
+  readmeDemoState.capturePromise = captureReadmeDemoFrame(
+    window,
+    readmeDemoState.captureIntervalMs,
+  );
+  await readmeDemoState.capturePromise;
+  scheduleReadmeDemoCapture(window);
+}
+
+async function finalizeReadmeDemoCapture(window, payload = {}) {
+  if (!readmeDemoState.enabled || readmeDemoState.completed) {
+    return;
+  }
+
+  readmeDemoState.stopping = true;
+  readmeDemoState.completed = true;
+  readmeDemoState.result = payload;
+  if (readmeDemoState.timer) {
+    clearTimeout(readmeDemoState.timer);
+    readmeDemoState.timer = null;
+  }
+
+  await readmeDemoState.capturePromise;
+  if (!window.isDestroyed() && !window.webContents.isDestroyed()) {
+    await captureReadmeDemoFrame(window, readmeDemoState.captureIntervalMs);
+  }
+
+  const manifest = {
+    success: payload.success !== false && !readmeDemoState.failed,
+    captureIntervalMs: readmeDemoState.captureIntervalMs,
+    captureDir: readmeDemoState.captureDir,
+    frames: readmeDemoState.frames,
+    window: {
+      width: readmeDemoState.windowWidth,
+      height: readmeDemoState.windowHeight,
+    },
+    result: payload,
+  };
+  await fs.promises.writeFile(
+    readmeDemoState.manifestPath,
+    `${JSON.stringify(manifest, null, 2)}\n`,
+    "utf8",
   );
 }
 
@@ -335,11 +494,24 @@ async function getMetricsSnapshot() {
 }
 
 function createWindow() {
+  const windowOptions = readmeDemoState.enabled
+    ? {
+        width: readmeDemoState.windowWidth,
+        height: readmeDemoState.windowHeight,
+        resizable: false,
+        minimizable: false,
+        maximizable: false,
+        fullscreenable: false,
+        autoHideMenuBar: true,
+      }
+    : {
+        width: 1520,
+        height: 960,
+        minWidth: 1180,
+        minHeight: 760,
+      };
   const window = new BrowserWindow({
-    width: 1520,
-    height: 960,
-    minWidth: 1180,
-    minHeight: 760,
+    ...windowOptions,
     backgroundColor: "#e6ddcb",
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
@@ -355,7 +527,17 @@ function createWindow() {
     window.webContents.send("agv:event", event);
   });
 
-  window.loadFile(path.join(__dirname, "index.html"));
+  if (readmeDemoState.enabled) {
+    window.webContents.once("did-finish-load", () => {
+      void startReadmeDemoCapture(window);
+    });
+  }
+
+  window.loadFile(path.join(__dirname, "index.html"), {
+    query: readmeDemoState.enabled ? { readmeDemo: "1" } : {},
+  });
+
+  return window;
 }
 
 ipcMain.handle("agv:bootstrap", async () => {
@@ -451,6 +633,26 @@ ipcMain.handle("agv:shutdown-session", async () => {
   resetSessionState();
   await backend.shutdown();
   return { ok: true };
+});
+
+ipcMain.handle("agv:complete-readme-demo", async (_event, payload = {}) => {
+  if (!readmeDemoState.enabled) {
+    return { ok: false, reason: "disabled" };
+  }
+
+  const window = BrowserWindow.getAllWindows()[0];
+  if (!window || window.isDestroyed()) {
+    return { ok: false, reason: "window-unavailable" };
+  }
+
+  await finalizeReadmeDemoCapture(window, payload);
+  setTimeout(() => {
+    if (payload.success === false) {
+      app.exitCode = 1;
+    }
+    app.quit();
+  }, 200);
+  return { ok: true, frames: readmeDemoState.frames.length };
 });
 
 app.whenReady().then(() => {

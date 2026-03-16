@@ -5,6 +5,22 @@ AGV(무인 운반차) 시뮬레이션을 **C++ 엔진**으로 실행하고, 그 
 
 ---
 
+## 🎬 앱 미리보기
+
+C++ 시뮬레이션 엔진을 Electron 데스크톱 UI로 시각화하는 AGV 운영/분석 도구입니다.  
+런치 설정, 라이브 맵, 플래너 상태, 메트릭 전환 흐름을 한 번에 빠르게 확인할 수 있습니다.
+
+![AGV Electron Shell demo](docs/assets/readme/agv-shell-demo.gif)
+
+- 🧠 **로컬 IPC 구조**: `agv_render_ipc.exe`와 Electron 셸이 stdio JSON Lines로 직접 통신합니다.
+- 🚀 **세션 기반 실행**: Launch Setup에서 시나리오를 고정한 뒤 immutable session으로 맵을 로드합니다.
+- 🗺️ **라이브 맵 뷰**: AGV 이동, 경로, 대기 상태를 캔버스 중심으로 즉시 확인할 수 있습니다.
+- 📊 **운영 분석 화면**: Metrics/Planner 관점에서 처리량, 대기열, 충돌, CPU 비용을 함께 볼 수 있습니다.
+
+README용 데모 GIF를 다시 만들려면 `cd electron && npm run readme:demo`를 실행하면 됩니다.
+
+---
+
 ## 🌟 한눈에 보기
 
 - 🧠 **백엔드**: `agv_render_ipc.exe`, `agv_console.exe`로 실행되는 C++20 시뮬레이션 엔진

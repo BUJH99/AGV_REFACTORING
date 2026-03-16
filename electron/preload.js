@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld("agvShell", {
   resetSession: () => ipcRenderer.invoke("agv:reset-session"),
   getDebugSnapshot: () => ipcRenderer.invoke("agv:get-debug-snapshot"),
   shutdown: () => ipcRenderer.invoke("agv:shutdown-session"),
+  completeReadmeDemo: (payload) =>
+    ipcRenderer.invoke("agv:complete-readme-demo", payload),
   onEvent: (callback) => {
     const handler = (_event, payload) => callback(payload);
     ipcRenderer.on("agv:event", handler);
