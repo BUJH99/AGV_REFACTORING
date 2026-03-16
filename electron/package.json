@@ -10,7 +10,8 @@
     "readme:demo": "node ./scripts/generate-readme-demo.js"
   },
   "devDependencies": {
-    "electron": "^30.5.1"
+    "electron": "^30.5.1",
+    "gifenc": "^1.0.3"
   },
   "dependencies": {
     "motion": "^12.36.0"
