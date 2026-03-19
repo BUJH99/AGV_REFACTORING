@@ -41,10 +41,10 @@ const kIsReadmeDemo =
 const kReadmeDemoSequence = Object.freeze({
   emptyStateMs: 1000,
   setupRevealMs: 900,
-  presetHoldMs: 900,
+  presetHoldMs: 1100,
   postLaunchMs: 900,
-  liveRunMs: 5000,
-  metricsHoldMs: 2000,
+  liveRunMs: 7200,
+  metricsHoldMs: 2400,
 });
 const kBuiltInScenarioPresets = Object.freeze([
   {
@@ -4577,6 +4577,8 @@ async function runReadmeDemoSequence() {
     if (balancedFlowPreset) {
       applyScenarioPreset(balancedFlowPreset, { announce: false });
     }
+    elements.mapId.value = "3";
+    syncCustomPhasesForMap({ announce: false });
     elements.algorithm.value = "default";
     elements.captureLevel.value = "frame";
     renderLaunchSummaries();

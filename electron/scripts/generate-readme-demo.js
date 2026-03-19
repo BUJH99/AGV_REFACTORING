@@ -17,7 +17,7 @@ const artifactPath = path.join(
   "docs",
   "assets",
   "readme",
-  "agv-shell-demo-v2.gif",
+  "agv-shell-demo-v3.gif",
 );
 const targetWidth = 960;
 
