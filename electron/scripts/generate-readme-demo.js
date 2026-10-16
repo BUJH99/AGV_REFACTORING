@@ -19,7 +19,7 @@ const artifactPath = path.join(
   "readme",
   "agv-shell-demo-v3.gif",
 );
-const targetWidth = 960;
+const targetWidth = 1200;
 
 function resolveElectronBinary() {
   if (!fs.existsSync(electronPathFile)) {

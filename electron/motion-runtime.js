@@ -1,15 +1,10 @@
-window.motionRuntime = null;
-window.motionRuntimeReady = import("./node_modules/motion/dist/es/index.mjs")
-  .then((module) => {
-    window.motionRuntime = {
-      animate: module.animate,
-      spring: module.spring,
-      stagger: module.stagger,
-    };
-    return window.motionRuntime;
-  })
-  .catch((error) => {
-    console.warn("Motion runtime unavailable.", error);
-    window.motionRuntime = null;
-    return null;
-  });
+// Use Motion's browser bundle: the ESM entry imports bare package specifiers,
+// which cannot be resolved by an unbundled Electron file:// renderer.
+window.motionRuntime = window.Motion?.animate
+  ? {
+      animate: window.Motion.animate,
+      spring: window.Motion.spring,
+      stagger: window.Motion.stagger,
+    }
+  : null;
+window.motionRuntimeReady = Promise.resolve(window.motionRuntime);

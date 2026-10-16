@@ -339,14 +339,18 @@ const state = {
     sceneLegend: true,
   },
   bottomPanels: {
-    tail: true,
-    diagnostics: true,
+    tail: false,
+    diagnostics: false,
   },
   fleetView: "roster",
   rightStackView: "telemetry",
   priorityBoardMode: "detailed",
   isUiVisibilityPanelOpen: false,
-  isSetupOpen: true,
+  isSetupOpen: false,
+  isLayersOpen: false,
+  playbackRate: 1,
+  telemetryExpanded: false,
+  savedUiSections: null,
   isMetricsOpen: false,
   isDebugExpanded: false,
   canvasView: null,
@@ -486,12 +490,12 @@ const rosterRows = new Map();
 const priorityRows = new Map();
 const kPlannerLayerKeys = ["plannedPaths", "cbsPaths", "conflictCells", "conflictCounts", "swapWaits"];
 const kUiSectionSpecs = [
-  { key: "topBar", element: "topBar", label: "Top Bar" },
+  { key: "topBar", element: "topBar", label: "Playback controls" },
   { key: "leftStack", element: "leftStack", label: "Fleet Panel" },
-  { key: "rightStack", element: "rightStack", label: "Right Panel" },
-  { key: "mapTools", element: "mapTools", label: "Map Tools" },
-  { key: "routeHud", element: "routeHud", label: "Route HUD" },
-  { key: "bottomStrip", element: "bottomStrip", label: "Bottom Panels" },
+  { key: "rightStack", element: "rightStack", label: "Inspector" },
+  { key: "mapTools", element: "mapTools", label: "Map layers" },
+  { key: "routeHud", element: "routeHud", label: "Route information" },
+  { key: "bottomStrip", element: "bottomStrip", label: "Events" },
   { key: "sceneLegend", element: "sceneLegend", label: "Legend" },
 ];
 const kBottomPanelSpecs = [
@@ -500,14 +504,14 @@ const kBottomPanelSpecs = [
     card: "tailCard",
     button: "tailVisibilityButton",
     content: "logsList",
-    label: "Important Tail",
+    label: "Engine events",
   },
   {
     key: "diagnostics",
     card: "diagnosticsCard",
     button: "diagnosticsVisibilityButton",
     content: "statusList",
-    label: "Status Feed",
+    label: "Activity",
   },
 ];
 const kLayerButtonSpecs = [
@@ -521,6 +525,18 @@ const kLayerButtonSpecs = [
   { key: "conflictCounts", element: "conflictCountLayerButton", tone: "warning", requiresDebug: true },
   { key: "swapWaits", element: "swapLayerButton", tone: "danger", requiresDebug: true },
 ];
+const workspaceUI = new WorkspaceUI({
+  state,
+  elements,
+  actions: {
+    setViewportMode,
+    render: renderAll,
+    openSetup: () => setSetupOpen(true),
+    closeSettings: () => setUiVisibilityPanelOpen(false),
+    setEventsOpen: (open) => setBottomPanelVisible("tail", open),
+  },
+});
+
 const kFocusableSelector = [
   "button",
   "input",
@@ -856,11 +872,28 @@ function waitReasonClass(value) {
   return short;
 }
 
+function agentActivityLabel(agent) {
+  const waiting = {
+    idle: "Idle", charging: "Charging", goal_action: "At goal", rotation: "Turning",
+    blocked_by_stationary: "Blocked", priority_yield: "Yielding", stuck: "Stuck", oscillating: "Oscillating",
+  };
+  return waiting[agent.waitReason] || (agent.movedLastStep ? "Moving" : agent.taskActive ? "Working" : "Idle");
+}
+
+function agentTaskLabel(agent) {
+  const tasks = {
+    going_to_park: "Parking", going_to_collect: "Collecting", returning_with_car: "Retrieving",
+    going_to_charge: "To charger", charging: "Charging", returning_home_empty: "Returning home",
+    returning_home_maintenance: "Maintenance", idle: "No task",
+  };
+  return tasks[agent.state] || titleCase(agent.state || "idle");
+}
+
 function coordText(coord) {
   if (!coord || coord.x === undefined || coord.y === undefined || coord.x < 0 || coord.y < 0) {
     return "-";
   }
-  return `(${coord.x},${coord.y})`;
+  return `(${coord.x}, ${coord.y})`;
 }
 
 function taskSummary(agent) {
@@ -1257,75 +1290,71 @@ function updateMetricHistory(metrics) {
 function createSparkline(values, tone = "primary", options = {}) {
   const shell = document.createElement("div");
   shell.className = "sparkline-shell";
-  const width = options.width || 220;
-  const height = options.height || 58;
-  const padding = 8;
-  shell.style.minHeight = `${height}px`;
-
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  const compact = Boolean(options.compact);
+  const width = compact ? 220 : 520;
+  const height = compact ? 60 : 100;
+  const margin = compact ? { top: 6, right: 5, bottom: 6, left: 5 }
+    : { top: 10, right: 10, bottom: 24, left: 38 };
+  shell.style.height = `${height}px`;
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   svg.setAttribute("preserveAspectRatio", "none");
-
-  const chartValues = values.length > 1 ? values : [values[0] ?? 0, values[0] ?? 0];
-  const min = Math.min(...chartValues);
-  const max = Math.max(...chartValues);
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `${options.label || "Metric"} over simulation steps`);
+  const chartValues = values.length ? values.map((value) => Number.isFinite(value) ? value : 0) : [0];
+  const min = Math.min(0, ...chartValues);
+  const max = Math.max(0, ...chartValues) || 1;
   const range = max - min || 1;
-  const stepX = chartValues.length > 1 ? (width - padding * 2) / (chartValues.length - 1) : 0;
-  const points = chartValues.map((value, index) => {
-    const numeric = Number.isFinite(value) ? value : min;
-    return {
-      x: padding + index * stepX,
-      y: height - padding - ((numeric - min) / range) * (height - padding * 2),
-    };
-  });
-
-  [0.25, 0.5, 0.75].forEach((fraction) => {
-    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    line.setAttribute("x1", String(padding));
-    line.setAttribute("x2", String(width - padding));
-    line.setAttribute("y1", String(padding + (height - padding * 2) * fraction));
-    line.setAttribute("y2", String(padding + (height - padding * 2) * fraction));
-    line.setAttribute("stroke", "rgba(91, 111, 151, 0.14)");
+  const entries = historyEntries(chartValues.length);
+  const firstStep = entries[0]?.step ?? 0;
+  const lastStep = entries[entries.length - 1]?.step ?? firstStep;
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const yAt = (value) => margin.top + (1 - (value - min) / range) * plotHeight;
+  const xAt = (step) => margin.left + ((step - firstStep) / (lastStep - firstStep || 1)) * plotWidth;
+  const addLine = (x1, y1, x2, y2) => {
+    const line = document.createElementNS(ns, "line");
+    for (const [key, value] of Object.entries({ x1, y1, x2, y2 })) line.setAttribute(key, String(value));
+    line.setAttribute("stroke", "#e6ebf2");
     line.setAttribute("stroke-width", "1");
     svg.append(line);
+  };
+  const addText = (value, x, y, anchor = "end") => {
+    const label = document.createElementNS(ns, "text");
+    label.setAttribute("x", String(x)); label.setAttribute("y", String(y));
+    label.setAttribute("text-anchor", anchor); label.setAttribute("class", "chart-axis-label");
+    label.textContent = value; svg.append(label);
+  };
+  [0, .5, 1].forEach((fraction) => {
+    const value = min + range * fraction;
+    addLine(margin.left, yAt(value), width - margin.right, yAt(value));
+    if (!compact) addText(formatNumber(value, max < 1 ? 2 : max < 10 ? 1 : 0), margin.left - 8, yAt(value) + 3);
   });
-
-  const stroke = toneColor(tone);
-  const area = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  area.setAttribute(
-    "d",
-    [
-      `M ${points[0].x} ${height - padding}`,
-      ...points.map((point) => `L ${point.x} ${point.y}`),
-      `L ${points[points.length - 1].x} ${height - padding}`,
-      "Z",
-    ].join(" "),
-  );
-  area.setAttribute("fill", hexToRgba(stroke, 0.14));
-  svg.append(area);
-
-  const polyline = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
-  polyline.setAttribute(
-    "points",
-    points.map((point) => `${point.x},${point.y}`).join(" "),
-  );
-  polyline.setAttribute("fill", "none");
-  polyline.setAttribute("stroke", stroke);
-  polyline.setAttribute("stroke-width", String(options.strokeWidth || 3));
-  polyline.setAttribute("stroke-linecap", "round");
-  polyline.setAttribute("stroke-linejoin", "round");
-  svg.append(polyline);
-
-  const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-  const lastPoint = points[points.length - 1];
-  dot.setAttribute("cx", String(lastPoint.x));
-  dot.setAttribute("cy", String(lastPoint.y));
-  dot.setAttribute("r", String(options.dotRadius || 3.5));
-  dot.setAttribute("fill", stroke);
-  dot.setAttribute("stroke", "rgba(255, 255, 255, 0.95)");
-  dot.setAttribute("stroke-width", "2");
-  svg.append(dot);
-
+  if (!compact) {
+    const ticks = lastStep === firstStep ? [firstStep] : [firstStep, (firstStep + lastStep) / 2, lastStep];
+    ticks.forEach((step) => {
+      const x = xAt(step);
+      addLine(x, margin.top, x, height - margin.bottom);
+      addText(formatInteger(step), x, height - 6, "middle");
+    });
+  }
+  const points = chartValues.map((value, index) => ({
+    x: xAt(entries[index]?.step ?? index), y: yAt(value),
+  }));
+  const line = document.createElementNS(ns, "polyline");
+  line.setAttribute("points", points.map(({ x, y }) => `${x},${y}`).join(" "));
+  line.setAttribute("fill", "none");
+  line.setAttribute("stroke", "#2563eb");
+  line.setAttribute("stroke-width", "1.6");
+  line.setAttribute("vector-effect", "non-scaling-stroke");
+  line.setAttribute("stroke-linejoin", "round");
+  svg.append(line);
+  if (points.length === 1) {
+    const dot = document.createElementNS(ns, "circle");
+    dot.setAttribute("cx", String(points[0].x)); dot.setAttribute("cy", String(points[0].y));
+    dot.setAttribute("r", "2.5"); dot.setAttribute("fill", "#2563eb"); svg.append(dot);
+  }
   shell.append(svg);
   return shell;
 }
@@ -1359,39 +1388,22 @@ function createTrendDelta(spec) {
 function createTrendCard(spec, compact = false) {
   const card = document.createElement("div");
   card.className = compact ? "planner-trend-card" : "metric-trend-card";
-  if (!compact) {
-    card.dataset.tone = spec.tone;
-  }
-
   const head = document.createElement("div");
   head.className = compact ? "planner-trend-head" : "metric-trend-head";
-
   const label = document.createElement("div");
   label.className = compact ? "planner-trend-label" : "metric-trend-label";
   label.textContent = spec.label;
-
   const value = document.createElement("div");
   value.className = compact ? "planner-trend-value" : "metric-trend-value";
   value.textContent = spec.formatter(state.metrics?.[spec.key]);
-
-  head.append(label, createTrendDelta(spec));
-
-  card.append(head, value);
-  card.append(
-    createSparkline(metricSeries(spec.key), spec.tone, {
-      height: compact ? 52 : 82,
-      strokeWidth: compact ? 2.6 : 3.2,
-      dotRadius: compact ? 3 : 4,
-    }),
-  );
-
-  if (!compact) {
-    const foot = document.createElement("div");
-    foot.className = "metric-trend-foot";
-    foot.textContent = spec.footnote;
-    card.append(foot);
-  }
-
+  value.title = "Current value";
+  head.append(label, value);
+  card.append(head, createSparkline(metricSeries(spec.key), spec.tone, { compact, label: spec.label }));
+  const foot = document.createElement("div");
+  foot.className = "metric-trend-foot";
+  foot.textContent = compact ? spec.footnote || "Simulation step" : "Simulation step";
+  foot.title = spec.footnote || "";
+  card.append(foot);
   return card;
 }
 
@@ -1541,7 +1553,7 @@ function createFairnessRow(item, maxima) {
   const swatch = document.createElement("div");
   swatch.className = "agent-swatch";
   const color = deterministicAgentColor(item);
-  swatch.style.background = `linear-gradient(135deg, ${color}, ${color}cc)`;
+  swatch.style.background = color;
   swatch.textContent = item.symbol || "?";
 
   head.append(titleWrap, swatch);
@@ -1978,7 +1990,14 @@ function renderLaunchSummaryInto(container) {
   }
 
   container.innerHTML = "";
-  summaryItems.forEach((item) => {
+  const visibleItems = container === elements.launchSummaryDrawer ? [
+    {
+      label: "Session",
+      value: `Map ${elements.mapId.value} · ${titleCase(elements.algorithm.value)} · ${titleCase(modeValue())} · ${titleCase(elements.captureLevel.value)}`,
+    },
+    summaryItems[summaryItems.length - 1],
+  ] : summaryItems;
+  visibleItems.forEach((item) => {
     container.append(createSummaryCard(item.label, item.value));
   });
 }
@@ -2090,7 +2109,8 @@ function renderPhaseEditor() {
 
     const stepPill = document.createElement("span");
     stepPill.className = "phase-index";
-    stepPill.textContent = `Phase ${index + 1}`;
+    stepPill.textContent = String(index + 1);
+    stepPill.title = `Phase ${index + 1}`;
 
     const controls = document.createElement("div");
     controls.className = "phase-controls";
@@ -2207,21 +2227,22 @@ function buildLaunchConfig() {
 function syncUiSectionClasses() {
   kUiSectionSpecs.forEach((spec) => {
     const element = elements[spec.element];
-    if (!element) {
-      return;
-    }
-    element.classList.toggle("is-hidden", !uiSectionVisible(spec.key));
+    if (!element) return;
+    const hidden = !uiSectionVisible(spec.key);
+    element.classList.toggle("is-hidden", hidden);
+    element.inert = hidden;
   });
-
   state.uiVisible = anyUiSectionsVisible();
   elements.appShell.classList.toggle("ui-hidden", !state.uiVisible);
-  elements.toggleUiButton.textContent = state.uiVisible ? "Hide UI" : "Show UI";
-  elements.toggleUiButton.title = state.uiVisible
-    ? "Hide every overlay panel"
-    : "Restore every overlay panel";
+  elements.toggleUiButton.textContent = state.uiVisible ? "Focus map" : "Exit focus";
+  elements.toggleUiButton.title = state.uiVisible ? "Hide panels to focus on the map" : "Restore workspace panels";
+  elements.toggleUiButton.setAttribute("aria-pressed", String(!state.uiVisible));
+  workspaceUI.sync();
 }
 
 function renderUiVisibilityPanel() {
+  const focusedSection = elements.uiVisibilityGrid.contains(document.activeElement)
+    ? document.activeElement.dataset.uiSection : null;
   const enabledCount = visibleUiSectionCount();
   elements.uiVisibilitySummary.textContent =
     `${enabledCount}/${kUiSectionSpecs.length} on`;
@@ -2249,6 +2270,10 @@ function renderUiVisibilityPanel() {
 
   elements.uiAllOnButton.disabled = allUiSectionsVisible();
   elements.uiAllOffButton.disabled = !anyUiSectionsVisible();
+  if (focusedSection) {
+    [...elements.uiVisibilityGrid.children].find((button) => button.dataset.uiSection === focusedSection)
+      ?.focus({ preventScroll: true });
+  }
 }
 
 function setUiVisibilityPanelOpen(open) {
@@ -2272,11 +2297,8 @@ function setAllUiSections(visible) {
   kUiSectionSpecs.forEach((spec) => {
     state.uiSections[spec.key] = Boolean(visible);
   });
-  syncUiSectionClasses();
+  renderAll();
   renderUiVisibilityPanel();
-  layoutViewportEmpty();
-  renderScene();
-  renderRouteHud();
 }
 
 function setUiSectionVisible(key, visible) {
@@ -2284,15 +2306,23 @@ function setUiSectionVisible(key, visible) {
     return;
   }
   state.uiSections[key] = Boolean(visible);
-  syncUiSectionClasses();
+  renderAll();
   renderUiVisibilityPanel();
-  layoutViewportEmpty();
-  renderScene();
-  renderRouteHud();
 }
 
 function setUiVisible(visible) {
-  setAllUiSections(Boolean(visible));
+  if (!visible) {
+    workspaceUI.setLayersOpen(false);
+    state.savedUiSections = { ...state.uiSections };
+    setAllUiSections(false);
+  } else if (state.savedUiSections) {
+    state.uiSections = { ...state.savedUiSections };
+    state.savedUiSections = null;
+    renderAll();
+    renderUiVisibilityPanel();
+  } else {
+    setAllUiSections(true);
+  }
 }
 
 function setFleetView(view, options = {}) {
@@ -2307,13 +2337,15 @@ function setFleetView(view, options = {}) {
   elements.fleetRosterPane.classList.toggle("hidden", !rosterActive);
   elements.fleetPriorityPane.classList.toggle("hidden", rosterActive);
 
+  if (rosterActive) renderRoster(); else renderPriorityBoard();
+
   if (options.animate !== false) {
     const activePane = rosterActive ? elements.fleetRosterPane : elements.fleetPriorityPane;
     animateElement(
       activePane,
       {
         opacity: [0, 1],
-        y: [16, 0],
+        y: [4, 0],
       },
       { duration: 0.2 },
     );
@@ -2324,12 +2356,12 @@ function setFleetView(view, options = {}) {
         row,
         {
           opacity: [0, 1],
-          y: [12, 0],
+          y: [3, 0],
           scale: [0.99, 1],
         },
         {
           duration: 0.22,
-          delay: index * 0.015,
+          delay: 0,
         },
       );
     });
@@ -2338,6 +2370,7 @@ function setFleetView(view, options = {}) {
 
 function setRightStackView(view, options = {}) {
   const nextView = view === "planner" || view === "debug" ? view : "telemetry";
+  const changed = state.rightStackView !== nextView;
   state.rightStackView = nextView;
 
   const specs = [
@@ -2368,6 +2401,11 @@ function setRightStackView(view, options = {}) {
     spec.pane.classList.toggle("hidden", !active);
   });
 
+  if (nextView === "telemetry") renderTelemetry();
+  else if (nextView === "planner") renderPlannerSummary();
+  else renderDebugPanel();
+  if (changed) elements.rightStack.scrollTop = 0;
+
   if (options.animate === false) {
     return;
   }
@@ -2381,7 +2419,7 @@ function setRightStackView(view, options = {}) {
     activeSpec.pane,
     {
       opacity: [0, 1],
-      y: [16, 0],
+      y: [4, 0],
     },
     { duration: 0.2 },
   );
@@ -2391,11 +2429,11 @@ function setRightStackView(view, options = {}) {
       node,
       {
         opacity: [0, 1],
-        y: [10, 0],
+        y: [3, 0],
       },
       {
         duration: 0.18,
-        delay: index * 0.012,
+        delay: 0,
       },
     );
   });
@@ -2415,23 +2453,19 @@ function setPriorityBoardMode(mode) {
 }
 
 function setSetupOpen(open) {
-  state.isSetupOpen = Boolean(open);
-  elements.setupBackdrop.classList.toggle("hidden", !state.isSetupOpen);
-  elements.setupDrawer.classList.toggle("open", state.isSetupOpen);
+  workspaceUI.setDialog("setup", Boolean(open));
 }
 
 function setMetricsOpen(open) {
-  state.isMetricsOpen = Boolean(open);
-  elements.metricsBackdrop.classList.toggle("hidden", !state.isMetricsOpen);
-  elements.metricsModal.classList.toggle("hidden", !state.isMetricsOpen);
+  if (open) { renderModalSummary(); renderMetrics(); }
+  workspaceUI.setDialog("metrics", Boolean(open));
 }
 
 function syncViewportMode() {
   elements.appShell.classList.remove("viewport-live", "viewport-map", "viewport-metrics");
   elements.appShell.classList.add(`viewport-${state.viewportMode}`);
   elements.metricsOverview.classList.toggle("hidden", state.viewportMode !== "metrics");
-  elements.metricsOverviewPill.textContent =
-    state.viewportMode === "metrics" ? "Viewport metrics" : "Viewport live";
+  workspaceUI.sync();
   elements.viewportEmpty.classList.toggle(
     "hidden",
     state.viewportMode !== "live" || Boolean(state.sessionId),
@@ -2441,6 +2475,7 @@ function syncViewportMode() {
 function setViewportMode(mode) {
   const nextMode = kViewportModes.includes(mode) ? mode : "live";
   state.viewportMode = nextMode;
+  workspaceUI.setLayersOpen(false);
   if (nextMode !== "live") {
     setSetupOpen(false);
     setMetricsOpen(false);
@@ -2462,6 +2497,7 @@ function setDebugExpanded(open) {
 }
 
 function renderMetricsOverview() {
+  elements.metricsOverview.classList.toggle("has-metrics", Boolean(state.metrics));
   elements.metricsOverviewHero.innerHTML = "";
   elements.metricsOverviewStatus.innerHTML = "";
   elements.metricsOverviewQueue.innerHTML = "";
@@ -2547,10 +2583,10 @@ function renderMetricsOverview() {
     elements.metricsOverviewDistribution.append(card);
   });
 
-  trendDeckSpecs
-    .filter((spec) =>
-      ["throughput", "outstandingTaskCount", "avgPlanningTimeMs"].includes(spec.key),
-    )
+  ["throughput", "outstandingTaskCount", "avgPlanningTimeMs"]
+    .map((key) => trendDeckSpecs.find((spec) => spec.key === key))
+    .filter(Boolean)
+    .map((spec) => spec.key === "avgPlanningTimeMs" ? { ...spec, label: "Planning time (ms)" } : spec)
     .concat([
       {
         key: "deadlockCount",
@@ -2585,8 +2621,8 @@ function setSessionState(sessionId, captureLevel) {
 
   const hasSession = Boolean(sessionId);
   elements.sessionPill.textContent = hasSession ? `Session ${sessionId}` : "No session";
-  elements.startButton.textContent = hasSession ? "Reload Session" : "Load Session";
-  elements.viewportStartButton.textContent = hasSession ? "Reload Session" : "Load Session";
+  elements.startButton.textContent = hasSession ? "Reload session" : "Load session";
+  elements.viewportStartButton.textContent = hasSession ? "Reload session" : "Load session";
   elements.viewportEmpty.classList.toggle("hidden", hasSession);
   syncInteractiveState();
 }
@@ -2599,12 +2635,14 @@ function syncLayerButtons() {
       return;
     }
     button.classList.toggle("active", Boolean(state.showLayers[spec.key]));
+    button.setAttribute("aria-pressed", String(Boolean(state.showLayers[spec.key])));
     button.dataset.tone = spec.tone || "primary";
     button.disabled = Boolean(spec.requiresDebug && !debugEnabled);
   });
 }
 
 function syncInteractiveState() {
+  workspaceUI.sync();
   const hasSession = Boolean(state.sessionId);
 
   elements.validateButton.disabled = state.busy || state.running;
@@ -2618,26 +2656,15 @@ function syncInteractiveState() {
 
   syncLayerButtons();
 
-  if (!hasSession) {
-    elements.runControlHelp.textContent =
-      "Load a session first to render the map and enable the controls.";
-    return;
-  }
-
-  if (state.running) {
-    elements.runControlHelp.textContent =
-      "Continuous run is active. Press Space to pause, or let the session play until completion.";
-    return;
-  }
-
-  if (state.paused) {
-    elements.runControlHelp.textContent =
-      "Session loaded and paused. Press Space to run, S to step, or R to reset to setup.";
-    return;
-  }
-
-  elements.runControlHelp.textContent =
-    "Session is live. Press Space to pause or R to reset to setup.";
+  const help = !hasSession
+    ? "Load a session first to render the map and enable the controls."
+    : state.running
+      ? "Continuous run is active. Press Space to pause, or let the session play until completion."
+      : state.paused
+        ? "Session loaded and paused. Press Space to run, S to step, or R to reset to setup."
+        : "Session is live. Press Space to pause or R to reset to setup.";
+  // Avoid announcing an unchanged live-region message on every frame.
+  if (elements.runControlHelp.textContent !== help) elements.runControlHelp.textContent = help;
 }
 
 function setBusy(isBusy) {
@@ -2678,7 +2705,7 @@ function renderTopBar() {
     elements.topStatGrid.append(createMiniMetric(label, value, tone));
   });
 
-  elements.fleetSummary.textContent = `${agents.length} AGV · ${activeAgentCount()} active`;
+  elements.fleetSummary.textContent = `${activeAgentCount()} / ${agents.length} active`;
 }
 
 function renderPlannerSummary() {
@@ -2863,21 +2890,16 @@ function priorityWaitTone(waitReason) {
 }
 
 function renderBottomPanels() {
-  const bottomPanelsVisible = state.bottomPanels.tail || state.bottomPanels.diagnostics;
-
-  elements.tailCard.classList.toggle("panel-collapsed", !bottomPanelsVisible);
-  elements.diagnosticsCard.classList.toggle("panel-collapsed", !bottomPanelsVisible);
-
+  const visible = state.bottomPanels.tail || state.bottomPanels.diagnostics;
+  elements.bottomStrip.classList.toggle("events-collapsed", !visible);
   kBottomPanelSpecs.forEach((spec) => {
     const button = elements[spec.button];
-    const content = elements[spec.content];
-    button.textContent = bottomPanelsVisible ? "Lower" : "Raise";
-    button.setAttribute("aria-expanded", String(bottomPanelsVisible));
-    button.title = bottomPanelsVisible ? "Lower bottom panels" : "Raise bottom panels";
-    if (content) {
-      content.setAttribute("aria-hidden", String(!bottomPanelsVisible));
-    }
+    button.textContent = "Close";
+    button.setAttribute("aria-expanded", String(visible));
+    button.title = "Close events";
+    elements[spec.content]?.setAttribute("aria-hidden", String(!visible));
   });
+  workspaceUI.sync();
 }
 
 function setBottomPanelVisible(key, visible) {
@@ -2890,32 +2912,9 @@ function setBottomPanelVisible(key, visible) {
   state.bottomPanels.tail = nextVisible;
   state.bottomPanels.diagnostics = nextVisible;
   renderBottomPanels();
+  if (nextVisible) { renderLogs(); renderStatusFeed(); }
   layoutViewportEmpty();
   renderScene();
-}
-
-function syncRightStackOffset() {
-  if (!elements.rightStack || !elements.mapTools) {
-    return;
-  }
-
-  if (!uiSectionVisible("rightStack")) {
-    elements.rightStack.style.top = "";
-    return;
-  }
-
-  const mapToolsVisible = uiSectionVisible("mapTools") && !elements.mapTools.classList.contains("is-hidden");
-  if (!mapToolsVisible) {
-    elements.rightStack.style.top = "";
-    return;
-  }
-
-  const appRect = elements.appShell.getBoundingClientRect();
-  const mapToolsRect = elements.mapTools.getBoundingClientRect();
-  const clearSpacing = window.innerWidth <= 1120 ? 18 : 16;
-  const baseTop = window.innerWidth <= 1400 ? 260 : 178;
-  const nextTop = Math.max(baseTop, Math.round(mapToolsRect.bottom - appRect.top + clearSpacing));
-  elements.rightStack.style.top = `${nextTop}px`;
 }
 
 function createPriorityRow(agentId) {
@@ -3027,13 +3026,14 @@ function updatePriorityRow(row, agent, priority, rank, scoreFloor, scoreRange) {
   row.button.classList.toggle("minimal", minimalMode);
   row.button.classList.toggle("promoted", rankShift > 0);
   row.button.classList.toggle("demoted", rankShift < 0);
+  row.button.setAttribute("aria-pressed", String(agent.id === state.selectedAgentId));
   if (agent.id === state.selectedAgentId) {
     row.button.classList.add("selected");
   }
   if (rank === 0) {
     row.button.classList.add("leader");
   }
-  row.button.title = minimalMode ? `${rank + 1}. ${symbol}` : "";
+  row.button.title = `${rank + 1}. AGV ${symbol} · ${priority.baseLabel} · score ${formatInteger(priority.score)}. Select for the full breakdown.`;
   row.button.setAttribute(
     "aria-label",
     `${rank === 0 ? "Leader" : `Priority ${rank + 1}`} ${symbol}, ${agentStateShortLabel(agent.state)}`,
@@ -3050,9 +3050,9 @@ function updatePriorityRow(row, agent, priority, rank, scoreFloor, scoreRange) {
     row.rank.classList.add("leader");
   }
   row.rank.textContent = `#${rank + 1}`;
-  row.avatar.style.background = `linear-gradient(135deg, ${color}, ${color}cc)`;
+  row.avatar.style.background = color;
   row.avatar.textContent = symbol;
-  row.title.textContent = rank === 0 ? "Leader" : `Agent ${symbol}`;
+  row.title.textContent = `AGV ${symbol}`;
   row.subtitle.textContent = `${priority.baseLabel} · ${coordText(agent.position)} → ${coordText(agent.goal)}`;
   row.score.textContent = `PRI ${formatInteger(priority.score)}`;
 
@@ -3186,183 +3186,47 @@ function createRosterRow(agentId) {
   button.type = "button";
   button.className = "roster-row";
   button.dataset.agentId = String(agentId);
-  button.addEventListener("mousedown", (event) => {
-    event.preventDefault();
-  });
   button.addEventListener("click", () => {
-    const nextId = Number(button.dataset.agentId);
-    state.selectedAgentId = Number.isFinite(nextId) ? nextId : null;
+    state.selectedAgentId = Number(button.dataset.agentId);
     renderAll();
   });
   button.addEventListener("mouseenter", () => {
-    const nextId = Number(button.dataset.agentId);
-    state.hoveredAgentId = Number.isFinite(nextId) ? nextId : null;
+    state.hoveredAgentId = Number(button.dataset.agentId);
     renderRouteHud();
     renderScene();
   });
   button.addEventListener("mouseleave", () => {
-    const nextId = Number(button.dataset.agentId);
-    if (state.hoveredAgentId === nextId) {
-      state.hoveredAgentId = null;
-      renderRouteHud();
-      renderScene();
-    }
+    if (state.hoveredAgentId === Number(button.dataset.agentId)) state.hoveredAgentId = null;
+    renderRouteHud();
+    renderScene();
   });
-
-  const head = document.createElement("div");
-  head.className = "roster-head";
-
-  const primary = document.createElement("div");
-  primary.className = "roster-primary";
-
-  const swatch = document.createElement("div");
-  swatch.className = "agent-swatch";
-
-  const textGroup = document.createElement("div");
-
-  const title = document.createElement("div");
-  title.className = "roster-title";
-
-  const subtitle = document.createElement("div");
-  subtitle.className = "roster-subtitle";
-
-  textGroup.append(title, subtitle);
-  primary.append(swatch, textGroup);
-
-  const wait = document.createElement("span");
-  head.append(primary, wait);
-
-  const body = document.createElement("div");
-  body.className = "roster-body";
-
-  const statusRow = document.createElement("div");
-  statusRow.className = "roster-status-row";
-
-  const stateText = document.createElement("div");
-  stateText.className = "roster-meta";
-
-  const signalGroup = document.createElement("div");
-  signalGroup.className = "roster-signal-group";
-
-  const taskChip = document.createElement("span");
-  const batteryChip = document.createElement("span");
-
-  signalGroup.append(taskChip, batteryChip);
-  statusRow.append(stateText, signalGroup);
-
-  const taskRail = document.createElement("div");
-  taskRail.className = "roster-task-rail";
-
-  const taskHead = document.createElement("div");
-  taskHead.className = "roster-task-head";
-
-  const taskLabel = document.createElement("span");
-  taskLabel.className = "roster-task-label";
-  taskLabel.textContent = "Task throughput";
-
-  const taskValue = document.createElement("span");
-  taskValue.className = "roster-task-value";
-
-  taskHead.append(taskLabel, taskValue);
-
-  const taskMeter = document.createElement("div");
-  taskMeter.className = "roster-task-meter";
-
-  const taskFill = document.createElement("div");
-  taskMeter.append(taskFill);
-
-  const taskMeta = document.createElement("div");
-  taskMeta.className = "roster-task-meta";
-
-  const shareText = document.createElement("span");
-  const countText = document.createElement("span");
-
-  taskMeta.append(shareText, countText);
-
-  const battery = document.createElement("div");
-  battery.className = "roster-battery";
-
-  const batteryMeta = document.createElement("div");
-  batteryMeta.className = "roster-battery-meta";
-
-  const batteryCopy = document.createElement("span");
-  const distText = document.createElement("span");
-
-  batteryMeta.append(batteryCopy, distText);
-
-  const meter = document.createElement("div");
-  meter.className = "battery-meter";
-
-  const fill = document.createElement("div");
-  meter.append(fill);
-
-  battery.append(batteryMeta, meter);
-  taskRail.append(taskHead, taskMeter, taskMeta);
-  body.append(statusRow, taskRail, battery);
-  button.append(head, body);
-
-  return {
-    button,
-    swatch,
-    title,
-    subtitle,
-    wait,
-    stateText,
-    taskChip,
-    batteryChip,
-    taskValue,
-    taskFill,
-    shareText,
-    countText,
-    batteryCopy,
-    distText,
-    fill,
-  };
+  const id = document.createElement("span");
+  id.className = "roster-id";
+  const status = document.createElement("span");
+  status.className = "roster-state";
+  const dot = document.createElement("span");
+  dot.className = "status-dot";
+  dot.setAttribute("aria-hidden", "true");
+  const statusText = document.createElement("span");
+  status.append(dot, statusText);
+  const completed = document.createElement("span");
+  completed.className = "roster-completed";
+  button.append(id, status, completed);
+  return { button, id, dot, statusText, completed };
 }
 
-function updateRosterRow(row, agent, maxTasksCompleted) {
-  row.button.dataset.agentId = String(agent.id);
-  row.button.className = "roster-row";
-  if (agent.id === state.selectedAgentId) {
-    row.button.classList.add("selected");
-  }
-  if (agent.waitReason && agent.waitReason !== "none") {
-    row.button.classList.add("waiting");
-  }
-
-  const color = deterministicAgentColor(agent);
-  const taskTone = agentTaskLoadTone(agent, maxTasksCompleted);
-
-  row.swatch.style.background = `linear-gradient(135deg, ${color}, ${color}cc)`;
-  row.swatch.textContent = agent.symbol || "?";
-  row.title.textContent = `Agent ${agent.symbol || "?"}`;
-  row.subtitle.textContent = `${coordText(agent.position)} → ${coordText(agent.goal)}`;
-  row.wait.className = `wait-badge ${waitReasonClass(agent.waitReason)}`;
-  row.wait.textContent = waitReasonShortLabel(agent.waitReason);
-  row.stateText.textContent = titleCase(agent.state || "idle");
-  row.taskChip.className = `task-chip ${taskTone}`;
-  row.taskChip.textContent = `TASK ${formatInteger(agentTasksCompleted(agent))}`;
-  row.batteryChip.className = `battery-chip ${chargeReserveTone(agent)}`;
-  row.batteryChip.textContent = `${
-    (agent.chargeTimer || 0) > 0 || agent.state === "charging" ? "CHG" : "BAT"
-  } ${chargeReservePercent(agent)}%`;
-  row.taskValue.textContent = `${formatNumber(agentTaskThroughput(agent), 2)} / 100 step`;
-  row.taskFill.className = `roster-task-fill ${taskTone}`;
-  row.taskFill.style.width = `${Math.max(
-    0,
-    Math.min(
-      100,
-      maxTasksCompleted > 0
-        ? (agentTasksCompleted(agent) / maxTasksCompleted) * 100
-        : 0,
-    ),
-  )}%`;
-  row.shareText.textContent = `share ${formatPercent(agentTaskShare(agent), 0)}`;
-  row.countText.textContent = `${formatInteger(agentTasksCompleted(agent))} completed`;
-  row.batteryCopy.textContent = chargeReserveMeta(agent);
-  row.distText.textContent = `${Number(agent.totalDistanceTraveled || 0).toFixed(1)} cells traveled`;
-  row.fill.className = `battery-fill ${chargeReserveTone(agent)}`;
-  row.fill.style.width = `${Math.max(8, chargeReservePercent(agent))}%`;
+function updateRosterRow(row, agent) {
+  const selected = agent.id === state.selectedAgentId;
+  const waiting = agent.waitReason && agent.waitReason !== "none" && agent.waitReason !== "idle";
+  const status = agentActivityLabel(agent);
+  row.button.classList.toggle("selected", selected);
+  row.button.setAttribute("aria-pressed", String(selected));
+  row.button.setAttribute("aria-label", `AGV ${agent.symbol}, ${titleCase(agent.state)}, ${formatInteger(agentTasksCompleted(agent))} tasks completed`);
+  row.button.title = `${titleCase(agent.state)} · ${coordText(agent.position)} to ${coordText(agent.goal)}`;
+  row.id.textContent = agent.symbol || "?";
+  row.statusText.textContent = status;
+  row.dot.className = `status-dot ${agent.stuckSteps > 0 || agent.oscillationSteps > 0 ? "danger" : waiting ? "warning" : agent.taskActive ? "active" : "success"}`;
+  row.completed.textContent = formatInteger(agentTasksCompleted(agent));
 }
 
 function renderRoster() {
@@ -3438,60 +3302,119 @@ function createTelemetryField(label, value, wide = false) {
 
 function renderTelemetry() {
   const agent = selectedAgent();
-  elements.telemetryContent.innerHTML = "";
-
+  const previousDetails = elements.telemetryContent.querySelector("details");
+  const summaryFocused = previousDetails?.querySelector("summary") === document.activeElement;
+  if (previousDetails) state.telemetryExpanded = previousDetails.open;
+  elements.telemetryContent.replaceChildren();
   if (!agent) {
-    const empty = document.createElement("div");
-    empty.className = "telemetry-empty";
-    empty.innerHTML =
-      "<h3>No AGV selected</h3><p>Click an AGV on the map or in the roster to inspect its live telemetry.</p>";
-    elements.telemetryContent.append(empty);
+    elements.telemetryContent.append(createEmptyState("Select an AGV", "Choose an AGV on the map or in the fleet list to inspect its live state."));
     return;
   }
-
-  const color = deterministicAgentColor(agent);
   const shell = document.createElement("div");
   shell.className = "telemetry-shell";
-
   const head = document.createElement("div");
   head.className = "telemetry-head";
-
-  const badge = document.createElement("div");
-  badge.className = "telemetry-badge";
-  badge.style.background = `linear-gradient(135deg, ${color}, ${color}cc)`;
-  badge.textContent = agent.symbol || "?";
-
-  const copy = document.createElement("div");
-  copy.className = "telemetry-copy";
-
   const title = document.createElement("h3");
-  title.textContent = `Agent ${agent.symbol || "?"}`;
-
-  const subtitle = document.createElement("div");
-  subtitle.className = "telemetry-subtitle";
-  subtitle.textContent = `id ${agent.id} · ${agent.isActive ? "active" : "inactive"} · ${
-    agent.movedLastStep ? "moved last step" : "held last step"
-  }`;
-
-  copy.append(title, subtitle);
-  head.append(badge, copy);
-
+  title.textContent = `AGV ${agent.symbol || "?"}`;
+  const presence = document.createElement("span");
+  presence.className = "telemetry-presence";
+  const dot = document.createElement("span");
+  dot.className = `status-dot ${agent.isActive ? "success" : ""}`;
+  dot.setAttribute("aria-hidden", "true");
+  presence.append(dot, document.createTextNode(agent.isActive ? "Active" : "Inactive"));
+  head.append(title, presence);
   const grid = document.createElement("div");
   grid.className = "telemetry-grid";
   grid.append(
-    createTelemetryField("State", agentStateShortLabel(agent.state)),
-    createTelemetryField("Wait", waitReasonShortLabel(agent.waitReason)),
-    createTelemetryField("Position", coordText(agent.position)),
-    createTelemetryField("Goal", coordText(agent.goal)),
-    createTelemetryField("Task age / d / t", taskSummary(agent), true),
-    createTelemetryField("Timers", timerSummary(agent)),
-    createTelemetryField("Stk / Osc", `${agent.stuckSteps || 0}/${agent.oscillationSteps || 0}`),
-    createTelemetryField("Distance", Number(agent.totalDistanceTraveled || 0).toFixed(1)),
-    createTelemetryField("Home", coordText(agent.home)),
+    createTelemetryField("Status", agentActivityLabel(agent)),
+    createTelemetryField("Task", agentTaskLabel(agent)),
+    createTelemetryField("Destination", coordText(agent.goal)),
+    createTelemetryField("Distance", `${formatNumber(agent.totalDistanceTraveled, 1)} cells`),
   );
+  const preview = document.createElement("div");
+  preview.className = "route-preview";
+  const previewCanvas = document.createElement("canvas");
+  previewCanvas.width = 480;
+  previewCanvas.height = 292;
+  previewCanvas.setAttribute("aria-label", `Position and goal for AGV ${agent.symbol}`);
+  const caption = document.createElement("p");
+  const planned = overlayPathForAgent(currentOverlay()?.plannedPaths, agent.id);
+  caption.textContent = planned?.cells?.length ? "Planned route · current frame" : "Current position and destination";
+  preview.append(previewCanvas, caption);
+  drawAgentPreview(previewCanvas, agent, planned?.cells || []);
 
-  shell.append(head, grid);
+  const details = document.createElement("details");
+  details.className = "telemetry-details";
+  details.open = state.telemetryExpanded;
+  const summary = document.createElement("summary");
+  summary.textContent = "More details";
+  const detailGrid = document.createElement("div");
+  detailGrid.className = "telemetry-grid";
+  detailGrid.append(
+    createTelemetryField("Position", coordText(agent.position)),
+    createTelemetryField("State", titleCase(agent.state)),
+    createTelemetryField("Wait reason", waitReasonShortLabel(agent.waitReason)),
+    createTelemetryField("Task age", `${formatInteger(agent.taskAgeSteps)} steps`),
+    createTelemetryField("Task distance", `${formatNumber(agent.taskDistance, 1)} cells`),
+    createTelemetryField("Task turns", formatInteger(agent.taskTurns)),
+    createTelemetryField("Completed", formatInteger(agentTasksCompleted(agent))),
+    createTelemetryField("Throughput", `${formatNumber(agentTaskThroughput(agent), 2)} / 100 steps`),
+    createTelemetryField("Task share", formatPercent(agentTaskShare(agent), 0)),
+    createTelemetryField("Charge reserve", `${chargeReservePercent(agent)}% · ${chargeReserveMeta(agent)}`),
+    createTelemetryField("Timers", timerSummary(agent)),
+    createTelemetryField("Stuck / oscillating", `${agent.stuckSteps || 0} / ${agent.oscillationSteps || 0}`),
+    createTelemetryField("Home", coordText(agent.home)),
+    createTelemetryField("Last step", agent.movedLastStep ? "Moved" : "Held"),
+    createTelemetryField("Agent ID", String(agent.id)),
+  );
+  details.append(summary, detailGrid);
+  details.addEventListener("toggle", () => { if (details.isConnected) state.telemetryExpanded = details.open; });
+  shell.append(head, grid, preview, details);
   elements.telemetryContent.append(shell);
+  if (summaryFocused) summary.focus({ preventScroll: true });
+}
+
+function drawAgentPreview(canvas, agent, path) {
+  const scene = state.scene;
+  if (!scene) return;
+  const ctx = canvas.getContext("2d");
+  const scale = Math.min((canvas.width - 28) / scene.width, (canvas.height - 28) / scene.height);
+  const x0 = (canvas.width - scene.width * scale) / 2;
+  const y0 = (canvas.height - scene.height * scale) / 2;
+  ctx.fillStyle = "#f5f7f9";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  for (let y = 0; y < scene.height; y += 1) {
+    for (let x = 0; x < scene.width; x += 1) {
+      const tile = baseTileAt(scene, x, y);
+      ctx.fillStyle = ["+", "#", "X"].includes(tile) ? "#ccd3dd" : "#fafbfd";
+      ctx.fillRect(x0 + x * scale, y0 + y * scale, scale, scale);
+    }
+  }
+  if (path.length > 1) {
+    ctx.strokeStyle = "#2563eb";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    path.forEach((cell, index) => {
+      const x = x0 + (cell.x + .5) * scale;
+      const y = y0 + (cell.y + .5) * scale;
+      if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+  }
+  if (isGridCoordValid(agent.goal)) {
+    ctx.strokeStyle = "#2563eb";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(x0 + (agent.goal.x + .5) * scale, y0 + (agent.goal.y + .5) * scale, 6, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  const x = x0 + (agent.position.x + .5) * scale;
+  const y = y0 + (agent.position.y + .5) * scale;
+  ctx.fillStyle = "#2563eb";
+  ctx.beginPath(); ctx.roundRect(x - 11, y - 11, 22, 22, 4); ctx.fill();
+  ctx.fillStyle = "white";
+  ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.font = "600 14px Segoe UI";
+  ctx.fillText(agent.symbol || "?", x, y);
 }
 
 function renderStatusFeed() {
@@ -3704,9 +3627,9 @@ function baseTileAt(scene, x, y) {
 }
 
 function tileColor(tile) {
-  if (tile === "+" || tile === "#" || tile === "X") return "#243656";
-  if (tile === "~") return "#d5eef8";
-  return "#f8fbff";
+  if (tile === "+" || tile === "#" || tile === "X") return "#414d60";
+  if (tile === "~") return "#e6edf2";
+  return "#fafbfc";
 }
 
 function goalStateMap() {
@@ -3719,64 +3642,24 @@ function goalStateMap() {
 
 function viewportSize() {
   const rect = elements.canvas.getBoundingClientRect();
-  return {
-    width: Math.max(320, Math.floor(rect.width || 1280)),
-    height: Math.max(320, Math.floor(rect.height || 760)),
-  };
+  return { width: Math.max(1, Math.floor(rect.width)), height: Math.max(1, Math.floor(rect.height)) };
 }
 
 function computeViewportSafeArea(viewportWidth, viewportHeight) {
-  if (!anyUiSectionsVisible()) {
-    const insetX = Math.min(96, Math.max(32, Math.floor(viewportWidth * 0.06)));
-    const insetY = Math.min(92, Math.max(28, Math.floor(viewportHeight * 0.05)));
-    return {
-      left: insetX,
-      right: insetX,
-      top: insetY,
-      bottom: insetY,
-      availableWidth: Math.max(240, viewportWidth - insetX * 2),
-      availableHeight: Math.max(220, viewportHeight - insetY * 2),
-    };
-  }
-
-  const left = uiSectionVisible("leftStack") || uiSectionVisible("routeHud")
-    ? Math.min(430, Math.max(220, Math.floor(viewportWidth * 0.24)))
-    : Math.min(92, Math.max(28, Math.floor(viewportWidth * 0.06)));
-  const right = uiSectionVisible("rightStack") || uiSectionVisible("mapTools")
-    ? Math.min(430, Math.max(220, Math.floor(viewportWidth * 0.24)))
-    : Math.min(92, Math.max(28, Math.floor(viewportWidth * 0.06)));
-  const top = uiSectionVisible("topBar") || uiSectionVisible("routeHud") || uiSectionVisible("mapTools")
-    ? Math.min(190, Math.max(124, Math.floor(viewportHeight * 0.16)))
-    : Math.min(84, Math.max(28, Math.floor(viewportHeight * 0.06)));
-
-  let bottom = Math.min(72, Math.max(32, Math.floor(viewportHeight * 0.05)));
-  if (uiSectionVisible("bottomStrip")) {
-    const bottomPanelCount = visibleBottomPanelCount();
-    bottom = bottomPanelCount === 0
-      ? Math.min(126, Math.max(60, Math.floor(viewportHeight * 0.09)))
-      : bottomPanelCount === 1
-        ? Math.min(210, Math.max(118, Math.floor(viewportHeight * 0.17)))
-        : Math.min(270, Math.max(172, Math.floor(viewportHeight * 0.23)));
-  } else if (uiSectionVisible("sceneLegend")) {
-    bottom = Math.min(126, Math.max(78, Math.floor(viewportHeight * 0.11)));
-  }
-
+  const focused = state.viewportMode === "map" || !anyUiSectionsVisible();
+  const inset = Math.min(24, viewportWidth * .04);
+  const top = focused ? inset : 58;
+  const bottom = !focused && uiSectionVisible("sceneLegend") ? 46 : inset;
   return {
-    left,
-    right,
-    top,
-    bottom,
-    availableWidth: Math.max(240, viewportWidth - left - right),
-    availableHeight: Math.max(220, viewportHeight - top - bottom),
+    left: inset, right: inset, top, bottom,
+    availableWidth: Math.max(1, viewportWidth - inset * 2),
+    availableHeight: Math.max(1, viewportHeight - top - bottom),
   };
 }
 
 function layoutViewportEmpty() {
-  const { width, height } = viewportSize();
-  const safe = computeViewportSafeArea(width, height);
-  elements.viewportEmpty.style.left = `${safe.left + safe.availableWidth / 2}px`;
-  elements.viewportEmpty.style.top = `${safe.top + safe.availableHeight / 2}px`;
-  elements.viewportEmpty.style.width = `${Math.min(520, Math.max(340, safe.availableWidth * 0.58))}px`;
+  // Centered within the canvas region by CSS, independent of sidebar visibility.
+  for (const property of ["left", "top", "width"]) elements.viewportEmpty.style.removeProperty(property);
 }
 
 function computeCanvasView() {
@@ -3789,8 +3672,8 @@ function computeCanvasView() {
   const height = Math.max(1, Number(state.scene.height || 1));
   const safe = computeViewportSafeArea(viewportWidth, viewportHeight);
   const cellSize = Math.max(
-    8,
-    Math.min(safe.availableWidth / width, safe.availableHeight / height) * 0.84,
+    1,
+    Math.min(safe.availableWidth / width, safe.availableHeight / height),
   );
   const worldWidth = width * cellSize;
   const worldHeight = height * cellSize;
@@ -3837,46 +3720,8 @@ function agentAtCanvasPoint(point) {
 }
 
 function drawEmptyViewport(ctx, width, height) {
-  const gradient = ctx.createLinearGradient(0, 0, width, height);
-  gradient.addColorStop(0, "rgba(247, 250, 255, 1)");
-  gradient.addColorStop(1, "rgba(231, 238, 251, 1)");
-  ctx.fillStyle = gradient;
+  ctx.fillStyle = "#f5f7f9";
   ctx.fillRect(0, 0, width, height);
-
-  ctx.strokeStyle = "rgba(91, 111, 151, 0.08)";
-  ctx.lineWidth = 1;
-  for (let x = 0; x < width; x += 36) {
-    ctx.beginPath();
-    ctx.moveTo(x, 0);
-    ctx.lineTo(x, height);
-    ctx.stroke();
-  }
-  for (let y = 0; y < height; y += 36) {
-    ctx.beginPath();
-    ctx.moveTo(0, y);
-    ctx.lineTo(width, y);
-    ctx.stroke();
-  }
-
-  ctx.fillStyle = "rgba(37, 99, 235, 0.06)";
-  [
-    [120, 92, 180, 100],
-    [420, 180, 140, 190],
-    [680, 124, 240, 120],
-    [1020, 220, 150, 180],
-  ].forEach(([x, y, boxWidth, boxHeight]) => {
-    ctx.fillRect(x, y, boxWidth, boxHeight);
-  });
-
-  ctx.fillStyle = "rgba(220, 63, 106, 0.08)";
-  [
-    [222, 490],
-    [510, 520],
-    [760, 468],
-    [1040, 506],
-  ].forEach(([x, y]) => {
-    ctx.fillRect(x, y, 120, 56);
-  });
 }
 
 function cellCenter(cell, cellSize) {
@@ -4154,30 +3999,10 @@ function renderScene() {
   const view = computeCanvasView();
   state.canvasView = view;
 
-  const stageGradient = ctx.createLinearGradient(0, 0, viewportWidth, viewportHeight);
-  stageGradient.addColorStop(0, "rgba(248, 251, 255, 1)");
-  stageGradient.addColorStop(1, "rgba(228, 236, 250, 1)");
-  ctx.fillStyle = stageGradient;
+  ctx.fillStyle = "#f5f7f9";
   ctx.fillRect(0, 0, viewportWidth, viewportHeight);
-
   ctx.save();
   ctx.translate(view.originX, view.originY);
-
-  ctx.save();
-  ctx.shadowColor = "rgba(33, 56, 105, 0.12)";
-  ctx.shadowBlur = 28;
-  ctx.shadowOffsetY = 14;
-  ctx.fillStyle = "rgba(255, 255, 255, 0.92)";
-  ctx.beginPath();
-  ctx.roundRect(-20, -20, view.worldWidth + 40, view.worldHeight + 40, 26);
-  ctx.fill();
-  ctx.restore();
-
-  ctx.strokeStyle = "rgba(201, 213, 236, 0.78)";
-  ctx.lineWidth = 1.2;
-  ctx.beginPath();
-  ctx.roundRect(-20, -20, view.worldWidth + 40, view.worldHeight + 40, 26);
-  ctx.stroke();
 
   const goals = goalStateMap();
   const homes = new Set(
@@ -4262,7 +4087,7 @@ function renderScene() {
 
   if (state.showLayers.agents) {
     currentAgents().forEach((agent) => {
-      const color = deterministicAgentColor(agent);
+      const color = agent.id === state.selectedAgentId ? "#2563eb" : "#64748b";
       const centerX = agent.position.x * view.cellSize + view.cellSize / 2;
       const centerY = agent.position.y * view.cellSize + view.cellSize / 2;
       const waiting = agent.waitReason && agent.waitReason !== "none";
@@ -4284,46 +4109,19 @@ function renderScene() {
         ctx.stroke();
       }
 
-      ctx.save();
-      ctx.shadowColor = hexToRgba(color, 0.35);
-      ctx.shadowBlur = Math.max(12, view.cellSize * 0.52);
-      ctx.shadowOffsetY = Math.max(2, view.cellSize * 0.12);
+      const markerSize = Math.max(12, view.cellSize * .78);
       ctx.fillStyle = color;
       ctx.beginPath();
-      ctx.roundRect(
-        centerX - view.cellSize * 0.28,
-        centerY - view.cellSize * 0.28,
-        view.cellSize * 0.56,
-        view.cellSize * 0.56,
-        view.cellSize * 0.16,
-      );
+      ctx.roundRect(centerX - markerSize / 2, centerY - markerSize / 2, markerSize, markerSize, 2);
       ctx.fill();
-      ctx.restore();
-
-      const gloss = ctx.createLinearGradient(
-        centerX,
-        centerY - view.cellSize * 0.28,
-        centerX,
-        centerY + view.cellSize * 0.28,
-      );
-      gloss.addColorStop(0, "rgba(255,255,255,0.34)");
-      gloss.addColorStop(1, "rgba(255,255,255,0.02)");
-      ctx.fillStyle = gloss;
-      ctx.beginPath();
-      ctx.roundRect(
-        centerX - view.cellSize * 0.26,
-        centerY - view.cellSize * 0.28,
-        view.cellSize * 0.52,
-        view.cellSize * 0.28,
-        view.cellSize * 0.16,
-      );
-      ctx.fill();
-
+      ctx.strokeStyle = "rgba(255,255,255,.9)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
       ctx.fillStyle = "#ffffff";
-      ctx.font = `700 ${Math.max(10, Math.floor(view.cellSize * 0.34))}px "Segoe UI", sans-serif`;
+      ctx.font = `600 ${Math.max(9, Math.floor(markerSize * .68))}px "Segoe UI", sans-serif`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText(agent.symbol || "A", centerX, centerY + 1);
+      ctx.fillText(agent.symbol || "A", centerX, centerY);
 
       if (chargeTone !== "healthy") {
         ctx.fillStyle =
@@ -4427,26 +4225,27 @@ function renderAll() {
   normalizeSelection();
   syncViewportMode();
   syncUiSectionClasses();
-  syncRightStackOffset();
-  setFleetView(state.fleetView, { animate: false });
-  setRightStackView(state.rightStackView, { animate: false });
-  setPriorityBoardMode(state.priorityBoardMode);
   renderBottomPanels();
   layoutViewportEmpty();
-  elements.viewportEmpty.classList.toggle("hidden", Boolean(state.sessionId));
+  elements.viewportEmpty.classList.toggle("hidden", state.viewportMode !== "live" || Boolean(state.sessionId));
   renderLaunchSummaries();
   renderTopBar();
-  renderPlannerSummary();
-  renderRoster();
-  renderTelemetry();
-  renderPriorityBoard();
-  renderModalSummary();
-  renderMetrics();
-  renderMetricsOverview();
-  renderLogs();
-  renderRouteHud();
-  renderDebugPanel();
-  renderScene();
+  if (state.viewportMode === "metrics") {
+    renderMetricsOverview();
+  } else {
+    if (uiSectionVisible("leftStack")) {
+      if (state.fleetView === "roster") renderRoster(); else renderPriorityBoard();
+    }
+    if (uiSectionVisible("rightStack")) {
+      if (state.rightStackView === "telemetry") renderTelemetry();
+      else if (state.rightStackView === "planner") renderPlannerSummary();
+      else renderDebugPanel();
+    }
+    renderRouteHud();
+    renderScene();
+  }
+  if (uiSectionVisible("bottomStrip") && (state.bottomPanels.tail || state.bottomPanels.diagnostics)) renderLogs();
+  if (state.isMetricsOpen) { renderModalSummary(); renderMetrics(); }
   syncInteractiveState();
 }
 
@@ -4458,10 +4257,13 @@ async function validateConfig() {
 
   if (errors.length > 0) {
     appendStatus(`Validation failed: ${errors.join(" | ")}`);
+    workspaceUI.feedback(errors.join(" · "), "danger");
   } else if (warnings.length > 0) {
     appendStatus(`Validation warnings: ${warnings.join(" | ")}`);
+    workspaceUI.feedback(warnings.join(" · "), "warning");
   } else {
     appendStatus("Validation passed with no issues.");
+    workspaceUI.feedback("Configuration is valid. Ready to load.");
   }
 }
 
@@ -4496,7 +4298,7 @@ async function startSession() {
   state.lastLogSeq = 0;
   state.running = false;
   state.paused = false;
-  state.selectedAgentId = null;
+  state.selectedAgentId = response.frame?.agents?.[0]?.id ?? null;
   state.hoveredAgentId = null;
   applyFrame(response.frame);
   updateMetricHistory(response.metrics);
@@ -4532,7 +4334,7 @@ async function advance(payload, options = {}) {
   return response;
 }
 
-function waitForPlaybackFrame(delayMs = kRunFrameDelayMs) {
+function waitForPlaybackFrame(delayMs = kRunFrameDelayMs / state.playbackRate) {
   return new Promise((resolve) => {
     window.setTimeout(() => {
       window.requestAnimationFrame(() => resolve());
@@ -4645,6 +4447,7 @@ async function runContinuously() {
     }
   } catch (error) {
     appendStatus(`Run failed: ${error.message}`);
+    workspaceUI.feedback(`Run failed: ${error.message}`, "danger");
   } finally {
     state.running = false;
     if (state.sessionId && !state.paused) {
@@ -4652,6 +4455,7 @@ async function runContinuously() {
         await ensurePaused(true);
       } catch (error) {
         appendStatus(`Pause sync failed: ${error.message}`);
+        workspaceUI.feedback(`Pause sync failed: ${error.message}`, "danger");
       }
     }
     syncInteractiveState();
@@ -4708,6 +4512,7 @@ async function runBusyAction(action, failurePrefix) {
     await action();
   } catch (error) {
     appendStatus(`${failurePrefix} ${error.message}`);
+    workspaceUI.feedback(`${failurePrefix} ${error.message}`, "danger");
   } finally {
     setBusy(false);
   }
@@ -4804,7 +4609,8 @@ function triggerReset() {
 }
 
 function handleGlobalShortcut(event) {
-  if (shouldIgnoreShortcut(event)) {
+  if (event.defaultPrevented || shouldIgnoreShortcut(event) ||
+      ((state.isSetupOpen || state.isMetricsOpen) && !["KeyL", "KeyM"].includes(event.code))) {
     return;
   }
   if (event.repeat && event.code !== "KeyS") {
@@ -5089,6 +4895,7 @@ elements.rightDebugTab.addEventListener("click", () => {
 });
 
 elements.toggleUiButton.addEventListener("click", () => {
+  if (state.viewportMode !== "live") setViewportMode("live");
   setUiVisible(!anyUiSectionsVisible());
   renderAll();
 });
@@ -5111,7 +4918,6 @@ elements.uiAllOffButton.addEventListener("click", () => {
 });
 
 elements.openMetricsButton.addEventListener("click", () => {
-  setViewportMode("live");
   setMetricsOpen(true);
 });
 
@@ -5125,6 +4931,7 @@ elements.metricsBackdrop.addEventListener("click", () => {
 
 elements.openSetupButton.addEventListener("click", () => {
   setViewportMode("live");
+  renderAll();
   setSetupOpen(true);
 });
 
@@ -5210,5 +5017,6 @@ window.motionRuntimeReady?.then(() => {
 bootstrap().catch((error) => {
   appendStatus(`Bootstrap failed: ${error.message}`);
   elements.debugOutput.textContent = error.stack || error.message;
+  workspaceUI.feedback(`Unable to start the engine: ${error.message}`, "danger");
   setDebugExpanded(true);
 });

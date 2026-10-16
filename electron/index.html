@@ -2,276 +2,42 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1, viewport-fit=cover"
-    />
-    <title>AGV Electron Shell</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'" />
+    <title>AGV · Simulation workspace</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <div class="app-shell" id="app-shell">
-      <div class="ambient ambient-one"></div>
-      <div class="ambient ambient-two"></div>
-      <div class="ambient ambient-three"></div>
+    <div class="app-shell viewport-live" id="app-shell">
+      <header class="workspace-header" id="workspace-header">
+        <div class="brand"><strong>AGV</strong><span>Parking Logistics Simulation</span></div>
+        <nav class="workspace-nav" aria-label="Workspace views">
+          <button id="simulation-nav" class="nav-button active" type="button" aria-current="page">Simulation</button>
+          <button id="analysis-nav" class="nav-button" type="button">Analysis</button>
+          <button id="open-setup-button" class="nav-button" type="button" aria-haspopup="dialog">Setup</button>
+        </nav>
+        <button id="ui-visibility-button" class="settings-button" type="button" aria-expanded="false" aria-controls="ui-visibility-panel">Settings</button>
+      </header>
 
-      <section class="stage-shell">
-        <div class="canvas-shell">
-          <canvas id="scene-canvas" width="1440" height="900"></canvas>
-        </div>
-
-        <div id="viewport-empty" class="viewport-empty glass-card">
-          <p class="section-kicker">Ready to load</p>
-          <h2>Spin up one immutable session to bring the map into view.</h2>
-          <p>
-            The backend keeps the scene behind the session boundary. Review the
-            current setup, then load the first frame directly into the canvas.
-          </p>
-          <div id="launch-summary-empty" class="launch-summary"></div>
-          <div class="empty-actions">
-            <button
-              id="viewport-start-button"
-              class="primary-button"
-              type="button"
-            >
-              Load Session
-            </button>
-            <button
-              id="viewport-setup-button"
-              class="ghost-button"
-              type="button"
-            >
-              Open Setup
-            </button>
-          </div>
-        </div>
-
-        <div
-          id="route-hud"
-          class="route-hud glass-card hidden ui-layer"
-          data-ui-anchor="left"
-        >
-          <p class="section-kicker">Selected Route</p>
-          <h3 id="route-agent-title">No agent selected</h3>
-          <p id="route-goal" class="route-copy">Goal -</p>
-          <p id="route-meta" class="route-copy muted">Select an AGV to inspect.</p>
-          <div id="route-warning" class="route-warning hidden"></div>
-          <div id="route-debug-panel" class="route-debug-panel hidden">
-            <div class="route-debug-head">
-              <p class="route-debug-title">Debug Overlay</p>
-              <p id="route-debug-meta" class="route-debug-meta">
-                Planner overlay inactive.
-              </p>
-            </div>
-            <div id="route-debug-badges" class="route-debug-badges"></div>
-            <div id="route-debug-legend" class="route-debug-legend"></div>
-          </div>
-        </div>
-
-        <div
-          id="top-bar"
-          class="top-bar glass-card ui-layer"
-          data-ui-anchor="top"
-        >
-          <div class="mission-block">
-            <div id="live-indicator" class="live-indicator idle"></div>
-            <div class="mission-copy">
-              <p class="section-kicker">Current run</p>
-              <div class="mission-pills">
-                <span id="session-pill" class="pill neutral">No session</span>
-                <span id="map-pill" class="pill">Map -</span>
-                <span id="frame-pill" class="pill">Frame -</span>
-                <span id="step-pill" class="pill">Step -</span>
-              </div>
-              <p id="run-control-help" class="mission-help">
-                Load a session first to render the map and enable the controls.
-              </p>
-            </div>
-          </div>
-
-          <div id="top-stat-grid" class="top-stat-grid"></div>
-
-          <div class="control-cluster">
-            <button
-              id="run-button"
-              class="control-button icon-control primary-control"
-              type="button"
-              title="Run"
-              aria-label="Run"
-            >
-              <svg class="control-icon play-icon" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M8 6.5v11l9-5.5-9-5.5z"></path>
-              </svg>
-              <span class="sr-only">Run</span>
-            </button>
-            <button
-              id="pause-button"
-              class="control-button icon-control"
-              type="button"
-              title="Pause"
-              aria-label="Pause"
-            >
-              <svg class="control-icon pause-icon" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M8 6h3v12H8zM13 6h3v12h-3z"></path>
-              </svg>
-              <span class="sr-only">Pause</span>
-            </button>
-            <button
-              id="step-button"
-              class="control-button icon-control"
-              type="button"
-              title="Single step"
-              aria-label="Single step"
-            >
-              <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  d="M9 7.5L14.5 12 9 16.5"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2.2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                ></path>
-              </svg>
-              <span class="sr-only">Single step</span>
-            </button>
-            <button
-              id="reset-session-button"
-              class="control-button icon-control warning-control"
-              type="button"
-              title="Reset to setup"
-              aria-label="Reset to setup"
-            >
-              <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  d="M7 7.5H4V4.5"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2.1"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                ></path>
-                <path
-                  d="M5.2 7.2a7 7 0 1 1-1.1 7.7"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2.1"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                ></path>
-              </svg>
-              <span class="sr-only">Reset to setup</span>
-            </button>
-          </div>
-        </div>
-
-        <div
-          id="map-tools"
-          class="map-tools glass-card ui-layer"
-          data-ui-anchor="right"
-        >
-          <div class="tool-panel-head">
-            <div>
-              <span class="tool-label">Layers</span>
-              <p class="tool-copy">Tune every visual layer in the viewport.</p>
-            </div>
-          </div>
-
-          <div class="tool-section">
-            <span class="tool-section-title">Scene</span>
-            <div class="tool-button-grid">
-              <button
-                id="map-layer-button"
-                class="icon-button wide active"
-                type="button"
-                title="Toggle map tiles and grid"
-              >
-                Map
-              </button>
-              <button
-                id="semantic-layer-button"
-                class="icon-button wide active"
-                type="button"
-                title="Toggle goals, homes, and chargers"
-              >
-                Cells
-              </button>
-              <button
-                id="agent-layer-button"
-                class="icon-button wide active"
-                type="button"
-                title="Toggle agents"
-              >
-                AGV
-              </button>
-              <button
-                id="route-hud-layer-button"
-                class="icon-button wide active"
-                type="button"
-                title="Toggle route HUD"
-              >
-                HUD
-              </button>
-            </div>
-          </div>
-
-          <div class="tool-section">
-            <span class="tool-section-title">Planner</span>
-            <div class="tool-button-grid">
-              <button
-                id="planned-layer-button"
-                class="icon-button wide active"
-                type="button"
-                title="Toggle planned paths"
-              >
-                Plan
-              </button>
-              <button
-                id="cbs-layer-button"
-                class="icon-button wide active"
-                type="button"
-                title="Toggle CBS reroute paths"
-              >
-                CBS
-              </button>
-              <button
-                id="conflict-layer-button"
-                class="icon-button wide active"
-                type="button"
-                title="Toggle conflict markers"
-              >
-                Conflict
-              </button>
-              <button
-                id="conflict-count-layer-button"
-                class="icon-button wide active"
-                type="button"
-                title="Toggle wait-edge counts"
-              >
-                Counts
-              </button>
-              <button
-                id="swap-layer-button"
-                class="icon-button wide active"
-                type="button"
-                title="Toggle swap wait edges"
-              >
-                Swap
-              </button>
-            </div>
-          </div>
-        </div>
-
+      <main class="stage-shell" id="workspace-main">
         <aside
           id="left-stack"
           class="left-stack ui-layer"
           data-ui-anchor="left"
         >
-          <section class="glass-card fleet-card">
+          <section class="fleet-card">
+            <div class="workspace-map">
+              <span class="field-label">Map</span>
+              <button id="workspace-map-button" class="map-selector" type="button" aria-label="Change map in session setup">
+                <span id="workspace-map-label">Map 1</span><span aria-hidden="true">⌄</span>
+              </button>
+              <p id="workspace-map-description" class="field-help"></p>
+            </div>
             <div class="section-head">
               <div>
-                <p class="section-kicker">Fleet</p>
-                <h2>Fleet Console</h2>
+
+                <h2>AGV list</h2>
               </div>
               <span id="fleet-summary" class="pill neutral">0 agents</span>
             </div>
@@ -285,7 +51,7 @@
                 aria-selected="true"
                 aria-controls="fleet-roster-pane"
               >
-                Agent Roster
+                Fleet
               </button>
               <button
                 id="fleet-priority-tab"
@@ -295,7 +61,7 @@
                 aria-selected="false"
                 aria-controls="fleet-priority-pane"
               >
-                Priority Board
+                Priority
               </button>
             </div>
 
@@ -306,12 +72,7 @@
                 role="tabpanel"
                 aria-labelledby="fleet-roster-tab"
               >
-                <div class="fleet-pane-head">
-                  <div>
-                    <p class="section-kicker">Roster Live</p>
-                    <h3>Agent Roster</h3>
-                  </div>
-                </div>
+                <div class="roster-columns" aria-hidden="true"><span>ID</span><span>Status</span><span>Done</span></div>
                 <div id="agent-roster-list" class="agent-roster-list"></div>
               </section>
 
@@ -323,8 +84,8 @@
               >
                 <div class="fleet-pane-head priority-pane-head">
                   <div>
-                    <p class="section-kicker">Routing Order</p>
-                    <h3>Priority Board</h3>
+
+                    <h3>Agent priority</h3>
                   </div>
                   <div class="priority-pane-tools">
                     <div
@@ -362,21 +123,141 @@
             </div>
           </section>
         </aside>
+        <section class="canvas-shell" aria-label="Simulation map">
+          <div class="canvas-toolbar">
+            <div class="canvas-status"><span id="live-indicator" class="live-indicator offline"></span><span id="simulation-status">No session</span></div>
+            <button id="layers-toggle-button" class="quiet-button" type="button" aria-expanded="false" aria-controls="map-tools">Layers</button>
+          </div>
+          <canvas id="scene-canvas" width="1440" height="900" aria-label="AGV simulation map. Select an AGV on the map or in the fleet list."></canvas>
+          <div id="viewport-empty" class="viewport-empty">
+            <p class="empty-caption">AGV SIMULATOR</p>
+            <h1>Ready when you are.</h1>
+            <p>Choose a map and scenario to start a simulation.</p>
+            <div id="launch-summary-empty" class="launch-summary"></div>
+            <div class="empty-actions">
+              <button id="viewport-start-button" class="primary-button" type="button">Load session</button>
+              <button id="viewport-setup-button" class="ghost-button" type="button">Edit setup</button>
+            </div>
+          </div>
+          <div
+          id="map-tools"
+          class="map-tools hidden ui-layer"
+          data-ui-anchor="right"
+        >
+          <div class="tool-panel-head">
+            <div>
+              <span class="tool-label">Map layers</span>
+              <p class="tool-copy">Choose what appears on the map.</p>
+            </div>
+          </div>
 
+          <div class="tool-section">
+            <span class="tool-section-title">Scene</span>
+            <div class="tool-button-grid">
+              <button
+                id="map-layer-button"
+                class="icon-button wide active"
+                type="button"
+                title="Toggle map tiles and grid"
+              >
+                Map
+              </button>
+              <button
+                id="semantic-layer-button"
+                class="icon-button wide active"
+                type="button"
+                title="Toggle goals, homes, and chargers"
+              >
+                Cells
+              </button>
+              <button
+                id="agent-layer-button"
+                class="icon-button wide active"
+                type="button"
+                title="Toggle agents"
+              >
+                AGV
+              </button>
+              <button
+                id="route-hud-layer-button"
+                class="icon-button wide active"
+                type="button"
+                title="Toggle route information"
+              >
+                Route info
+              </button>
+            </div>
+          </div>
+
+          <div class="tool-section">
+            <span class="tool-section-title">Planner</span>
+            <div class="tool-button-grid">
+              <button
+                id="planned-layer-button"
+                class="icon-button wide active"
+                type="button"
+                title="Toggle planned paths"
+              >
+                Paths
+              </button>
+              <button
+                id="cbs-layer-button"
+                class="icon-button wide active"
+                type="button"
+                title="Toggle CBS reroute paths"
+              >
+                CBS
+              </button>
+              <button
+                id="conflict-layer-button"
+                class="icon-button wide active"
+                type="button"
+                title="Toggle conflict markers"
+              >
+                Conflict
+              </button>
+              <button
+                id="conflict-count-layer-button"
+                class="icon-button wide active"
+                type="button"
+                title="Toggle wait-edge counts"
+              >
+                Counts
+              </button>
+              <button
+                id="swap-layer-button"
+                class="icon-button wide active"
+                type="button"
+                title="Toggle swap wait edges"
+              >
+                Swap
+              </button>
+            </div>
+          </div>
+          <p class="field-help">Planner overlays require Debug capture.</p>
+        </div>
+          <div
+          id="scene-legend"
+          class="scene-legend ui-layer"
+          data-ui-anchor="bottom"
+        >
+          <span class="legend-chip wall">Wall</span>
+          <span class="legend-chip lane">Lane</span>
+          <span class="legend-chip goal">Goal</span>
+          <span class="legend-chip home">Home</span>
+          <span class="legend-chip charger">Charger</span>
+          <span class="legend-chip agv">AGV</span>
+        </div>
+        </section>
         <aside
           id="right-stack"
           class="right-stack ui-layer"
           data-ui-anchor="right"
         >
           <section class="glass-card right-tab-card">
-            <div class="section-head">
-              <div>
-                <p class="section-kicker">Inspector</p>
-                <h2>Right Panel</h2>
-              </div>
-            </div>
 
-            <div class="right-view-tabs" role="tablist" aria-label="Right panel views">
+
+            <div class="right-view-tabs" role="tablist" aria-label="Inspector views">
               <button
                 id="right-telemetry-tab"
                 class="fleet-tab right-view-tab active"
@@ -385,7 +266,7 @@
                 aria-selected="true"
                 aria-controls="right-telemetry-pane"
               >
-                Telemetry
+                AGV
               </button>
               <button
                 id="right-planner-tab"
@@ -418,8 +299,8 @@
           >
             <div class="section-head">
               <div>
-                <p class="section-kicker">Telemetry</p>
-                <h2>Selected AGV</h2>
+
+                <h2 class="sr-only">Selected AGV</h2>
               </div>
             </div>
             <div id="telemetry-content" class="telemetry-content"></div>
@@ -433,8 +314,8 @@
           >
             <div class="section-head">
               <div>
-                <p class="section-kicker">Planning</p>
-                <h2>Planner Summary</h2>
+
+                <h2>Planner summary</h2>
               </div>
             </div>
             <div id="planner-summary-grid" class="planner-summary-grid"></div>
@@ -449,8 +330,8 @@
           >
             <div class="section-head">
               <div>
-                <p class="section-kicker">Developer</p>
-                <h2>Debug Snapshot</h2>
+
+                <h2>Debug snapshot</h2>
               </div>
               <div class="header-actions">
                 <button
@@ -466,11 +347,31 @@
               </div>
             </div>
             <pre id="debug-output" class="debug-output hidden">
-No debug snapshot requested yet.</pre
+Capture a snapshot to inspect the current engine state.</pre
             >
           </section>
+        <details
+          id="route-hud"
+          class="route-hud hidden ui-layer"
+          data-ui-anchor="left"
+        >
+          <summary>Route information</summary>
+          <h3 id="route-agent-title">No agent selected</h3>
+          <p id="route-goal" class="route-copy">Goal -</p>
+          <p id="route-meta" class="route-copy muted">Select an AGV to inspect.</p>
+          <div id="route-warning" class="route-warning hidden"></div>
+          <div id="route-debug-panel" class="route-debug-panel hidden">
+            <div class="route-debug-head">
+              <p class="route-debug-title">Debug Overlay</p>
+              <p id="route-debug-meta" class="route-debug-meta">
+                Planner overlay inactive.
+              </p>
+            </div>
+            <div id="route-debug-badges" class="route-debug-badges"></div>
+            <div id="route-debug-legend" class="route-debug-legend"></div>
+          </div>
+        </details>
         </aside>
-
         <div
           id="bottom-strip"
           class="bottom-strip ui-layer"
@@ -479,8 +380,8 @@ No debug snapshot requested yet.</pre
           <section id="tail-card" class="glass-card tail-card">
             <div class="section-head">
               <div>
-                <p class="section-kicker">System Events</p>
-                <h2>Important Tail</h2>
+
+                <h2>Engine events</h2>
               </div>
               <div class="header-actions">
                 <button
@@ -490,7 +391,7 @@ No debug snapshot requested yet.</pre
                   aria-controls="logs-list"
                   aria-expanded="true"
                 >
-                  Lower
+                  Close
                 </button>
               </div>
             </div>
@@ -500,8 +401,8 @@ No debug snapshot requested yet.</pre
           <section id="diagnostics-card" class="glass-card diagnostics-card">
             <div class="section-head">
               <div>
-                <p class="section-kicker">Diagnostics</p>
-                <h2>Status Feed</h2>
+
+                <h2>Activity</h2>
               </div>
               <div class="header-actions">
                 <button
@@ -511,7 +412,7 @@ No debug snapshot requested yet.</pre
                   aria-controls="status-list"
                   aria-expanded="true"
                 >
-                  Lower
+                  Close
                 </button>
               </div>
             </div>
@@ -519,274 +420,176 @@ No debug snapshot requested yet.</pre
           </section>
         </div>
 
-        <div
-          id="scene-legend"
-          class="scene-legend ui-layer"
-          data-ui-anchor="bottom"
-        >
-          <span class="legend-chip wall">Wall</span>
-          <span class="legend-chip lane">Lane</span>
-          <span class="legend-chip goal">Goal</span>
-          <span class="legend-chip home">Home</span>
-          <span class="legend-chip charger">Charger</span>
-          <span class="legend-chip agv">AGV</span>
-        </div>
-
-        <section id="metrics-overview" class="metrics-overview hidden">
-          <div class="metrics-overview-shell glass-card">
+        <section id="metrics-overview" class="metrics-overview hidden" aria-labelledby="analysis-title">
+          <div class="metrics-overview-shell">
             <div class="metrics-overview-head">
-              <div>
-                <p class="section-kicker">Global Metrics</p>
-                <h2>Metrics Overview</h2>
-              </div>
-              <span id="metrics-overview-pill" class="pill neutral">Viewport metrics</span>
+              <div><h1 id="analysis-title">Analysis</h1><p id="metrics-overview-pill" class="muted">No session</p></div>
+              <button id="open-metrics-button" class="text-button" type="button" aria-haspopup="dialog">All metrics</button>
             </div>
             <div id="metrics-overview-hero" class="metrics-overview-hero"></div>
-            <div id="metrics-overview-status" class="metrics-overview-grid"></div>
-            <div id="metrics-overview-queue" class="metrics-overview-grid"></div>
-            <div id="metrics-overview-planner" class="metrics-overview-grid"></div>
-            <div id="metrics-overview-distribution" class="metrics-overview-distribution"></div>
-            <div id="metrics-overview-trends" class="metrics-overview-trends"></div>
+            <section class="analysis-section"><h2>Trends</h2><div id="metrics-overview-trends" class="metrics-overview-trends"></div></section>
+            <section class="analysis-section"><h2>Operational status</h2><div class="operational-columns">
+              <section><h3>Fleet status</h3><div id="metrics-overview-status" class="metrics-overview-grid"></div></section>
+              <section><h3>Queue</h3><div id="metrics-overview-queue" class="metrics-overview-grid"></div></section>
+              <section><h3>Planner</h3><div id="metrics-overview-planner" class="metrics-overview-grid"></div></section>
+            </div></section>
+            <section class="analysis-section"><h2>Fleet distribution</h2><div id="metrics-overview-distribution" class="metrics-overview-distribution"></div></section>
           </div>
         </section>
+      </main>
 
-        <div id="floating-dock" class="floating-dock">
-          <button id="toggle-ui-button" class="dock-button" type="button">
-            Hide UI
-          </button>
-          <button
-            id="ui-visibility-button"
-            class="dock-button"
-            type="button"
-            aria-expanded="false"
-            aria-controls="ui-visibility-panel"
-          >
-            UI Controls
-          </button>
-          <button id="open-metrics-button" class="dock-button" type="button">
-            Metrics
-          </button>
-          <button id="open-setup-button" class="dock-button primary-dock" type="button">
-            Launch Setup
-          </button>
+      <footer class="workspace-footer" id="workspace-footer">
+        <div id="top-bar" class="top-bar ui-layer">
+          <div class="control-cluster">
+            <button
+              id="run-button"
+              class="control-button icon-control primary-control"
+              type="button"
+              title="Run"
+              aria-label="Run"
+            >
+              <svg class="control-icon play-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M8 6.5v11l9-5.5-9-5.5z"></path>
+              </svg>
+              <span>Run</span>
+            </button>
+            <button
+              id="pause-button"
+              class="control-button icon-control"
+              type="button"
+              title="Pause"
+              aria-label="Pause"
+            >
+              <svg class="control-icon pause-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M8 6h3v12H8zM13 6h3v12h-3z"></path>
+              </svg>
+              <span>Pause</span>
+            </button>
+            <button
+              id="step-button"
+              class="control-button icon-control"
+              type="button"
+              title="Single step"
+              aria-label="Single step"
+            >
+              <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M9 7.5L14.5 12 9 16.5"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                ></path>
+              </svg>
+              <span>Single step</span>
+            </button>
+            <button
+              id="reset-session-button"
+              class="control-button icon-control warning-control"
+              type="button"
+              title="Reset to setup"
+              aria-label="Reset to setup"
+            >
+              <svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M7 7.5H4V4.5"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.1"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                ></path>
+                <path
+                  d="M5.2 7.2a7 7 0 1 1-1.1 7.7"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.1"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                ></path>
+              </svg>
+              <span>Reset</span>
+            </button></div>
+          <label class="playback-speed"><span>Speed</span><select id="playback-rate" aria-label="Playback speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option><option value="4">4×</option></select></label>
+          <div class="session-meta"><span id="map-pill">Map —</span><span id="frame-pill">Frame —</span><span id="step-pill">Step —</span><span id="session-pill" class="session-id">No session</span></div>
+          <p id="run-control-help" class="sr-only" aria-live="polite"></p>
+          <div id="top-stat-grid" class="sr-only"></div>
         </div>
-
-        <section id="ui-visibility-panel" class="glass-card ui-visibility-panel hidden">
+        <div id="floating-dock" class="floating-dock">
+          <button id="events-toggle-button" class="quiet-button" type="button" aria-expanded="false" aria-controls="bottom-strip">Events</button>
+          <button id="toggle-ui-button" class="quiet-button focus-button" type="button" aria-pressed="false">Focus map</button>
+        </div>
+      </footer>
+      <section id="ui-visibility-panel" class="ui-visibility-panel hidden">
           <div class="section-head">
             <div>
-              <p class="section-kicker">Visibility</p>
-              <h2>UI Controls</h2>
+
+              <h2>Workspace</h2>
             </div>
             <span id="ui-visibility-summary" class="pill neutral">0/0 on</span>
           </div>
           <div class="ui-visibility-actions">
             <button id="ui-all-on-button" class="ghost-button compact-button" type="button">
-              All On
+              Show all
             </button>
             <button id="ui-all-off-button" class="ghost-button compact-button" type="button">
-              All Off
+              Hide all
             </button>
           </div>
           <div id="ui-visibility-grid" class="ui-visibility-grid"></div>
-        </section>
-      </section>
+        <div class="shortcut-help"><span>Run / pause <kbd>Space</kbd></span><span>Single step <kbd>S</kbd></span><span>Setup <kbd>L</kbd></span><span>Metrics <kbd>M</kbd></span><span>Reset <kbd>R</kbd></span><span>Switch view <kbd>← →</kbd></span></div></section>
 
       <div id="setup-backdrop" class="overlay-backdrop hidden"></div>
-      <aside id="setup-drawer" class="setup-drawer">
-        <div class="drawer-header">
-          <div>
-            <p class="section-kicker">Session builder</p>
-            <h2>Launch Setup</h2>
-          </div>
-          <button id="close-setup-button" class="icon-button" type="button">×</button>
-        </div>
-
+      <aside id="setup-drawer" class="setup-drawer" role="dialog" aria-modal="true" aria-labelledby="setup-title" aria-hidden="true" tabindex="-1" inert>
+        <div class="drawer-header"><h2 id="setup-title">Session setup</h2><button id="close-setup-button" class="icon-button" type="button" aria-label="Close setup">×</button></div>
         <div class="drawer-scroll">
-          <p class="drawer-copy">
-            Configure the scenario visually, clamp counts by map capacity, then
-            load one immutable session into the map view.
-          </p>
-
           <form id="launch-form" class="launch-form">
-            <section class="mode-group preset-builder">
-              <div class="section-head">
-                <div>
-                  <p class="section-kicker">Scenario Preset</p>
-                  <h3>Preset Library</h3>
-                </div>
-                <span id="preset-status-badge" class="pill neutral">Custom</span>
-              </div>
-              <div class="launch-grid preset-grid">
-                <label>
-                  <span>Preset</span>
-                  <select id="scenario-preset-select" name="scenarioPreset"></select>
-                </label>
-                <label>
-                  <span>Preset name</span>
-                  <input
-                    id="scenario-preset-name"
-                    name="scenarioPresetName"
-                    type="text"
-                    maxlength="48"
-                    placeholder="Save current scenario as..."
-                  />
-                </label>
-              </div>
-              <div class="preset-actions">
-                <button id="scenario-preset-save" class="ghost-button" type="button">
-                  Save Preset
-                </button>
-                <button id="scenario-preset-delete" class="ghost-button" type="button">
-                  Delete Preset
-                </button>
-              </div>
-            </section>
-
-            <div class="launch-grid">
-              <label>
-                <span>Map</span>
-                <select name="mapId" id="map-id"></select>
-              </label>
-              <label>
-                <span>Algorithm</span>
-                <select name="algorithm" id="algorithm"></select>
-              </label>
-              <label>
-                <span>Mode</span>
-                <select name="mode" id="mode"></select>
-              </label>
-              <label>
-                <span>Seed</span>
-                <input name="seed" id="seed" type="number" min="0" value="7" />
-              </label>
-              <label>
-                <span>Capture</span>
-                <select name="captureLevel" id="capture-level"></select>
-              </label>
-              <label>
-                <span>Speed multiplier</span>
-                <input
-                  name="speedMultiplier"
-                  id="speed-multiplier"
-                  type="number"
-                  step="0.1"
-                  min="0"
-                  value="0"
-                />
-              </label>
+            <section class="form-section"><h3>Environment</h3><div class="launch-grid">
+              <label><span>Map</span><select name="mapId" id="map-id"></select></label>
+              <label><span>Algorithm</span><select name="algorithm" id="algorithm"></select></label>
+            </div><details class="map-description"><summary>Map details</summary><p id="map-info-banner" class="field-help"></p><p id="map-capacity-help" class="field-help"></p></details></section>
+            <section class="form-section preset-builder"><div class="section-head"><h3>Scenario</h3><span id="preset-status-badge" class="muted">Custom</span></div><div class="launch-grid">
+              <label><span>Mode</span><select name="mode" id="mode"></select></label>
+              <label><span>Preset</span><select id="scenario-preset-select" name="scenarioPreset"></select></label>
             </div>
-
-            <p id="map-capacity-help" class="field-help"></p>
-            <div id="map-info-banner" class="info-banner"></div>
-
-            <div class="mode-group scenario-builder" data-mode="custom">
-              <div class="section-head">
-                <div>
-                  <p class="section-kicker">Scenario Builder</p>
-                  <h3>Custom phases</h3>
-                </div>
-                <span id="phase-count-badge" class="pill neutral">0 phases</span>
-              </div>
-
-              <p class="drawer-copy compact-copy">
-                Add each phase visually. Every row chooses a parking or exit
-                phase and the number of vehicles in that phase.
-              </p>
-
-              <div id="scenario-capacity-banner" class="capacity-banner"></div>
-              <div id="phase-summary" class="phase-summary"></div>
+            <details class="preset-disclosure"><summary>Save or manage presets</summary><label><span>Preset name</span><input id="scenario-preset-name" name="scenarioPresetName" type="text" maxlength="48" placeholder="Name this scenario" /></label><div class="preset-actions"><button id="scenario-preset-save" class="ghost-button" type="button">Save preset</button><button id="scenario-preset-delete" class="text-button danger-text" type="button">Delete preset</button></div></details></section>
+            <section class="form-section mode-group scenario-builder" data-mode="custom">
+              <div class="section-head"><h3>Phases</h3><span id="phase-count-badge" class="muted">0 phases</span></div>
               <div id="phase-list" class="phase-list"></div>
-
-              <div class="phase-actions">
-                <button id="add-park-phase" class="ghost-button" type="button">
-                  + Parking phase
-                </button>
-                <button id="add-exit-phase" class="ghost-button" type="button">
-                  + Exit phase
-                </button>
-                <button id="reset-phases" class="ghost-button" type="button">
-                  Reset scenario
-                </button>
-              </div>
-            </div>
-
-            <div class="mode-group realtime-builder hidden" data-mode="realtime">
-              <div class="section-head">
-                <div>
-                  <p class="section-kicker">Realtime Requests</p>
-                  <h3>Arrival mix</h3>
-                </div>
-              </div>
-              <p class="drawer-copy compact-copy">
-                Set the request probabilities for realtime generation. Keep the
-                combined park and exit chance under 100.
-              </p>
-              <div class="realtime-grid">
-                <label>
-                  <span>Realtime park chance</span>
-                  <input
-                    id="realtime-park"
-                    type="number"
-                    min="0"
-                    max="100"
-                    value="12"
-                  />
-                </label>
-                <label>
-                  <span>Realtime exit chance</span>
-                  <input
-                    id="realtime-exit"
-                    type="number"
-                    min="0"
-                    max="100"
-                    value="8"
-                  />
-                </label>
-              </div>
-            </div>
+              <div class="phase-actions"><button id="add-park-phase" class="ghost-button" type="button">Add parking</button><button id="add-exit-phase" class="ghost-button" type="button">Add exit</button><button id="reset-phases" class="text-button" type="button">Reset</button></div>
+              <div id="scenario-capacity-banner" class="field-help"></div><div id="phase-summary" class="phase-summary"></div>
+            </section>
+            <section class="form-section mode-group realtime-builder hidden" data-mode="realtime"><h3>Arrival mix</h3><p class="field-help">Combined probabilities must not exceed 100%.</p><div class="realtime-grid">
+              <label><span>Parking probability (%)</span><input id="realtime-park" type="number" min="0" max="100" value="12" /></label>
+              <label><span>Exit probability (%)</span><input id="realtime-exit" type="number" min="0" max="100" value="8" /></label>
+            </div></section>
+            <details class="form-section advanced-settings"><summary>Advanced settings</summary><div class="advanced-grid">
+              <label><span>Seed</span><input name="seed" id="seed" type="number" min="0" value="7" /></label>
+              <label><span>Capture level</span><select name="captureLevel" id="capture-level"></select></label>
+              <label><span>Engine speed</span><input name="speedMultiplier" id="speed-multiplier" type="number" step="0.1" min="0" value="0" /></label>
+            </div><p class="field-help">Use Debug capture for planner paths and conflict overlays.</p></details>
           </form>
-
-          <section class="drawer-summary glass-subcard">
-            <div class="section-head">
-              <div>
-                <p class="section-kicker">Current Selection</p>
-                <h3>Launch summary</h3>
-              </div>
-            </div>
-            <div id="launch-summary-drawer" class="launch-summary"></div>
-          </section>
+          <section class="drawer-summary"><h3>Launch summary</h3><div id="launch-summary-drawer" class="launch-summary"></div></section>
         </div>
-
-        <div class="drawer-footer">
-          <button id="validate-button" class="ghost-button" type="button">
-            Validate
-          </button>
-          <button
-            id="start-button"
-            class="primary-button"
-            type="submit"
-            form="launch-form"
-          >
-            Load Session
-          </button>
-        </div>
+        <div class="drawer-footer"><p id="setup-feedback" class="setup-feedback hidden" role="status" aria-live="polite"></p><div class="drawer-actions"><button id="validate-button" class="ghost-button" type="button">Validate</button><button id="start-button" class="primary-button" type="submit" form="launch-form">Load session</button></div></div>
       </aside>
 
       <div id="metrics-backdrop" class="overlay-backdrop hidden"></div>
-      <section id="metrics-modal" class="metrics-modal hidden">
+      <section id="metrics-modal" class="metrics-modal hidden" role="dialog" aria-modal="true" aria-labelledby="metrics-dialog-title" tabindex="-1">
         <div class="metrics-modal-header">
           <div>
-            <p class="section-kicker">Live metrics</p>
-            <h2>Operational Metrics</h2>
+
+            <h2 id="metrics-dialog-title">All metrics</h2>
           </div>
-          <button id="close-metrics-button" class="icon-button" type="button">×</button>
+          <button id="close-metrics-button" class="icon-button" type="button" aria-label="Close metrics">×</button>
         </div>
 
         <div class="metrics-modal-body">
           <section class="glass-subcard">
             <div class="section-head">
               <div>
-                <p class="section-kicker">Operations</p>
+
                 <h3>Operational summary</h3>
               </div>
             </div>
@@ -796,8 +599,8 @@ No debug snapshot requested yet.</pre
           <section class="glass-subcard">
             <div class="section-head">
               <div>
-                <p class="section-kicker">Realtime</p>
-                <h3>Live trend deck</h3>
+
+                <h3>Trends</h3>
               </div>
             </div>
             <div id="metrics-hero-grid" class="metrics-hero-grid"></div>
@@ -806,7 +609,7 @@ No debug snapshot requested yet.</pre
           <section class="glass-subcard">
             <div class="section-head">
               <div>
-                <p class="section-kicker">Infographics</p>
+
                 <h3>Planner and fleet health</h3>
               </div>
             </div>
@@ -816,8 +619,8 @@ No debug snapshot requested yet.</pre
           <section class="glass-subcard">
             <div class="section-head">
               <div>
-                <p class="section-kicker">Balance</p>
-                <h3>Fleet fairness snapshot</h3>
+
+                <h3>Fleet fairness</h3>
               </div>
             </div>
             <div id="metrics-distribution-grid" class="metrics-distribution-grid"></div>
@@ -827,7 +630,7 @@ No debug snapshot requested yet.</pre
           <section class="glass-subcard">
             <div class="section-head">
               <div>
-                <p class="section-kicker">System</p>
+
                 <h3>Planner and runtime metrics</h3>
               </div>
             </div>
@@ -835,9 +638,11 @@ No debug snapshot requested yet.</pre
           </section>
         </div>
       </section>
+      <div id="workspace-toast" class="workspace-toast hidden" role="status" aria-live="polite"></div>
     </div>
-
+    <script src="./node_modules/motion/dist/motion.js"></script>
     <script src="./motion-runtime.js"></script>
+    <script src="./workspace-ui.js"></script>
     <script src="./renderer.js"></script>
   </body>
 </html>

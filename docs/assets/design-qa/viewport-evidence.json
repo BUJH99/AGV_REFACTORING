@@ -1,0 +1,34 @@
+{
+  "reference": {
+    "width": 1586,
+    "height": 992,
+    "normalized": {
+      "width": 1440,
+      "height": 900
+    },
+    "fit": "contain"
+  },
+  "screenshots": {
+    "simulation-final.png": {
+      "width": 1440,
+      "height": 900
+    },
+    "setup-final.png": {
+      "width": 1440,
+      "height": 900
+    },
+    "analysis-final.png": {
+      "width": 1440,
+      "height": 900
+    },
+    "inspection-final.png": {
+      "width": 1440,
+      "height": 900
+    },
+    "minimum-window.png": {
+      "width": 1166,
+      "height": 698
+    }
+  },
+  "devicePixelRatio": 1.5
+}

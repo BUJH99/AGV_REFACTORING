@@ -1,0 +1,121 @@
+[
+  {
+    "name": "Bootstrap: seven maps and local engine connection",
+    "passed": true
+  },
+  {
+    "name": "Custom phase add / count / reorder / remove / capacity max / reset",
+    "passed": true
+  },
+  {
+    "name": "Realtime validation and recovery",
+    "passed": true
+  },
+  {
+    "name": "Preset save / apply / delete roundtrip",
+    "passed": true
+  },
+  {
+    "name": "Load configured debug session",
+    "passed": true
+  },
+  {
+    "name": "Single step",
+    "passed": true
+  },
+  {
+    "name": "Continuous run / pause / playback rate",
+    "passed": true
+  },
+  {
+    "name": "Fleet selection and persistent telemetry details",
+    "passed": true
+  },
+  {
+    "name": "Canvas selection",
+    "passed": true
+  },
+  {
+    "name": "All 9 scene and debug layers",
+    "passed": true
+  },
+  {
+    "name": "Priority list modes and selection",
+    "passed": true
+  },
+  {
+    "name": "Planner and debug inspection",
+    "passed": true
+  },
+  {
+    "name": "Engine events and activity dock",
+    "passed": true
+  },
+  {
+    "name": "Analysis and full metric explorer: 69 fields",
+    "passed": true
+  },
+  {
+    "name": "Metrics dialog focus trap and return",
+    "passed": true
+  },
+  {
+    "name": "Workspace visibility and focus restore",
+    "passed": true
+  },
+  {
+    "name": "Keyboard Space / S",
+    "passed": true,
+    "detail": "Space starts and pauses; S advances exactly one real simulation frame"
+  },
+  {
+    "name": "Keyboard L / Escape and setup focus trap",
+    "passed": true,
+    "detail": "Setup opens; focus cycles within dialog; Escape closes"
+  },
+  {
+    "name": "Keyboard M and viewport arrows",
+    "passed": true,
+    "detail": "Metrics dialog and live / map / analysis cycling work"
+  },
+  {
+    "name": "Reset shortcut and realtime execution",
+    "passed": true,
+    "detail": "R clears the previously executed realtime session and opens setup"
+  },
+  {
+    "name": "Setup opens with immediate keyboard focus",
+    "passed": true,
+    "detail": "Visibility transition now allows synchronous focus"
+  },
+  {
+    "name": "Empty analysis state",
+    "passed": true,
+    "detail": "One clear empty state; no empty chart sections or active metric action"
+  },
+  {
+    "name": "Setup first-view composition",
+    "passed": true,
+    "detail": "Map, scenario, two editable phases, expanded advanced settings and summary fit above the fixed action footer at 1440 × 900"
+  },
+  {
+    "name": "Minimum native window",
+    "passed": true,
+    "detail": "1180 × 760 outer window (1166 × 698 content): controls fit, full map fits, setup scrolls and loads a debug session"
+  },
+  {
+    "name": "Panel restore shows current selection and keeps focus",
+    "passed": true,
+    "detail": "Showing a previously hidden inspector renders the latest selected AGV; Settings toggle retains keyboard focus"
+  },
+  {
+    "name": "Reduced motion",
+    "passed": true,
+    "detail": "Tabs and modal remain usable with all transition durations at zero"
+  },
+  {
+    "name": "Accessible execution announcements",
+    "passed": true,
+    "detail": "Only 2 state changes announced across 58 frames"
+  }
+]
